@@ -13,7 +13,7 @@ DESKTOP_ID="local.agentdictate.AgentDictate"
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${PKG_DIR}" "${OPT_DIR}" "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"
-cp -a "${PROJECT_DIR}/src" "${PROJECT_DIR}/README.md" "${PROJECT_DIR}/pyproject.toml" "${OPT_DIR}/"
+cp -a "${PROJECT_DIR}/src" "${PROJECT_DIR}/README.md" "${PROJECT_DIR}/LICENSE" "${PROJECT_DIR}/pyproject.toml" "${OPT_DIR}/"
 cp "${PROJECT_DIR}/agentdictate.desktop" "${APP_DIR}/${DESKTOP_ID}.desktop"
 cp "${PROJECT_DIR}/assets/agentdictate.svg" "${ICON_DIR}/agentdictate.svg"
 

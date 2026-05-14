@@ -8,7 +8,7 @@ DESKTOP_ID="local.agentdictate.AgentDictate"
 
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/agentdictate" "${APPDIR}/usr/share/applications" "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
-cp -a "${PROJECT_DIR}/src" "${PROJECT_DIR}/README.md" "${PROJECT_DIR}/pyproject.toml" "${APPDIR}/usr/share/agentdictate/"
+cp -a "${PROJECT_DIR}/src" "${PROJECT_DIR}/README.md" "${PROJECT_DIR}/LICENSE" "${PROJECT_DIR}/pyproject.toml" "${APPDIR}/usr/share/agentdictate/"
 cp "${PROJECT_DIR}/agentdictate.desktop" "${APPDIR}/usr/share/applications/${DESKTOP_ID}.desktop"
 cp "${PROJECT_DIR}/assets/agentdictate.svg" "${APPDIR}/agentdictate.svg"
 cp "${PROJECT_DIR}/assets/agentdictate.svg" "${APPDIR}/usr/share/icons/hicolor/scalable/apps/agentdictate.svg"
