@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 
-from .ui import AgentDictateGtkApp, run_overlay_helper
+from .overlay import run_overlay_helper
+from .ui import AgentDictateGtkApp
 
 
 def main(argv: list[str] | None = None) -> int:
