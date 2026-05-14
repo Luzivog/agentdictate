@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from .hotkeys import (
+from .constants import (
     EV_KEY,
-    HotkeyError,
-    HotkeySpec,
-    InputHotkeyListener,
     KEY_ESC,
     KEY_F8,
     KEY_F9,
@@ -17,9 +14,9 @@ from .hotkeys import (
     KEY_RIGHTMETA,
     KEY_RIGHTSHIFT,
     KEY_SPACE,
-    keyboard_event_paths,
-    parse_hotkey,
 )
+from .listener import InputHotkeyListener
+from .parser import HotkeyError, HotkeySpec, keyboard_event_paths, parse_hotkey
 
 __all__ = [
     "EV_KEY",

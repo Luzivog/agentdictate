@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Any
 
 import requests
+
+from .openai_api import (
+    FALLBACK_TRANSCRIPTION_MODEL,
+    TRANSCRIPTION_COMPLETENESS_PROMPT,
+    extract_response_text,
+    sentence_count,
+    word_count,
+)
 
 
 class OpenAIClientError(RuntimeError):
     pass
-
-
-TRANSCRIPTION_COMPLETENESS_PROMPT = (
-    "Transcribe the entire recording from beginning to end. Include every "
-    "spoken sentence and phrase. Do not summarize, omit later sentences, or "
-    "stop after the first sentence."
-)
-FALLBACK_TRANSCRIPTION_MODEL = "whisper-1"
 
 
 class OpenAIClient:
@@ -152,26 +150,18 @@ class OpenAIClient:
             return False
         if audio_duration_seconds is None or audio_duration_seconds < 6.0:
             return False
-        return self._sentence_count(text) <= 1
+        return sentence_count(text) <= 1
 
     def _is_better_transcript(self, candidate: str, current: str) -> bool:
         if not candidate.strip():
             return False
-        candidate_words = self._word_count(candidate)
-        current_words = self._word_count(current)
+        candidate_words = word_count(candidate)
+        current_words = word_count(current)
         if candidate_words <= current_words:
             return False
-        if self._sentence_count(candidate) > self._sentence_count(current):
+        if sentence_count(candidate) > sentence_count(current):
             return True
         return candidate_words >= max(current_words + 5, int(current_words * 1.35))
-
-    def _sentence_count(self, text: str) -> int:
-        pieces = [piece.strip() for piece in re.split(r"[.!?]+(?:\s+|$)", text) if piece.strip()]
-        return len(pieces)
-
-    def _word_count(self, text: str) -> int:
-        return len(re.findall(r"\b[\w'-]+\b", text))
-
     def cleanup(
         self,
         transcript: str,
@@ -208,14 +198,3 @@ class OpenAIClient:
         if not text:
             raise OpenAIClientError("Cleanup returned an empty response.")
         return text
-
-
-def extract_response_text(payload: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for item in payload.get("output", []) or []:
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []) or []:
-            if content.get("type") == "output_text":
-                parts.append(str(content.get("text", "")))
-    return "\n".join(part for part in parts if part)
