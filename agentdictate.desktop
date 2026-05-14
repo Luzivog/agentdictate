@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AgentDictate
+Comment=Personal Linux speech-to-text app for AI coding prompts
+Exec=agentdictate
+Icon=agentdictate
+Terminal=false
+Categories=Utility;
+StartupWMClass=local.agentdictate.AgentDictate

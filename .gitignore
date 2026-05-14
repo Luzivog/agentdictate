@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Runtime and local data
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.wav
+.cache/
+.config/
+.local/
+
+# Editor and OS files
+.DS_Store
+*~

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">AgentDictate</title>
+  <rect width="256" height="256" rx="56" fill="#000000"/>
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="92" y="38" width="72" height="114" rx="36" stroke-width="14"/>
+    <path d="M64 112a64 64 0 0 0 128 0" stroke-width="14"/>
+    <path d="M128 180v30" stroke-width="14"/>
+    <path d="M96 216h64" stroke-width="14"/>
+    <path d="M88 84h-18l-14 14 14 14h18" stroke-width="10"/>
+    <path d="M174 84h18l14 14-14 14h-18" stroke-width="10"/>
+  </g>
+  <path d="M117 70h22" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+</svg>
