@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import struct
 import tempfile
 import threading
@@ -8,7 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from agentdictate.audio import AudioRecorder, Recording
+from agentdictate.audio import AudioError, AudioRecorder, Recording
+from agentdictate.audio_ducking import AudioDucker, parse_sink_inputs
 from agentdictate.cleanup import build_cleanup_instruction
 from agentdictate.clipboard import ClipboardPaste, _parse_xmodmap_v_keycode
 from agentdictate.config import (
@@ -109,12 +111,18 @@ class ConfigTests(unittest.TestCase):
                 cleanup_model="Custom",
                 custom_cleanup_model="new-cleanup",
                 cleanup_reasoning_effort="high",
+                audio_ducking_enabled=False,
+                audio_ducking_volume_percent=25,
+                audio_ducking_fade_ms=1500,
             )
             save_settings(settings, path)
             loaded = load_settings(path)
             self.assertEqual(loaded.active_transcription_model(), "new-transcribe")
             self.assertEqual(loaded.active_cleanup_model(), "new-cleanup")
             self.assertEqual(loaded.active_cleanup_reasoning_effort(), "high")
+            self.assertFalse(loaded.audio_ducking_enabled)
+            self.assertEqual(loaded.audio_ducking_volume_percent, 25)
+            self.assertEqual(loaded.audio_ducking_fade_ms, 1500)
 
     def test_default_cleanup_reasoning_effort_is_omitted(self) -> None:
         self.assertEqual(Settings().active_cleanup_reasoning_effort(), "")
@@ -157,6 +165,98 @@ class ConfigTests(unittest.TestCase):
             loaded.transcription_prices["gpt-4o-transcribe"]["price_per_audio_minute"],
             0,
         )
+
+
+class AudioDuckingTests(unittest.TestCase):
+    def test_parse_sink_inputs_reads_active_and_corked_streams(self) -> None:
+        output = """
+Sink Input #7
+\tCorked: no
+\tVolume: front-left: 40000 /  61% / -12.88 dB,   front-right: 20000 /  31% / -31.00 dB
+Sink Input #8
+\tCorked: yes
+\tVolume: mono: 65536 / 100% / 0.00 dB
+"""
+        streams = parse_sink_inputs(output)
+
+        self.assertEqual(streams[0].stream_id, "7")
+        self.assertEqual(streams[0].volumes, (40000, 20000))
+        self.assertFalse(streams[0].corked)
+        self.assertEqual(streams[1].stream_id, "8")
+        self.assertEqual(streams[1].volumes, (65536,))
+        self.assertTrue(streams[1].corked)
+
+    def test_audio_ducker_fades_active_streams_and_restores_original_volume(self) -> None:
+        class FakePactl:
+            def __init__(self) -> None:
+                self.streams = {"7": (40000, 20000), "8": (65536,)}
+                self.corked = {"7": False, "8": True}
+                self.set_calls: list[list[str]] = []
+
+            def __call__(self, command: list[str], **_kwargs: object):
+                if command[:3] == ["pactl", "list", "sink-inputs"]:
+                    return subprocess.CompletedProcess(command, 0, stdout=self._output())
+                if command[:2] == ["pactl", "set-sink-input-volume"]:
+                    self.set_calls.append(command)
+                    self.streams[command[2]] = tuple(int(value) for value in command[3:])
+                    return subprocess.CompletedProcess(command, 0, stdout="")
+                return subprocess.CompletedProcess(command, 1, stdout="")
+
+            def _output(self) -> str:
+                parts = []
+                for stream_id, volumes in self.streams.items():
+                    volume_text = ",   ".join(
+                        f"front-{index}: {volume} /  50% / -18.00 dB"
+                        for index, volume in enumerate(volumes)
+                    )
+                    corked = "yes" if self.corked[stream_id] else "no"
+                    parts.append(
+                        f"Sink Input #{stream_id}\n\tCorked: {corked}\n\tVolume: {volume_text}\n"
+                    )
+                return "\n".join(parts)
+
+        fake = FakePactl()
+        ducker = AudioDucker(
+            runner=fake,
+            which=lambda _name: "/usr/bin/pactl",
+            sleep=lambda _seconds: None,
+            async_fades=False,
+        )
+        settings = Settings(
+            audio_ducking_enabled=True,
+            audio_ducking_volume_percent=50,
+            audio_ducking_fade_ms=100,
+        )
+
+        ducker.duck(settings)
+
+        self.assertEqual(fake.streams["7"], (20000, 10000))
+        self.assertEqual(fake.streams["8"], (65536,))
+        self.assertTrue(all(call[2] == "7" for call in fake.set_calls))
+
+        ducker.restore()
+
+        self.assertEqual(fake.streams["7"], (40000, 20000))
+
+    def test_audio_ducker_noops_when_disabled_or_unavailable(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **_kwargs: object):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        AudioDucker(
+            runner=runner,
+            which=lambda _name: None,
+            async_fades=False,
+        ).duck(Settings(audio_ducking_enabled=True))
+        AudioDucker(
+            runner=runner,
+            which=lambda _name: "/usr/bin/pactl",
+            async_fades=False,
+        ).duck(Settings(audio_ducking_enabled=False))
+
+        self.assertEqual(calls, [])
 
 
 class StorageTests(unittest.TestCase):
@@ -513,6 +613,97 @@ class ClipboardTests(unittest.TestCase):
 
 
 class ControllerFlowTests(unittest.TestCase):
+    class FakeDucker:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def duck(self, _settings: Settings) -> None:
+            self.events.append("duck")
+
+        def restore(self, wait: bool = False) -> None:
+            self.events.append(("restore", wait))
+
+    def test_start_recording_restores_audio_when_recorder_fails(self) -> None:
+        class FailingAudio:
+            def start(self) -> Recording:
+                raise AudioError("microphone unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory) / "agentdictate.sqlite")
+            ducker = self.FakeDucker()
+            controller = AgentDictateController(
+                settings=Settings(),
+                storage=storage,
+                audio_ducker=ducker,
+            )
+            controller.audio = FailingAudio()  # type: ignore[assignment]
+
+            controller.start_recording()
+
+            self.assertEqual(ducker.events, ["duck", ("restore", False)])
+            self.assertEqual(controller.status, "Error")
+            storage.close()
+
+    def test_stop_recording_restores_audio_when_recorder_stop_fails(self) -> None:
+        class FailingAudio:
+            def stop(self, _recording: Recording) -> float:
+                raise AudioError("stop failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory) / "agentdictate.sqlite")
+            ducker = self.FakeDucker()
+            controller = AgentDictateController(
+                settings=Settings(),
+                storage=storage,
+                audio_ducker=ducker,
+            )
+            controller.audio = FailingAudio()  # type: ignore[assignment]
+            controller.recording = Recording(Path(directory) / "speech.wav", 0.0, Mock(), "fake")
+
+            controller.stop_recording()
+
+            self.assertEqual(ducker.events, [("restore", False)])
+            self.assertEqual(controller.status, "Error")
+            storage.close()
+
+    def test_cancel_recording_restores_audio(self) -> None:
+        class FakeAudio:
+            def stop(self, _recording: Recording) -> float:
+                return 1.0
+
+            def delete_temp(self, _path: Path, preserve: bool = False) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory) / "agentdictate.sqlite")
+            ducker = self.FakeDucker()
+            controller = AgentDictateController(
+                settings=Settings(),
+                storage=storage,
+                audio_ducker=ducker,
+            )
+            controller.audio = FakeAudio()  # type: ignore[assignment]
+            controller.recording = Recording(Path(directory) / "speech.wav", 0.0, Mock(), "fake")
+
+            controller.cancel_current_flow()
+
+            self.assertEqual(ducker.events, [("restore", False)])
+            self.assertEqual(controller.status, "Ready")
+            storage.close()
+
+    def test_close_restores_audio_and_waits_for_fade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ducker = self.FakeDucker()
+            controller = AgentDictateController(
+                settings=Settings(),
+                storage=Storage(Path(directory) / "agentdictate.sqlite"),
+                audio_ducker=ducker,
+            )
+
+            controller.close()
+
+            self.assertEqual(ducker.events, [("restore", True)])
+
     def test_cleanup_failure_pastes_raw_and_records_error(self) -> None:
         class FakeClient:
             def __init__(self, _api_key: str) -> None:

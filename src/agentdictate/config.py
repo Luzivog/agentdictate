@@ -136,6 +136,9 @@ class Settings:
     sound_feedback: bool = False
     start_sound: bool = False
     stop_sound: bool = False
+    audio_ducking_enabled: bool = True
+    audio_ducking_volume_percent: int = 15
+    audio_ducking_fade_ms: int = 1000
     start_on_login: bool = True
     show_tray_icon: bool = True
     minimize_to_tray_on_close: bool = True

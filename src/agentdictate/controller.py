@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from .audio import AudioError, AudioRecorder, Recording
+from .audio_ducking import AudioDucker
 from .cleanup import build_cleanup_instruction
 from .clipboard import ClipboardPaste
 from .config import Settings, load_settings, repair_zero_pricing_defaults, save_settings
@@ -32,6 +33,7 @@ class AgentDictateController:
         refresh_callback: RefreshCallback | None = None,
         settings: Settings | None = None,
         storage: Storage | None = None,
+        audio_ducker: AudioDucker | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self.storage = storage or Storage()
@@ -43,6 +45,7 @@ class AgentDictateController:
         self.message_callback = message_callback
         self.refresh_callback = refresh_callback
         self.audio = AudioRecorder()
+        self.audio_ducker = audio_ducker or AudioDucker()
         self.recording: Recording | None = None
         self.recording_started_at_iso: str | None = None
         self.recording_session_id: int | None = None
@@ -57,6 +60,7 @@ class AgentDictateController:
 
     def close(self) -> None:
         self.stop_hotkey()
+        self.audio_ducker.restore(wait=True)
         self.storage.close()
 
     def update_settings(self, settings: Settings) -> None:
@@ -66,6 +70,8 @@ class AgentDictateController:
         self.storage.seed_pricing(settings)
         self.storage.reprice_history(settings)
         set_start_on_login(settings.start_on_login)
+        if not settings.audio_ducking_enabled:
+            self.audio_ducker.restore()
         self.restart_hotkey()
         self.refresh()
 
@@ -146,9 +152,11 @@ class AgentDictateController:
         with self.lock:
             if self.recording is not None:
                 return
+            self.audio_ducker.duck(self.settings)
             try:
                 self.recording = self.audio.start()
             except AudioError as exc:
+                self.audio_ducker.restore()
                 self.set_status("Error")
                 self.message(str(exc))
                 return
@@ -188,9 +196,11 @@ class AgentDictateController:
         try:
             duration = self.audio.stop(recording)
         except AudioError as exc:
+            self.audio_ducker.restore()
             self.set_status("Error")
             self.message(str(exc))
             return
+        self.audio_ducker.restore()
         play_feedback(
             "stop",
             enabled=self.settings.sound_feedback and self.settings.stop_sound,
@@ -237,6 +247,7 @@ class AgentDictateController:
                 self.audio.stop(recording)
             except AudioError:
                 pass
+            self.audio_ducker.restore()
             self.audio.delete_temp(recording.path, preserve=False)
             if session_id is not None:
                 self._finish_session(session_id)
