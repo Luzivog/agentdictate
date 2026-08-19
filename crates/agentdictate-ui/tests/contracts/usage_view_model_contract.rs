@@ -61,7 +61,7 @@ fn selected_period_totals_expose_weighted_average_words_per_minute() {
         Vec::new(),
     );
 
-    assert_eq!(usage.average_wpm_value(), "120 WPM");
+    assert_eq!(usage.average_wpm_value(), "120");
 
     let month = UsageViewModel::new(
         UsagePeriod::Last30Days,
@@ -73,7 +73,7 @@ fn selected_period_totals_expose_weighted_average_words_per_minute() {
         },
         Vec::new(),
     );
-    assert_eq!(month.average_wpm_value(), "180 WPM");
+    assert_eq!(month.average_wpm_value(), "180");
 
     let no_audio = UsageViewModel::new(
         UsagePeriod::AllTime,
@@ -84,5 +84,5 @@ fn selected_period_totals_expose_weighted_average_words_per_minute() {
         },
         Vec::new(),
     );
-    assert_eq!(no_audio.average_wpm_value(), "0 WPM");
+    assert_eq!(no_audio.average_wpm_value(), "0");
 }

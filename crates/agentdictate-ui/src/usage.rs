@@ -114,7 +114,7 @@ impl UsageViewModel {
         } else {
             ((self.totals.words as f64 * 60.0) / self.totals.audio_seconds as f64).round() as u64
         };
-        format!("{average_wpm} WPM")
+        average_wpm.to_string()
     }
 
     pub fn format_cost(&self, value: f64) -> String {

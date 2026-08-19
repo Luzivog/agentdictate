@@ -854,18 +854,23 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
     let summary = harness.bounds("overview-activity-summary");
     let plot = harness.bounds("overview-activity-plot");
     assert!(summary.right() <= plot.left());
-    harness.bounds("overview-summary-dictations");
-    harness.bounds("overview-summary-words");
+    let dictations = harness.bounds("overview-summary-dictations");
+    let words = harness.bounds("overview-summary-words");
     let audio = harness.bounds("overview-summary-audio");
-    let cost = harness.bounds("overview-summary-cost");
     let wpm = harness.bounds("overview-summary-wpm");
-    assert!(audio.right() <= cost.left());
-    assert!(cost.right() <= wpm.left());
+    let cost = harness.bounds("overview-summary-cost");
+    let metrics = [dictations, words, audio, wpm, cost];
     assert!(
-        [audio, cost, wpm]
-            .into_iter()
-            .all(|metric| metric.size.width >= px(90.))
+        metrics
+            .windows(2)
+            .all(|pair| pair[0].bottom() <= pair[1].top())
     );
+    assert!(
+        metrics
+            .into_iter()
+            .all(|metric| metric.left() == summary.left() && metric.right() == summary.right())
+    );
+    assert_eq!(summary.size.height, plot.size.height);
     harness.bounds("overview-recent-history");
     harness.bounds("overview-recent-transcript-17");
     assert!(!harness.has("overview-metric-dictations"));

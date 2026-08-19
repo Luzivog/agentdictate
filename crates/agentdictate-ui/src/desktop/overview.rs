@@ -148,78 +148,79 @@ fn activity_header(
 fn activity_summary(usage: &UsageViewModel, theme: ThemeTokens) -> gpui::Div {
     v_flex()
         .debug_selector(|| "overview-activity-summary".to_owned())
-        .w(px(340.))
+        .w(px(300.))
+        .h(px(CHART_HEIGHT))
         .flex_shrink_0()
-        .gap_6()
-        .child(
-            h_flex()
-                .items_start()
-                .gap_5()
-                .child(summary_metric(
-                    "overview-summary-dictations",
-                    "DICTATIONS",
-                    usage.dictations_value(),
-                    true,
-                    theme,
-                ))
-                .child(summary_metric(
-                    "overview-summary-words",
-                    "WORDS",
-                    usage.words_value(),
-                    true,
-                    theme,
-                )),
-        )
-        .child(
-            h_flex()
-                .items_start()
-                .gap_5()
-                .child(summary_metric(
-                    "overview-summary-audio",
-                    "DICTATION TIME",
-                    usage.audio_value(),
-                    false,
-                    theme,
-                ))
-                .child(summary_metric(
-                    "overview-summary-cost",
-                    "EST. API COST",
-                    usage.cost_value(),
-                    false,
-                    theme,
-                ))
-                .child(summary_metric(
-                    "overview-summary-wpm",
-                    "AVG. WPM",
-                    usage.average_wpm_value(),
-                    false,
-                    theme,
-                )),
-        )
+        .child(summary_metric(
+            "overview-summary-dictations",
+            "DICTATIONS",
+            usage.dictations_value(),
+            false,
+            theme,
+        ))
+        .child(summary_metric(
+            "overview-summary-words",
+            "WORDS",
+            usage.words_value(),
+            false,
+            theme,
+        ))
+        .child(summary_metric(
+            "overview-summary-audio",
+            "DICTATION TIME",
+            usage.audio_value(),
+            false,
+            theme,
+        ))
+        .child(summary_metric(
+            "overview-summary-wpm",
+            "AVG. WPM",
+            usage.average_wpm_value(),
+            false,
+            theme,
+        ))
+        .child(summary_metric(
+            "overview-summary-cost",
+            "EST. API COST",
+            usage.cost_value(),
+            true,
+            theme,
+        ))
 }
 
 fn summary_metric(
     selector: &'static str,
     label: &'static str,
     value: String,
-    large: bool,
+    last: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
-    v_flex()
+    h_flex()
         .debug_selector(move || selector.to_owned())
-        .flex_1()
-        .min_w_0()
-        .gap_1()
+        .w_full()
+        .h(px(CHART_HEIGHT / 5.0))
+        .flex_shrink_0()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .when(!last, |row| {
+            row.border_b_1().border_color(gpui_color(theme.border))
+        })
         .child(
             gpui::div()
                 .text_xs()
+                .whitespace_nowrap()
                 .text_color(gpui_color(theme.text_muted))
                 .child(label),
         )
         .child(
             gpui::div()
-                .when(large, |value| value.text_2xl().font_bold())
-                .when(!large, |value| value.text_lg().font_semibold())
+                .min_w_0()
+                .flex_1()
+                .text_right()
+                .whitespace_nowrap()
+                .text_lg()
+                .font_semibold()
                 .child(value),
         )
 }
