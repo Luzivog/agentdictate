@@ -1,31 +1,30 @@
-# AgentDictate - Linux Push-to-Talk Dictation for AI Agents
-
-Personal Linux push-to-talk dictation for AI coding prompts. Press
-`Ctrl+Space`, speak, and AgentDictate transcribes with OpenAI, optionally cleans
-the text, applies replacements, copies it to the clipboard, and pastes it.
-
-- OpenAI speech-to-text transcription
-- Prompt cleanup for coding agents
-- Custom text replacements
-- Wayland and X11 paste support
-- Local transcript history and usage stats
-
-<p>
-  <img src="docs/images/agentdictate-overview.png" alt="Overview tab" width="32%">
-  <img src="docs/images/agentdictate-dictation.png" alt="Dictation tab" width="32%">
-  <img src="docs/images/agentdictate-replacements.png" alt="Replacements tab" width="32%">
+<p align="center">
+  <img src="assets/agentdictate.svg" alt="AgentDictate microphone icon" width="72">
 </p>
+
+<h1 align="center">AgentDictate</h1>
+
+<p align="center"><strong>Native push-to-talk voice dictation for Linux.</strong></p>
+<p align="center">Press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and paste an OpenAI transcript into the focused app on Wayland or X11.</p>
+<p align="center"><code>Ctrl+Space → Speak → Transcribe → Paste</code></p>
+<p align="center"><sub>OpenAI speech-to-text · Rust + GPUI · Local history and recovery</sub></p>
+
+<p align="center">
+  <picture>
+    <source media="(max-width: 640px)" srcset="docs/images/agentdictate-hero-mobile.png">
+    <img src="docs/images/agentdictate-hero.png" alt="AgentDictate recording a voice prompt and pasting its transcript" width="900">
+  </picture>
+</p>
+
+<p align="center"><a href="#install"><strong>Install AgentDictate →</strong></a></p>
+
+- **Reliable** — checkpointed recovery protects interrupted recordings.
+- **Custom** — optional prompt cleanup and spoken replacements.
+- **Searchable** — local, typo-tolerant transcript history.
 
 ## Install
 
-Install system dependencies first:
-
-```bash
-sudo apt install python3 python3-gi gir1.2-gtk-3.0 python3-cairo python3-requests \
-  pipewire-bin wl-clipboard ydotool xdotool
-```
-
-Then install AgentDictate into your user profile:
+The source installer currently targets Ubuntu/Debian. Install the [system prerequisites](docs/INSTALL.md#requirements), then:
 
 ```bash
 git clone https://github.com/Luzivog/agentdictate.git
@@ -34,18 +33,15 @@ cd agentdictate
 agentdictate
 ```
 
-Paste your OpenAI API key in the OpenAI tab, save, then use `Ctrl+Space` to
-start and stop dictation.
+Add your OpenAI API key in **Settings**, then press `Ctrl+Space` to start or stop dictation. If native input needs attention, follow the installer’s guide or [configure it manually](packaging/NATIVE_ACCESS.md).
 
-## Run From Source
+AgentDictate requires your own OpenAI API key; API charges apply. Audio is sent to OpenAI for transcription, and optional cleanup sends transcript text. Saved history, recovery data, and settings remain on your machine.
 
-```bash
-./run.sh
-./run.sh --background
-```
+<details>
+<summary>Build, test, and package from source</summary>
 
-## Test
+See the complete [installation and development guide](docs/INSTALL.md).
 
-```bash
-./run-tests.sh
-```
+</details>
+
+[MIT](LICENSE)

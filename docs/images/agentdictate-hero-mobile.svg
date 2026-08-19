@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1700" viewBox="0 0 720 1700" role="img" aria-labelledby="title description">
+  <title id="title">AgentDictate workflow</title>
+  <desc id="description">Press Control Space, speak while the recording waveform is visible, then receive the transcript at the active cursor.</desc>
+  <rect width="720" height="1700" rx="28" fill="#080909"/>
+
+  <g font-family="Inter, sans-serif" font-style="normal">
+    <text x="44" y="70" fill="#f5f5f5" font-size="38" font-weight="600">Dictate without breaking focus</text>
+    <text x="44" y="112" fill="#929296" font-size="24">One shortcut. Your voice. The focused app.</text>
+
+    <g transform="translate(44 154)">
+      <rect width="632" height="430" rx="24" fill="#111112" stroke="#29292c"/>
+      <circle cx="40" cy="42" r="6" fill="#f04a1f"/>
+      <text x="62" y="51" fill="#f5f5f5" font-size="30" font-weight="600">Start</text>
+      <text x="40" y="96" fill="#8f8f93" font-size="23">Use the global shortcut</text>
+
+      <g transform="translate(119 142)">
+        <rect width="154" height="88" rx="18" fill="#1b1b1d" stroke="#3a3a3e"/>
+        <text x="77" y="57" text-anchor="middle" fill="#f5f5f5" font-size="30" font-weight="600">Ctrl</text>
+        <text x="197" y="56" text-anchor="middle" fill="#747479" font-size="34">+</text>
+        <rect x="240" width="154" height="88" rx="18" fill="#1b1b1d" stroke="#3a3a3e"/>
+        <text x="317" y="57" text-anchor="middle" fill="#f5f5f5" font-size="30" font-weight="600">Space</text>
+      </g>
+
+      <text x="316" y="310" text-anchor="middle" fill="#f5f5f5" font-size="28">Press the shortcut to record</text>
+      <text x="316" y="352" text-anchor="middle" fill="#85858a" font-size="22">Your current app keeps focus</text>
+    </g>
+
+    <g fill="none" stroke="#55555a" stroke-width="3" transform="translate(360 597)">
+      <path d="M0 0v28"/>
+      <path d="m-9 19 9 9 9-9"/>
+    </g>
+
+    <g transform="translate(44 650)">
+      <rect width="632" height="430" rx="24" fill="#111112" stroke="#29292c"/>
+      <circle cx="40" cy="42" r="6" fill="#67c98a"/>
+      <text x="62" y="51" fill="#f5f5f5" font-size="30" font-weight="600">Speak</text>
+      <text x="40" y="96" fill="#8f8f93" font-size="23">A focus-neutral overlay confirms recording</text>
+
+      <g transform="translate(117 146) scale(3.12)">
+        <rect x="6" y="8" width="127" height="42" rx="14" fill="#000000" opacity="0.24"/>
+        <rect x="6" y="6" width="127" height="42" rx="14" fill="#111112" stroke="#ffffff" stroke-opacity="0.11"/>
+        <g fill="#f04a1f">
+          <rect x="18" y="24" width="2.4" height="6" rx="1.2" opacity="0.52"/>
+          <rect x="22" y="21" width="2.4" height="12" rx="1.2" opacity="0.65"/>
+          <rect x="26" y="17" width="2.4" height="20" rx="1.2" opacity="0.79"/>
+          <rect x="30" y="13" width="2.4" height="28" rx="1.2" opacity="0.92"/>
+          <rect x="34" y="18" width="2.4" height="18" rx="1.2" opacity="0.76"/>
+          <rect x="38" y="22" width="2.4" height="10" rx="1.2" opacity="0.61"/>
+          <rect x="42" y="19" width="2.4" height="16" rx="1.2" opacity="0.72"/>
+          <rect x="46" y="14" width="2.4" height="26" rx="1.2" opacity="0.88"/>
+          <rect x="50" y="10" width="2.4" height="34" rx="1.2" opacity="0.97"/>
+          <rect x="54" y="16" width="2.4" height="22" rx="1.2" opacity="0.82"/>
+          <rect x="58" y="20" width="2.4" height="14" rx="1.2" opacity="0.69"/>
+          <rect x="62" y="23" width="2.4" height="8" rx="1.2" opacity="0.56"/>
+          <rect x="66" y="19" width="2.4" height="16" rx="1.2" opacity="0.72"/>
+          <rect x="70" y="15" width="2.4" height="24" rx="1.2" opacity="0.85"/>
+          <rect x="74" y="18" width="2.4" height="18" rx="1.2" opacity="0.76"/>
+          <rect x="78" y="22" width="2.4" height="10" rx="1.2" opacity="0.61"/>
+          <rect x="82" y="20" width="2.4" height="14" rx="1.2" opacity="0.69"/>
+          <rect x="86" y="17" width="2.4" height="20" rx="1.2" opacity="0.79"/>
+          <rect x="90" y="21" width="2.4" height="12" rx="1.2" opacity="0.65"/>
+          <rect x="94" y="24" width="2.4" height="6" rx="1.2" opacity="0.52"/>
+        </g>
+        <text x="102" y="31" fill="#f5f5f5" fill-opacity="0.94" font-size="13" font-weight="700">0:08</text>
+      </g>
+
+      <text x="316" y="320" text-anchor="middle" fill="#f5f5f5" font-size="28">Know when recording is active</text>
+      <text x="316" y="362" text-anchor="middle" fill="#85858a" font-size="22">Press again or release when finished</text>
+    </g>
+
+    <g fill="none" stroke="#55555a" stroke-width="3" transform="translate(360 1093)">
+      <path d="M0 0v28"/>
+      <path d="m-9 19 9 9 9-9"/>
+    </g>
+
+    <g transform="translate(44 1146)">
+      <rect width="632" height="500" rx="24" fill="#111112" stroke="#29292c"/>
+      <circle cx="40" cy="42" r="6" fill="#65bde2"/>
+      <text x="62" y="51" fill="#f5f5f5" font-size="30" font-weight="600">Paste</text>
+      <text x="40" y="96" fill="#8f8f93" font-size="23">The transcript arrives at your cursor</text>
+
+      <g transform="translate(40 136)">
+        <rect width="552" height="194" rx="17" fill="#0b0b0c" stroke="#2d2d30"/>
+        <circle cx="28" cy="27" r="5" fill="#48484d"/>
+        <circle cx="49" cy="27" r="5" fill="#48484d"/>
+        <circle cx="70" cy="27" r="5" fill="#48484d"/>
+        <rect x="28" y="62" width="260" height="9" rx="4.5" fill="#2b2b2e"/>
+        <text x="28" y="116" fill="#f5f5f5" font-size="26">Ship ideas while they are fresh.</text>
+        <rect x="389" y="90" width="3" height="32" rx="1.5" fill="#f04a1f"/>
+        <rect x="28" y="150" width="354" height="8" rx="4" fill="#242427"/>
+      </g>
+
+      <text x="316" y="395" text-anchor="middle" fill="#f5f5f5" font-size="28">Keep working where you started</text>
+      <text x="316" y="437" text-anchor="middle" fill="#85858a" font-size="22">The transcript also stays on the clipboard</text>
+    </g>
+  </g>
+</svg>
