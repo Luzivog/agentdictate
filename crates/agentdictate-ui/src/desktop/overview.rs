@@ -15,12 +15,15 @@ use super::{SettingsShell, gpui_color, single_line::single_line_clip};
 const CHART_HEIGHT: f32 = 280.0;
 const AXIS_GAP: f32 = 18.0;
 const CHART_TOP_GAP: f32 = 10.0;
-const RECENT_HISTORY_LIMIT: usize = 10;
+const RECENT_HISTORY_COLLAPSED_LIMIT: usize = 10;
+const RECENT_HISTORY_EXPANDED_LIMIT: usize = 30;
+const RECENT_HISTORY_EXPANSION_SIZE: usize = 20;
 
 pub(super) fn surface(
     usage: UsageViewModel,
     history: HistoryViewModel,
     recent_transcripts: Vec<TranscriptViewModel>,
+    recent_history_expanded: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -83,7 +86,12 @@ pub(super) fn surface(
         .when(history.recovery.has_items(), |page| {
             page.child(recovery_notice(&history, theme, cx))
         })
-        .child(recent_history(recent_transcripts, theme, cx))
+        .child(recent_history(
+            recent_transcripts,
+            recent_history_expanded,
+            theme,
+            cx,
+        ))
 }
 
 fn activity_header(
@@ -374,12 +382,19 @@ fn recovery_notice(
 
 fn recent_history(
     transcripts: Vec<TranscriptViewModel>,
+    expanded: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
+    let can_expand = !expanded && transcripts.len() > RECENT_HISTORY_COLLAPSED_LIMIT;
+    let visible_limit = if expanded {
+        RECENT_HISTORY_EXPANDED_LIMIT
+    } else {
+        RECENT_HISTORY_COLLAPSED_LIMIT
+    };
     let recent = transcripts
         .into_iter()
-        .take(RECENT_HISTORY_LIMIT)
+        .take(visible_limit)
         .collect::<Vec<_>>();
     v_flex()
         .debug_selector(|| "overview-recent-history".to_owned())
@@ -470,6 +485,20 @@ fn recent_history(
                         })),
                 )
         }))
+        .when(can_expand, |section| {
+            section.child(
+                h_flex().justify_center().pt_3().child(
+                    action_button("overview-recent-show-more")
+                        .debug_selector(|| "overview-recent-show-more".to_owned())
+                        .small()
+                        .label(format!("Show {RECENT_HISTORY_EXPANSION_SIZE} more"))
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.overview_recent_expanded = true;
+                            cx.notify();
+                        })),
+                ),
+            )
+        })
 }
 
 fn format_duration(seconds: u64) -> String {

@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::{ActiveRecordingUpdate, AppPaths, OverlayUpdate};
 
-const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 10;
+const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CapturedRecording {
@@ -403,14 +403,15 @@ where
             })
             .collect();
         let history_page = self.history_page_snapshot(HistoryPageRequest::default())?;
+        let recent_history = self
+            .history_page_snapshot(HistoryPageRequest {
+                search: String::new(),
+                page_size: OVERVIEW_RECENT_HISTORY_LIMIT,
+                after: None,
+            })?
+            .rows;
         let replacements = self.runtime.replacement_rules()?;
         let usage = self.usage_snapshot()?;
-        let recent_history = history_page
-            .rows
-            .iter()
-            .take(OVERVIEW_RECENT_HISTORY_LIMIT)
-            .cloned()
-            .collect();
         Ok(WorkspaceSnapshot {
             recoveries,
             recent_history,

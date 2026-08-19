@@ -491,6 +491,7 @@ pub struct SettingsShell {
     pending_destructive_action: Option<WorkspaceAction>,
     workspace_action_in_flight: bool,
     history_action_lane: history_action_lane::HistoryActionLane,
+    overview_recent_expanded: bool,
     sidebar_open: bool,
     compact_layout: Option<bool>,
     sidebar_motion: SidebarMotion,
@@ -1135,6 +1136,7 @@ impl SettingsShell {
             pending_destructive_action: None,
             workspace_action_in_flight: false,
             history_action_lane: Default::default(),
+            overview_recent_expanded: false,
             sidebar_open: true,
             compact_layout: None,
             sidebar_motion: SidebarMotion::new(),
@@ -1307,6 +1309,7 @@ impl SettingsShell {
             pending_destructive_action: None,
             workspace_action_in_flight: false,
             history_action_lane: Default::default(),
+            overview_recent_expanded: false,
             sidebar_open: true,
             compact_layout: None,
             sidebar_motion: SidebarMotion::new(),
@@ -1801,6 +1804,7 @@ impl Render for SettingsShell {
         let replacement_editor = self.replacement_editor.clone();
         let replacement_editor_open = replacement_editor.is_some();
         let pending_destructive_action = self.pending_destructive_action.clone();
+        let overview_recent_expanded = self.overview_recent_expanded;
         let route_scroll_handle = self.route_scroll_handles.for_route(active_route);
         let route_scroll_selector = format!("route-scroll-{}", active_route.slug());
         let route_scroll_id = match active_route {
@@ -1894,6 +1898,7 @@ impl Render for SettingsShell {
                                             shortcut_capture_error,
                                             replacement_editor,
                                             pending_destructive_action,
+                                            overview_recent_expanded,
                                         },
                                         theme,
                                         cx,
@@ -2285,6 +2290,7 @@ struct RouteSurfaceModel {
     shortcut_capture_error: Option<String>,
     replacement_editor: Option<ReplacementEditorState>,
     pending_destructive_action: Option<WorkspaceAction>,
+    overview_recent_expanded: bool,
 }
 
 struct SettingsSurfaceModel {
@@ -2310,6 +2316,7 @@ fn route_surface(
             model.workspace.usage,
             model.workspace.history,
             model.workspace.recent_transcripts,
+            model.overview_recent_expanded,
             theme,
             cx,
         ),

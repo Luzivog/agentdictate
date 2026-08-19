@@ -23,7 +23,7 @@ use agentdictate_ui::{
     UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
 
-const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 10;
+const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
 pub struct WorkspaceClient {
     runtime_directory: PathBuf,

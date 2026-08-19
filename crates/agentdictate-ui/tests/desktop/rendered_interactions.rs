@@ -883,10 +883,10 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn overview_renders_exactly_the_newest_ten_independently_of_history_search(
+fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_search(
     cx: &mut TestAppContext,
 ) {
-    let recent_transcripts = (0..11)
+    let recent_transcripts = (0..31)
         .map(|id| {
             agentdictate_ui::TranscriptViewModel::new(
                 id,
@@ -948,15 +948,23 @@ fn overview_renders_exactly_the_newest_ten_independently_of_history_search(
         assert!(harness.has(selector));
     }
     assert!(!harness.has("overview-recent-transcript-10"));
+    assert!(harness.has("overview-recent-show-more"));
     assert!(!harness.has("overview-recent-transcript-77"));
     let title_clip = harness.bounds("overview-recent-transcript-title-9");
     assert!(title_clip.size.width > px(240.));
 
     harness.scroll_route_by(-1_000.);
-    harness.click("history-copy-transcript-9");
+    harness.click("overview-recent-show-more");
+    harness.cx.run_until_parked();
+    assert!(harness.has("overview-recent-transcript-10"));
+    assert!(harness.has("overview-recent-transcript-29"));
+    assert!(!harness.has("overview-recent-transcript-30"));
+
+    harness.scroll_route_by(-2_000.);
+    harness.click("history-copy-transcript-29");
     assert_eq!(
         actions.lock().expect("action lock").as_slice(),
-        &[WorkspaceAction::CopyTranscript { id: 9 }]
+        &[WorkspaceAction::CopyTranscript { id: 29 }]
     );
 }
 
