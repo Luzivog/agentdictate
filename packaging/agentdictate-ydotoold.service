@@ -1,0 +1,17 @@
+[Unit]
+Description=AgentDictate Wayland input injection service
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+ConditionPathExists=/dev/uinput
+
+[Service]
+Type=simple
+UMask=0077
+ExecStart=/usr/bin/ydotoold
+Restart=on-failure
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=graphical-session.target

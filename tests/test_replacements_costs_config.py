@@ -76,8 +76,14 @@ class CostTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_transcription_model_is_gpt_transcribe(self) -> None:
+        self.assertEqual(Settings().transcription_model, "gpt-transcribe")
+
     def test_default_recording_mode_is_toggle(self) -> None:
         self.assertEqual(Settings().recording_mode, "toggle")
+
+    def test_default_paste_shortcut_is_automatic(self) -> None:
+        self.assertEqual(Settings().paste_shortcut, "Automatic")
 
     def test_start_on_login_defaults_to_enabled(self) -> None:
         self.assertTrue(Settings().start_on_login)
@@ -94,6 +100,7 @@ class ConfigTests(unittest.TestCase):
                 audio_ducking_enabled=False,
                 audio_ducking_volume_percent=25,
                 audio_ducking_fade_ms=1500,
+                paste_shortcut="Terminal (Ctrl+Shift+V)",
             )
             save_settings(settings, path)
             loaded = load_settings(path)
@@ -103,6 +110,7 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(loaded.audio_ducking_enabled)
             self.assertEqual(loaded.audio_ducking_volume_percent, 25)
             self.assertEqual(loaded.audio_ducking_fade_ms, 1500)
+            self.assertEqual(loaded.paste_shortcut, "Terminal (Ctrl+Shift+V)")
 
     def test_default_cleanup_reasoning_effort_is_omitted(self) -> None:
         self.assertEqual(Settings().active_cleanup_reasoning_effort(), "")
@@ -145,3 +153,27 @@ class ConfigTests(unittest.TestCase):
             loaded.transcription_prices["gpt-4o-transcribe"]["price_per_audio_minute"],
             0,
         )
+
+    def test_load_settings_adds_new_pricing_without_overwriting_custom_prices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            settings = Settings(transcription_model="gpt-4o-transcribe")
+            settings.transcription_prices.pop("gpt-transcribe")
+            settings.transcription_prices["gpt-4o-transcribe"][
+                "price_per_audio_minute"
+            ] = 0.007
+            save_settings(settings, path)
+
+            loaded = load_settings(path)
+
+        self.assertEqual(
+            loaded.transcription_prices["gpt-transcribe"]["price_per_audio_minute"],
+            0.0045,
+        )
+        self.assertEqual(
+            loaded.transcription_prices["gpt-4o-transcribe"][
+                "price_per_audio_minute"
+            ],
+            0.007,
+        )
+        self.assertEqual(loaded.transcription_model, "gpt-4o-transcribe")

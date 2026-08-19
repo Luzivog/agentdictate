@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>local.agentdictate.AgentDictate</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>AgentDictate</name>
+  <summary>Fast native dictation for AI coding prompts</summary>
+  <developer id="io.github.luzivog">
+    <name>Luzivog</name>
+  </developer>
+  <description>
+    <p>
+      AgentDictate records speech, transcribes it with OpenAI, safely
+      checkpoints recovery data, and pastes the result into the focused
+      application.
+    </p>
+  </description>
+  <launchable type="desktop-id">local.agentdictate.AgentDictate.desktop</launchable>
+  <provides>
+    <binary>agentdictate</binary>
+    <binary>agentdictated</binary>
+  </provides>
+  <url type="homepage">https://github.com/luzivog/agentdictate</url>
+  <content_rating type="oars-1.1" />
+</component>

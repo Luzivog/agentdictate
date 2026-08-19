@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agentdictate.cleanup import build_cleanup_instruction
 from agentdictate.costs import estimate_session_cost, word_count
+from agentdictate.diagnostics import log_event
 from agentdictate.openai_client import OpenAIClientError
 from agentdictate.replacements import apply_replacements
 from agentdictate.storage import HistoryRecord, utc_now
@@ -14,12 +15,57 @@ def _openai_client(api_key: str):
     return OpenAIClient(api_key)
 
 
-def _clipboard_paste(restore_clipboard: bool):
+def _clipboard_paste(restore_clipboard: bool, shortcut_mode: str):
     from . import ClipboardPaste
-    return ClipboardPaste(restore_clipboard)
+    return ClipboardPaste(restore_clipboard, shortcut_mode)
 
 
 class ProcessingMixin:
+    def _redeliver_dictation(self, job_id: int, final_text: str) -> None:
+        copied = False
+        pasted = False
+        error_message: str | None = None
+        try:
+            if self._is_session_cancelled(job_id):
+                return
+            self.storage.update_dictation_job(
+                job_id,
+                state="delivering",
+                stage="delivering",
+                final_text=final_text,
+            )
+            copied, pasted, error_message = self._paste_final_text(final_text)
+        except Exception as exc:
+            error_message = str(exc)
+        if self._is_session_cancelled(job_id):
+            self._finish_session(job_id)
+            return
+        success = copied and pasted
+        self.storage.update_dictation_job(
+            job_id,
+            state="delivered" if success else "delivery_failed",
+            stage="delivered" if success else "delivering",
+            final_text=final_text,
+            copied_to_clipboard=copied,
+            paste_triggered=pasted,
+            error_message=error_message,
+        )
+        log_event(
+            "dictation_delivery_finished",
+            job_id=job_id,
+            success=success,
+            copied=copied,
+            pasted=pasted,
+            error=error_message or "",
+        )
+        self._finish_session(job_id)
+        self.set_status("Ready" if success else "Error")
+        if success:
+            self.message("Saved transcript pasted.")
+        else:
+            self.message("Saved transcript is still available.", error_message or "Paste failed.")
+        self.refresh()
+
     def _process_recording(
         self,
         audio_path: Path,
@@ -27,6 +73,22 @@ class ProcessingMixin:
         started_at: str,
         session_id: int | None = None,
     ) -> None:
+        job_id = self.storage.ensure_dictation_job(
+            audio_path,
+            started_at,
+            self.settings.active_transcription_model(),
+        )
+        self.storage.update_dictation_job(
+            job_id,
+            state="transcribing",
+            stage="transcribing",
+            duration_seconds=duration,
+        )
+        log_event(
+            "dictation_processing_started",
+            job_id=job_id,
+            duration_seconds=round(duration, 3),
+        )
         if session_id is not None:
             with self.lock:
                 self.processing_session_id = session_id
@@ -41,6 +103,7 @@ class ProcessingMixin:
         pasted = False
         success = False
         canceled = False
+        stage = "transcribing"
         transcription_model_used = self.settings.active_transcription_model()
         try:
             if self._is_session_cancelled(session_id):
@@ -61,6 +124,21 @@ class ProcessingMixin:
             if self._is_session_cancelled(session_id):
                 canceled = True
                 return
+            self.storage.update_dictation_job(
+                job_id,
+                state="transcribed",
+                stage="transcribed",
+                raw_transcript=raw_transcript,
+            )
+            log_event(
+                "dictation_transcribed",
+                job_id=job_id,
+                character_count=len(raw_transcript),
+            )
+            if self._is_session_cancelled(session_id):
+                canceled = True
+                return
+            stage = "cleanup"
             text_for_replacements = self._cleanup_transcript(
                 client, raw_transcript, session_id
             )
@@ -68,14 +146,32 @@ class ProcessingMixin:
             if self._is_session_cancelled(session_id):
                 canceled = True
                 return
+            stage = "replacements"
             final_text, replacements_applied = apply_replacements(
                 text_for_replacements, self.storage.list_mappings()
+            )
+            self.storage.update_dictation_job(
+                job_id,
+                state="transcribed",
+                stage="transcribed",
+                raw_transcript=raw_transcript,
+                final_text=final_text,
             )
             if self._is_session_cancelled(session_id):
                 canceled = True
                 return
-            copied, pasted = self._paste_final_text(final_text)
-            success = True
+            stage = "delivering"
+            self.storage.update_dictation_job(
+                job_id,
+                state="delivering",
+                stage="delivering",
+                raw_transcript=raw_transcript,
+                final_text=final_text,
+            )
+            copied, pasted, delivery_error = self._paste_final_text(final_text)
+            success = copied and pasted
+            if not success:
+                error_message = delivery_error or "Transcript could not be delivered."
         except OpenAIClientError as exc:
             error_message = self._friendly_openai_error(str(exc))
             self.set_status("Error")
@@ -85,9 +181,48 @@ class ProcessingMixin:
             self.set_status("Error")
             self.message("Something went wrong.", error_message)
         finally:
+            canceled = canceled or self._is_session_cancelled(session_id)
             if canceled:
+                if self._closed:
+                    self._finish_session(session_id)
+                    return
+                self.storage.update_dictation_job(
+                    job_id,
+                    state="canceled",
+                    stage=stage,
+                    raw_transcript=raw_transcript,
+                    final_text=final_text,
+                    error_message="Canceled.",
+                )
+                log_event("dictation_processing_canceled", job_id=job_id, stage=stage)
                 self._finish_canceled_processing(audio_path, session_id)
                 return
+            job_state = (
+                "delivered"
+                if success
+                else "delivery_failed"
+                if final_text
+                else "failed"
+            )
+            self.storage.update_dictation_job(
+                job_id,
+                state=job_state,
+                stage="delivered" if success else stage,
+                raw_transcript=raw_transcript,
+                final_text=final_text,
+                copied_to_clipboard=copied,
+                paste_triggered=pasted,
+                error_message=error_message,
+            )
+            log_event(
+                "dictation_processing_finished",
+                job_id=job_id,
+                state=job_state,
+                stage="delivered" if success else stage,
+                copied=copied,
+                pasted=pasted,
+                error=error_message or "",
+            )
             self._record_processing_result(
                 audio_path=audio_path,
                 duration=duration,
@@ -132,21 +267,27 @@ class ProcessingMixin:
             self.message("Cleanup failed. Raw transcript was pasted instead.", cleanup_error)
         return cleaned_transcript, cleanup_error, text_for_replacements
 
-    def _paste_final_text(self, final_text: str) -> tuple[bool, bool]:
+    def _paste_final_text(self, final_text: str) -> tuple[bool, bool, str | None]:
         self.set_status("Pasting")
-        paste = _clipboard_paste(self.settings.restore_clipboard_after_paste)
-        paste_result = paste.copy_and_paste(final_text)
+        paste = _clipboard_paste(
+            self.settings.restore_clipboard_after_paste,
+            self.settings.paste_shortcut,
+        )
+        paste_result = paste.deliver(final_text)
         if paste_result.error:
             self.message(paste_result.error)
         else:
-            self.message("Prompt pasted.")
-        return bool(paste_result.copied), bool(paste_result.paste_triggered)
+            self.message("Paste shortcut sent.")
+        return (
+            bool(paste_result.copied),
+            bool(paste_result.paste_triggered),
+            paste_result.error or None,
+        )
 
     def _finish_canceled_processing(self, audio_path: Path, session_id: int | None) -> None:
-        self.audio.delete_temp(audio_path, preserve=False)
         self._finish_session(session_id)
         self.set_status("Ready")
-        self.message("Canceled.")
+        self.message("Canceled. Audio saved for recovery.")
         self.refresh()
 
     def _record_processing_result(
@@ -189,10 +330,6 @@ class ProcessingMixin:
                 replacements_applied, copied, pasted, success, error_message,
                 cleanup_error, cost,
             )
-        self.audio.delete_temp(
-            audio_path,
-            preserve=self.settings.debug_mode or self.settings.preserve_temp_audio,
-        )
         if success:
             self.set_status("Ready")
         self._finish_session(session_id)

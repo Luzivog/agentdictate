@@ -68,17 +68,30 @@ class ReplacementsMixin:
             enabled.set_active(True)
             whole_word.set_active(True)
         dialog.show_all()
-        response = dialog.run()
-        dialog.destroy()
-        if response != Gtk.ResponseType.OK:
-            return None
-        return ReplacementMapping.new(
-            source_phrase=source.get_text(),
-            replacement_phrase=replacement.get_text(),
-            enabled=enabled.get_active(),
-            case_sensitive=case_sensitive.get_active(),
-            whole_word_only=whole_word.get_active(),
-        )
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return None
+            source_phrase = source.get_text().strip()
+            if not source_phrase:
+                source.grab_focus()
+                self._dialog(
+                    "Replacement mapping",
+                    "Source phrase is required.",
+                    error=True,
+                )
+                continue
+            try:
+                return ReplacementMapping.new(
+                    source_phrase=source_phrase,
+                    replacement_phrase=replacement.get_text(),
+                    enabled=enabled.get_active(),
+                    case_sensitive=case_sensitive.get_active(),
+                    whole_word_only=whole_word.get_active(),
+                )
+            finally:
+                dialog.destroy()
 
     def _mapping_selection_changed(self, selection: Gtk.TreeSelection) -> None:
         model, iterator = selection.get_selected()
@@ -93,11 +106,11 @@ class ReplacementsMixin:
             self.replacements_store.append(
                 [
                     mapping.id or 0,
-                    mapping.source_phrase,
-                    mapping.replacement_phrase,
-                    mapping.enabled,
-                    mapping.case_sensitive,
-                    mapping.whole_word_only,
+                    mapping.source_phrase or "(missing source)",
+                    mapping.replacement_phrase or "(empty replacement)",
+                    "Yes" if mapping.enabled else "No",
+                    "Yes" if mapping.case_sensitive else "No",
+                    "Yes" if mapping.whole_word_only else "No",
                 ]
             )
         self.replacements_empty.set_visible(len(mappings) == 0)

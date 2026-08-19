@@ -25,20 +25,15 @@ class OverlayHelperState:
     def elapsed_seconds(self) -> float:
         return self.elapsed
 
-
-def run_overlay_helper() -> int:
-    app = Gtk.Application(application_id=f"{APP_DESKTOP_ID}.Overlay")
-    app.register(None)
-    state = OverlayHelperState()
-    window = DictationOverlayWindow(app, state.waveform_values, state.elapsed_seconds)
-
-    def apply_update(payload: dict[str, Any]) -> bool:
-        state.status = str(payload.get("status") or "Ready")
-        state.cleanup_enabled = bool(payload.get("cleanup_enabled", True))
+    def apply(self, payload: dict[str, Any]) -> bool:
+        next_status = str(payload.get("status") or "Ready")
+        status_changed = next_status != self.status
+        self.status = next_status
+        self.cleanup_enabled = bool(payload.get("cleanup_enabled", True))
         try:
-            state.elapsed = float(payload.get("elapsed") or 0.0)
+            self.elapsed = float(payload.get("elapsed") or 0.0)
         except (TypeError, ValueError):
-            state.elapsed = 0.0
+            self.elapsed = 0.0
         waveform = payload.get("waveform")
         if isinstance(waveform, list):
             values: list[float] = []
@@ -47,8 +42,21 @@ def run_overlay_helper() -> int:
                     values.append(float(value))
                 except (TypeError, ValueError):
                     values.append(0.0)
-            state.waveform = values
-        window.set_status(state.status, state.cleanup_enabled)
+            self.waveform = values
+        return status_changed
+
+
+def run_overlay_helper() -> int:
+    app = Gtk.Application(application_id=f"{APP_DESKTOP_ID}.Overlay")
+    app.register(None)
+    state = OverlayHelperState()
+    window = DictationOverlayWindow(app, state.waveform_values, state.elapsed_seconds)
+
+    def apply_update(payload: dict[str, Any]) -> bool:
+        if state.apply(payload):
+            window.set_status(state.status, state.cleanup_enabled)
+        else:
+            window.update_frame(state.status, state.cleanup_enabled)
         return False
 
     def reader() -> None:

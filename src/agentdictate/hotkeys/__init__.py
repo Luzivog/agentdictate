@@ -15,12 +15,14 @@ from .constants import (
     KEY_RIGHTSHIFT,
     KEY_SPACE,
 )
-from .listener import InputHotkeyListener
+from .listener import HotkeyEvent, HotkeyEventKind, InputHotkeyListener
 from .parser import HotkeyError, HotkeySpec, keyboard_event_paths, parse_hotkey
 
 __all__ = [
     "EV_KEY",
     "HotkeyError",
+    "HotkeyEvent",
+    "HotkeyEventKind",
     "HotkeySpec",
     "InputHotkeyListener",
     "KEY_ESC",

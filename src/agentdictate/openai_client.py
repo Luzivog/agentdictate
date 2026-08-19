@@ -72,12 +72,11 @@ class OpenAIClient:
             raise OpenAIClientError(
                 "The selected transcription model could not be used. Choose another model or check the custom model name."
             )
-        final_prompt = self._transcription_prompt(prompt)
         text = self._transcribe_once(
             audio_path=audio_path,
             model=model,
             language=language,
-            prompt=final_prompt,
+            prompt=prompt,
             timeout=timeout,
         )
         selected_model = model
@@ -87,7 +86,7 @@ class OpenAIClient:
                     audio_path=audio_path,
                     model=FALLBACK_TRANSCRIPTION_MODEL,
                     language=language,
-                    prompt=final_prompt,
+                    prompt=prompt,
                     timeout=timeout,
                 )
             except OpenAIClientError:
@@ -106,14 +105,7 @@ class OpenAIClient:
         prompt: str = "",
         timeout: float = 180.0,
     ) -> str:
-        data: dict[str, str] = {
-            "model": model,
-            "response_format": "text",
-        }
-        if language.strip():
-            data["language"] = language.strip()
-        if prompt.strip():
-            data["prompt"] = prompt.strip()
+        data = self._transcription_request_data(model, language, prompt)
         with audio_path.open("rb") as audio_file:
             response = requests.post(
                 f"{self.api_base}/audio/transcriptions",
@@ -129,6 +121,28 @@ class OpenAIClient:
         if not text:
             raise OpenAIClientError("No speech detected.")
         return text
+
+    def _transcription_request_data(
+        self, model: str, language: str, prompt: str
+    ) -> dict[str, str]:
+        data = {"model": model}
+        language_hint = language.strip()
+        prompt_context = prompt.strip()
+        if model == "gpt-transcribe":
+            data["response_format"] = "json"
+            if language_hint:
+                data["languages[]"] = language_hint
+            if prompt_context:
+                data["prompt"] = prompt_context
+            return data
+
+        data["response_format"] = "text"
+        if language_hint:
+            data["language"] = language_hint
+        legacy_prompt = self._transcription_prompt(prompt_context)
+        if legacy_prompt:
+            data["prompt"] = legacy_prompt
+        return data
 
     def _json_transcription_text(self, response: requests.Response) -> str:
         try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agentdictate.config import (
+    PASTE_SHORTCUT_MODES,
     PLAIN_KEY_WARNING,
     RECORDING_MODES,
     TRANSCRIPTION_LANGUAGES,
@@ -107,5 +108,7 @@ class MainTabsMixin:
         self.audio_ducking_fade_spin.set_range(0, 5000)
         self.audio_ducking_fade_spin.set_increments(100, 500)
         self._grid_attach(grid, "Fade duration (ms)", self.audio_ducking_fade_spin, 9)
+        self.paste_shortcut_combo = self._combo(PASTE_SHORTCUT_MODES)
+        self._grid_attach(grid, "Paste shortcut", self.paste_shortcut_combo, 10)
         self._save_button_row(box)
         return box

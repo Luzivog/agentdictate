@@ -38,6 +38,11 @@ def repair_zero_pricing_defaults(settings: Settings) -> bool:
     if transcription_values and all(value <= 0 for value in transcription_values):
         settings.transcription_prices = transcription_defaults
         changed = True
+    else:
+        for model, default_price in transcription_defaults.items():
+            if model not in settings.transcription_prices:
+                settings.transcription_prices[model] = default_price
+                changed = True
 
     cleanup_defaults = default_cleanup_prices()
     cleanup_values: list[float] = []
@@ -48,6 +53,11 @@ def repair_zero_pricing_defaults(settings: Settings) -> bool:
     if cleanup_values and all(value <= 0 for value in cleanup_values):
         settings.cleanup_prices = cleanup_defaults
         changed = True
+    else:
+        for model, default_price in cleanup_defaults.items():
+            if model not in settings.cleanup_prices:
+                settings.cleanup_prices[model] = default_price
+                changed = True
     return changed
 
 

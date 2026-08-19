@@ -9,6 +9,12 @@ class MappingStoreMixin:
     _lock: object
     conn: sqlite3.Connection
 
+    def _validated_source_phrase(self, mapping: ReplacementMapping) -> str:
+        source_phrase = mapping.source_phrase.strip()
+        if not source_phrase:
+            raise ValueError("source_phrase is required for replacement mappings")
+        return source_phrase
+
     def list_mappings(self, search: str = "") -> list[ReplacementMapping]:
         with self._lock:
             if search:
@@ -39,6 +45,7 @@ class MappingStoreMixin:
             ]
 
     def add_mapping(self, mapping: ReplacementMapping) -> int:
+        source_phrase = self._validated_source_phrase(mapping)
         now = ReplacementMapping.now_iso()
         created_at = mapping.created_at or now
         updated_at = mapping.updated_at or now
@@ -53,7 +60,7 @@ class MappingStoreMixin:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        mapping.source_phrase,
+                        source_phrase,
                         mapping.replacement_phrase,
                         int(mapping.enabled),
                         int(mapping.case_sensitive),
@@ -67,6 +74,7 @@ class MappingStoreMixin:
     def update_mapping(self, mapping: ReplacementMapping) -> None:
         if mapping.id is None:
             raise ValueError("mapping.id is required for update")
+        source_phrase = self._validated_source_phrase(mapping)
         with self._lock:
             with self.conn:
                 self.conn.execute(
@@ -77,7 +85,7 @@ class MappingStoreMixin:
                     WHERE id = ?
                     """,
                     (
-                        mapping.source_phrase,
+                        source_phrase,
                         mapping.replacement_phrase,
                         int(mapping.enabled),
                         int(mapping.case_sensitive),

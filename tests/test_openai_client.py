@@ -25,6 +25,34 @@ class OpenAITests(unittest.TestCase):
         self.assertEqual(extract_response_text(payload), "Cleaned prompt.")
 
     @patch("agentdictate.openai_client.requests.post")
+    def test_gpt_transcribe_uses_json_languages_and_context_prompt(self, post: Mock) -> None:
+        response = Mock()
+        response.ok = True
+        response.text = '{"text":"raw transcript","languages":[{"code":"en"}]}'
+        response.json.return_value = {
+            "text": "raw transcript",
+            "languages": [{"code": "en"}],
+        }
+        post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "speech.wav"
+            audio_path.write_bytes(b"RIFFfake")
+            client = OpenAIClient("sk-test")
+            text = client.transcribe(
+                audio_path, "gpt-transcribe", language="en", prompt="coding terms"
+            )
+
+        self.assertEqual(text, "raw transcript")
+        self.assertEqual(client.last_transcription_model, "gpt-transcribe")
+        data = post.call_args.kwargs["data"]
+        self.assertEqual(data["model"], "gpt-transcribe")
+        self.assertEqual(data["response_format"], "json")
+        self.assertEqual(data["languages[]"], "en")
+        self.assertNotIn("language", data)
+        self.assertEqual(data["prompt"], "coding terms")
+        self.assertNotIn("Transcribe the entire recording", data["prompt"])
+
+    @patch("agentdictate.openai_client.requests.post")
     def test_transcription_request_shape(self, post: Mock) -> None:
         response = Mock()
         response.ok = True
@@ -71,6 +99,42 @@ class OpenAITests(unittest.TestCase):
         self.assertEqual(client.last_transcription_model, "whisper-1")
         self.assertEqual(post.call_args_list[0].kwargs["data"]["model"], "gpt-4o-transcribe")
         self.assertEqual(post.call_args_list[1].kwargs["data"]["model"], "whisper-1")
+
+    @patch("agentdictate.openai_client.requests.post")
+    def test_gpt_transcribe_whisper_retry_uses_legacy_language_and_prompt(
+        self, post: Mock
+    ) -> None:
+        first_response = Mock()
+        first_response.ok = True
+        first_response.text = '{"text":"This is only the first sentence."}'
+        first_response.json.return_value = {"text": "This is only the first sentence."}
+        second_response = Mock()
+        second_response.ok = True
+        second_response.text = "This is only the first sentence. This is the second sentence too."
+        post.side_effect = [first_response, second_response]
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "speech.wav"
+            audio_path.write_bytes(b"RIFFfake")
+            client = OpenAIClient("sk-test")
+            text = client.transcribe(
+                audio_path,
+                "gpt-transcribe",
+                language="en",
+                prompt="AgentDictate",
+                audio_duration_seconds=8.0,
+            )
+
+        self.assertEqual(text, "This is only the first sentence. This is the second sentence too.")
+        primary_data = post.call_args_list[0].kwargs["data"]
+        fallback_data = post.call_args_list[1].kwargs["data"]
+        self.assertEqual(primary_data["languages[]"], "en")
+        self.assertNotIn("language", primary_data)
+        self.assertEqual(primary_data["prompt"], "AgentDictate")
+        self.assertEqual(fallback_data["language"], "en")
+        self.assertNotIn("languages[]", fallback_data)
+        self.assertIn("Transcribe the entire recording", fallback_data["prompt"])
+        self.assertIn("AgentDictate", fallback_data["prompt"])
+        self.assertEqual(client.last_transcription_model, "whisper-1")
 
     @patch("agentdictate.openai_client.requests.post")
     def test_cleanup_request_shape(self, post: Mock) -> None:

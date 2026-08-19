@@ -1,0 +1,18 @@
+[package]
+name = "agentdictate-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agentdictate-core.workspace = true
+chrono.workspace = true
+regex = "1.12"
+rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3.23"
+thiserror.workspace = true
+
+[dev-dependencies]

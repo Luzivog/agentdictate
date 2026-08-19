@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import sys
 
+from .diagnostics import configure_logging
 from .overlay import run_overlay_helper
 from .ui import AgentDictateGtkApp
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv
+    configure_logging()
     if "--overlay-helper" in argv[1:]:
         return run_overlay_helper()
     app = AgentDictateGtkApp()

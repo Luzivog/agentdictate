@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,18 +17,8 @@ class HotkeySpec:
     display: str
     groups: list[set[int]]
 
-    @property
-    def all_codes(self) -> set[int]:
-        result: set[int] = set()
-        for group in self.groups:
-            result.update(group)
-        return result
-
     def matches(self, pressed: set[int]) -> bool:
         return all(group & pressed for group in self.groups)
-
-    def includes_code(self, code: int) -> bool:
-        return code in self.all_codes
 
 
 def parse_hotkey(value: str) -> HotkeySpec:
@@ -42,12 +33,22 @@ def parse_hotkey(value: str) -> HotkeySpec:
     return HotkeySpec(display=value, groups=groups)
 
 
-def keyboard_event_paths(devices_file: Path = Path("/proc/bus/input/devices")) -> list[Path]:
+def keyboard_event_paths(
+    devices_file: Path = Path("/proc/bus/input/devices"),
+    *,
+    hotkey: HotkeySpec | None = None,
+    device_dir: Path = Path("/dev/input"),
+    sysfs_input_dir: Path = Path("/sys/class/input"),
+) -> list[Path]:
     if not devices_file.exists():
         return []
     content = devices_file.read_text(encoding="utf-8", errors="ignore")
     paths: list[Path] = []
     for block in content.split("\n\n"):
+        name_match = re.search(r'N: Name="(.*)"', block)
+        device_name = name_match.group(1).lower() if name_match else ""
+        if "ydotoold virtual device" in device_name:
+            continue
         handlers_match = re.search(r"H: Handlers=(.*)", block)
         if not handlers_match:
             continue
@@ -55,7 +56,31 @@ def keyboard_event_paths(devices_file: Path = Path("/proc/bus/input/devices")) -
         if "kbd" not in handlers:
             continue
         for event_name in re.findall(r"\bevent\d+\b", handlers):
-            path = Path("/dev/input") / event_name
-            if path.exists():
+            path = device_dir / event_name
+            if path.exists() and (
+                hotkey is None
+                or _device_supports_hotkey(sysfs_input_dir / event_name, hotkey)
+            ):
                 paths.append(path)
     return sorted(set(paths))
+
+
+def _device_supports_hotkey(device_path: Path, hotkey: HotkeySpec) -> bool:
+    capabilities_path = device_path / "device" / "capabilities" / "key"
+    try:
+        raw_capabilities = capabilities_path.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    try:
+        mask = _parse_key_capabilities(raw_capabilities)
+    except ValueError:
+        return False
+    return all(any(mask & (1 << code) for code in group) for group in hotkey.groups)
+
+
+def _parse_key_capabilities(value: str) -> int:
+    word_bits = struct.calcsize("L") * 8
+    mask = 0
+    for word in value.split():
+        mask = (mask << word_bits) | int(word, 16)
+    return mask

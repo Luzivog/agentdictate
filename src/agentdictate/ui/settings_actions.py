@@ -82,6 +82,8 @@ class SettingsActionsMixin:
         self._update_cleanup_preview()
 
     def _update_cleanup_preview(self) -> None:
+        if not hasattr(self, "cleanup_cost_preview"):
+            return
         raw = "Update the onboarding flow and add tests."
         cleaned = raw
         settings = self._settings_from_ui() if hasattr(self, "cleanup_switch") else self.settings

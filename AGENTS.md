@@ -2,33 +2,116 @@
 
 ## Project Structure & Module Organization
 
-AgentDictate is a Python 3.11+ Linux desktop app. Application code lives in `src/agentdictate/`, with the console entry point in `src/agentdictate/__main__.py`. Core modules include recording (`audio.py`), hotkeys (`hotkey.py`), clipboard/paste behavior (`clipboard.py`), OpenAI API calls (`openai_client.py`), persistence (`storage.py`), settings (`config.py`), and GTK UI (`ui.py`). Tests are in `tests/`, currently concentrated in `tests/test_core.py`. Static desktop assets live in `assets/` and `agentdictate.desktop`. Packaging scripts are under `packaging/`; `dist/` contains generated build artifacts and should not be edited directly.
+AgentDictate is a Rust workspace for a native Linux dictation app. The workspace
+uses the Rust toolchain pinned in `rust-toolchain.toml` and is split by
+responsibility:
 
-## Build, Test, and Development Commands
+- `crates/agentdictate-core`: domain types, settings, replacements, workflow,
+  and protocol logic.
+- `crates/agentdictate-runtime`: durable history, recovery, usage, pricing, and
+  IPC persistence.
+- `crates/agentdictate-linux`: Linux recording, hotkey, focus, clipboard, and
+  paste integrations.
+- `crates/agentdictate-ui`: GPUI presentation, view models, route surfaces, and
+  the recording overlay. Native UI code is behind the `desktop` feature.
+- `crates/agentdictate-app`: daemon and desktop composition plus the
+  `agentdictate` and `agentdictated` binaries.
 
-- `./run.sh`: runs the app from source with `PYTHONPATH=src`.
-- `./run.sh --background`: starts the tray/background app without opening settings.
-- `./run-tests.sh`: runs `python3 -m unittest discover -s tests -v`.
-- `./install.sh`: installs the local wrapper and desktop entry into the user profile.
-- `packaging/build-deb.sh`: builds `dist/agentdictate_<version>_all.deb`.
-- `packaging/build-appimage.sh`: builds `dist/AppDir` and an AppImage when `appimagetool` is available.
+Rust unit tests live beside their modules. Integration-test harnesses live in
+each crate's `tests/` directory; prefer a small number of coherent top-level
+harnesses with module files rather than one linked executable per test topic.
+Keep separate harnesses only when process or global-state isolation is part of
+the behavior being tested.
+
+The Python code under `src/agentdictate/` and tests under `tests/` remain as a
+migration-parity suite. Installed binaries use the Rust implementation. Static
+desktop assets live in `assets/` and `agentdictate.desktop`. Packaging scripts
+are under `packaging/`; `dist/` and `target/` contain generated artifacts and
+must not be edited directly.
+
+## Development Commands
+
+Use the narrowest command that exercises the code being changed. Preserve
+Cargo's native/default job parallelism; do not add a fixed `-j` or `jobs` cap.
+
+- UI compilation: `cargo check --locked -p agentdictate-ui --features desktop`
+- Focused library test: `cargo test --locked -p <package> --lib <test-filter>`
+- One integration harness: `cargo test --locked -p <package> --test <harness> <test-filter>`
+- Focused lint: `cargo clippy --locked -p <package> --lib -- -D warnings`
+- Run the desktop app: `./run.sh`
+- Run only the daemon/background app: `./run.sh --background`
+
+A test-name filter by itself is not a narrow command: without `-p`, `--lib`, or
+`--test`, Cargo can still compile every selected integration-test executable.
+Use only the features required by the affected target. Do not repeatedly use
+`--workspace`, `--all-targets`, or `--all-features` during implementation.
+
+The workspace profiles intentionally retain incremental compilation for normal
+iterative development while limiting debug information. Use
+`--profile debugging` only when full debug information is actually needed.
+`CARGO_INCREMENTAL=0` is appropriate only for a coordinated one-shot or
+ephemeral full gate, not as a global configuration.
+
+## Disk-Heavy Gate Coordination
+
+Before any workspace-wide, all-target, all-feature, release, or LTO build,
+check both available filesystem space and whether another `cargo`, `rustc`, or
+linker workload is active. If another broad gate is running or free space is
+unsafe, continue non-build work and report the wait instead of starting a
+second bulk writer. Do not interrupt or stop the other task.
+
+Cargo does not automatically garbage-collect a workspace's `target/`
+directory. Never run `cargo clean`, delete target artifacts, redirect or change
+a shared/global `CARGO_TARGET_DIR`, or install/configure `sccache` or another
+linker without explicit user approval. A profile change creates a new artifact
+variant, so avoid uncontrolled full rebuilds while an oversized target remains.
+
+## Final Test Gate
+
+`./run-tests.sh` is the one final comprehensive gate. It runs the locked Rust
+workspace with every target and feature, followed by the legacy Python parity
+suite. Run it exactly once after focused checks pass and only after the
+disk-heavy gate coordination above says it is safe. Do not use it as an inner
+loop command.
+
+For ordinary changes, add focused Rust tests to the affected crate and mock
+network, subprocess, clipboard, audio, desktop, and external-service
+boundaries. Prefer headless GPUI tests and deterministic fixtures. Do not open
+the application visibly, move the user's mouse, or interfere with their active
+desktop during automated verification.
 
 ## Coding Style & Naming Conventions
 
-Use idiomatic Python with 4-space indentation, type hints, and `from __future__ import annotations` in new modules. Prefer `pathlib.Path`, dataclasses for structured settings/data records, and small functions with explicit return types. Keep module names lowercase with underscores, class names in `PascalCase`, and functions, variables, and tests in `snake_case`. No formatter or linter config is currently checked in, so match the surrounding style and keep imports grouped as standard library, third-party, then local relative imports.
+Use idiomatic Rust 2024, explicit domain types, exhaustive matching, and small
+interfaces between crates. Keep modules and functions in `snake_case`, types
+and traits in `PascalCase`, and constants in `SCREAMING_SNAKE_CASE`. Run
+`cargo fmt` on changed Rust files and keep comments concise and synchronized
+with behavior. Avoid `unsafe` unless a Linux integration requires it and its
+safety contract is documented next to the boundary.
 
-## Testing Guidelines
+## Packaging and Installation
 
-The project uses the standard library `unittest` framework plus `unittest.mock`. Add tests under `tests/` using files named `test_*.py`, classes ending in `Tests`, and methods beginning with `test_`. Prefer isolated tests with `tempfile.TemporaryDirectory()` for config, database, and audio fixtures. Mock network calls, subprocesses, clipboard tools, and desktop environment dependencies. Run `./run-tests.sh` before submitting changes.
+- `./install.sh`: builds the release desktop binaries and installs them, the
+  desktop entry, autostart entry, and icon into the user profile.
+- `packaging/build-deb.sh`: builds the Debian package in `dist/`.
+- `packaging/build-appimage.sh`: builds `dist/AppDir` and an AppImage when
+  `appimagetool` is available.
 
-## Commit & Pull Request Guidelines
+These are release/LTO-style disk-heavy operations. Coordinate them using the
+same free-space and active-workload rules, and do not run them for ordinary
+source validation.
 
-This checkout does not include Git history, so no repository-specific commit convention can be inferred. Use short imperative commit subjects such as `Fix Wayland paste fallback` or `Add pricing repair test`. Pull requests should include a focused summary, test results, linked issues if applicable, and screenshots or notes for visible UI changes.
+## Security & Runtime Data
 
-## Security & Configuration Tips
-
-Do not commit real OpenAI API keys, local config, SQLite history, logs, temporary audio, or generated package contents. Runtime data belongs under `~/.config/agentdictate/`, `~/.local/share/agentdictate/`, `~/.local/state/agentdictate/`, and `~/.cache/agentdictate/`.
+Do not commit real OpenAI API keys, local configuration, SQLite history, logs,
+temporary or retained audio, IPC sockets, diagnostics, or generated package
+contents. Runtime data belongs under `~/.config/agentdictate/`,
+`~/.local/share/agentdictate/`, `~/.local/state/agentdictate/`, and
+`~/.cache/agentdictate/`.
 
 ## UI Placement Requirement
 
-The recording status overlay must remain horizontally centered at the bottom of the primary monitor, above the dock/taskbar. Do not move it to a corner, attach it to the settings window, or let backend-specific window changes alter this placement unless explicitly requested.
+The recording status overlay must remain horizontally centered at the bottom
+of the primary monitor, above the dock/taskbar. Do not move it to a corner,
+attach it to the settings window, or let backend-specific window changes alter
+this placement unless explicitly requested.

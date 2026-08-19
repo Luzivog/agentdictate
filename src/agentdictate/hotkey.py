@@ -3,6 +3,8 @@ from __future__ import annotations
 from .hotkeys import (
     EV_KEY,
     HotkeyError,
+    HotkeyEvent,
+    HotkeyEventKind,
     HotkeySpec,
     InputHotkeyListener,
     KEY_ESC,
@@ -24,6 +26,8 @@ from .hotkeys import (
 __all__ = [
     "EV_KEY",
     "HotkeyError",
+    "HotkeyEvent",
+    "HotkeyEventKind",
     "HotkeySpec",
     "InputHotkeyListener",
     "KEY_ESC",

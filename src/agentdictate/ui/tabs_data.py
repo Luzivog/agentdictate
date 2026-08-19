@@ -22,7 +22,7 @@ class DataTabsMixin:
             search_row.pack_start(button, False, False, 0)
         box.pack_start(search_row, False, False, 0)
 
-        self.replacements_store = Gtk.ListStore(int, str, str, bool, bool, bool)
+        self.replacements_store = Gtk.ListStore(int, str, str, str, str, str)
         tree = Gtk.TreeView(model=self.replacements_store)
         titles = [
             "ID",
@@ -37,6 +37,11 @@ class DataTabsMixin:
             column = Gtk.TreeViewColumn(title, renderer, text=index)
             if index == 0:
                 column.set_visible(False)
+            if index in (1, 2):
+                column.set_expand(True)
+                column.set_min_width(180)
+            elif index > 2:
+                column.set_min_width(96)
             tree.append_column(column)
         tree.get_selection().connect("changed", self._mapping_selection_changed)
         box.pack_start(self._scrolled(tree, height=180), True, True, 0)
@@ -58,6 +63,43 @@ class DataTabsMixin:
     def _history_tab(self) -> Gtk.Widget:
         box = self._tab_box()
         box.pack_start(self._warning_label(HISTORY_WARNING), False, False, 0)
+        recovery_title = Gtk.Label(label="Saved dictations needing attention")
+        recovery_title.set_xalign(0)
+        box.pack_start(recovery_title, False, False, 0)
+        self.recovery_empty = self._warning_label(
+            "Nothing needs recovery. Audio is kept here after an interruption, "
+            "transcription failure, cancellation, or paste failure."
+        )
+        box.pack_start(self.recovery_empty, False, False, 0)
+        self.recovery_store = Gtk.ListStore(int, str, str, str, str)
+        recovery_tree = Gtk.TreeView(model=self.recovery_store)
+        for index, title in enumerate(("ID", "Date", "State", "Saved content", "Error")):
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn(title, renderer, text=index)
+            if index == 0:
+                column.set_visible(False)
+            if index in (3, 4):
+                column.set_expand(True)
+            recovery_tree.append_column(column)
+        recovery_tree.get_selection().connect(
+            "changed", self._recovery_selection_changed
+        )
+        box.pack_start(self._scrolled(recovery_tree, height=110), False, False, 0)
+        recovery_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for label, callback in (
+            ("Retry", self._retry_selected_recovery),
+            ("Copy saved transcript", self._copy_selected_recovery),
+            ("Open audio folder", self._open_selected_recovery),
+            ("Delete saved recording", self._delete_selected_recovery),
+        ):
+            button = Gtk.Button(label=label)
+            button.connect("clicked", callback)
+            recovery_actions.pack_start(button, False, False, 0)
+        box.pack_start(recovery_actions, False, False, 0)
+
+        history_title = Gtk.Label(label="Transcript history")
+        history_title.set_xalign(0)
+        box.pack_start(history_title, False, False, 0)
         filters = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.history_search = Gtk.SearchEntry()
         self.history_search.connect("search-changed", lambda *_args: self.refresh_history())
@@ -84,12 +126,14 @@ class DataTabsMixin:
         self.history_cost_label = Gtk.Label(label="")
         self.history_cost_label.set_xalign(0)
         box.pack_start(self.history_cost_label, False, False, 0)
-        for label, attr in (
-            ("Raw transcript", "history_raw_view"),
-            ("Cleaned transcript", "history_cleaned_view"),
-            ("Final transcript", "history_final_view"),
+        for label, label_attr, attr in (
+            ("Raw transcript", "history_raw_label", "history_raw_view"),
+            ("Cleaned transcript", "history_cleaned_label", "history_cleaned_view"),
+            ("Final transcript", "history_final_label", "history_final_view"),
         ):
-            box.pack_start(Gtk.Label(label=label), False, False, 0)
+            label_widget = Gtk.Label(label=label)
+            setattr(self, label_attr, label_widget)
+            box.pack_start(label_widget, False, False, 0)
             view = self._text_view(height=70, editable=False)
             setattr(self, attr, view)
             box.pack_start(view, False, False, 0)

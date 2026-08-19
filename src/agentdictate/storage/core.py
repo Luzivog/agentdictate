@@ -8,6 +8,7 @@ from agentdictate.paths import database_path, ensure_app_dirs
 
 from .daily import DailyStatsMixin
 from .history import HistoryStoreMixin
+from .jobs import DictationJobStoreMixin
 from .mappings import MappingStoreMixin
 from .pricing import PricingStoreMixin
 from .schema import SCHEMA
@@ -15,6 +16,7 @@ from .stats import StatsStoreMixin
 
 
 class Storage(
+    DictationJobStoreMixin,
     PricingStoreMixin,
     HistoryStoreMixin,
     DailyStatsMixin,
@@ -31,6 +33,9 @@ class Storage(
         with self._lock:
             self.conn.executescript(SCHEMA)
             self.conn.execute("PRAGMA foreign_keys = ON")
+            self.conn.execute(
+                "DELETE FROM replacement_mappings WHERE TRIM(source_phrase) = ''"
+            )
             self.conn.commit()
 
     def close(self) -> None:

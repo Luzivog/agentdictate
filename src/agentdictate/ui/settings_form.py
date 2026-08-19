@@ -24,6 +24,7 @@ class SettingsFormMixin:
         self.audio_ducking_switch.set_active(s.audio_ducking_enabled)
         self.audio_ducking_volume_spin.set_value(s.audio_ducking_volume_percent)
         self.audio_ducking_fade_spin.set_value(s.audio_ducking_fade_ms)
+        self._set_combo_value(self.paste_shortcut_combo, s.paste_shortcut)
         self.cleanup_switch.set_active(s.cleanup_enabled)
         self._set_combo_value(self.cleanup_model_combo, s.cleanup_model)
         self.custom_cleanup_entry.set_text(s.custom_cleanup_model)
@@ -124,6 +125,7 @@ class SettingsFormMixin:
         settings.audio_ducking_enabled = self.audio_ducking_switch.get_active()
         settings.audio_ducking_volume_percent = int(self.audio_ducking_volume_spin.get_value())
         settings.audio_ducking_fade_ms = int(self.audio_ducking_fade_spin.get_value())
+        settings.paste_shortcut = self._combo_value(self.paste_shortcut_combo)
 
     def _apply_cleanup_settings(self, settings: Settings) -> None:
         settings.cleanup_enabled = self.cleanup_switch.get_active()

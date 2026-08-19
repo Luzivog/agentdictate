@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import os
+import ctypes
 import math
+import os
+import selectors
 import shutil
 import signal
 import subprocess
@@ -10,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import cache_dir, ensure_app_dirs
+from .paths import ensure_app_dirs, recordings_dir
 
 
 class AudioError(RuntimeError):
@@ -30,7 +32,7 @@ class AudioRecorder:
         ensure_app_dirs()
 
     def start(self) -> Recording:
-        path = cache_dir() / f"recording-{int(time.time() * 1000)}.wav"
+        path = recordings_dir() / f"recording-{int(time.time() * 1000)}.wav"
         command = self._record_command(path)
         try:
             process = subprocess.Popen(
@@ -43,12 +45,17 @@ class AudioRecorder:
             raise AudioError(
                 "Could not access the default microphone. Check your Linux audio settings."
             ) from exc
-        time.sleep(0.05)
-        if process.poll() is not None:
+        if not self._wait_for_recording_ready(process, path):
+            self._stop_failed_start(process)
             raise AudioError(
                 "Could not access the default microphone. Check your Linux audio settings."
             )
-        return Recording(path=path, started_at=time.monotonic(), process=process, command_name=command[0])
+        return Recording(
+            path=path,
+            started_at=time.monotonic(),
+            process=process,
+            command_name=command[0],
+        )
 
     def stop(self, recording: Recording, wait_seconds: float = 5.0) -> float:
         duration = time.monotonic() - recording.started_at
@@ -68,6 +75,11 @@ class AudioRecorder:
                 "Could not access the default microphone. Check your Linux audio settings."
             )
         return duration
+
+    @staticmethod
+    def wait_until_stopped(recording: Recording) -> int:
+        """Block until the recorder exits so unexpected capture failures surface."""
+        return recording.process.wait()
 
     def input_level(self, recording: Recording, sample_count: int = 2048) -> float:
         samples = self._recent_samples(recording, sample_count)
@@ -169,5 +181,96 @@ class AudioRecorder:
                 str(path),
             ]
         raise AudioError(
-            "Could not access the default microphone. Install PipeWire, PulseAudio, ALSA, or ffmpeg recording tools."
+            "Could not access the default microphone. Install PipeWire, PulseAudio, "
+            "ALSA, or ffmpeg recording tools."
         )
+
+    @staticmethod
+    def _wait_for_recording_ready(
+        process: subprocess.Popen[bytes],
+        path: Path,
+        timeout_seconds: float = 1.0,
+    ) -> bool:
+        """Wait for recorded sample data or process exit; timeout is failure only."""
+        if AudioRecorder._recording_file_ready(path):
+            return True
+        deadline = time.monotonic() + timeout_seconds
+        inotify_fd = -1
+        pid_fd = -1
+        selector = selectors.DefaultSelector()
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            inotify_fd = int(libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK))
+            if inotify_fd < 0:
+                return AudioRecorder._wait_for_recording_ready_fallback(
+                    process, path, deadline
+                )
+            watch_mask = 0x00000002 | 0x00000100 | 0x00000008
+            watch = libc.inotify_add_watch(
+                inotify_fd,
+                os.fsencode(path.parent),
+                watch_mask,
+            )
+            if watch < 0:
+                return AudioRecorder._wait_for_recording_ready_fallback(
+                    process, path, deadline
+                )
+            selector.register(inotify_fd, selectors.EVENT_READ, "file")
+            if hasattr(os, "pidfd_open"):
+                pid_fd = os.pidfd_open(process.pid)
+                selector.register(pid_fd, selectors.EVENT_READ, "process")
+
+            while time.monotonic() < deadline:
+                if AudioRecorder._recording_file_ready(path):
+                    return True
+                if process.poll() is not None:
+                    return False
+                remaining = deadline - time.monotonic()
+                for key, _mask in selector.select(timeout=max(0.0, remaining)):
+                    if key.data == "process":
+                        return False
+                    try:
+                        os.read(inotify_fd, 4096)
+                    except BlockingIOError:
+                        pass
+            return AudioRecorder._recording_file_ready(path)
+        except OSError:
+            return AudioRecorder._wait_for_recording_ready_fallback(
+                process, path, deadline
+            )
+        finally:
+            selector.close()
+            if inotify_fd >= 0:
+                os.close(inotify_fd)
+            if pid_fd >= 0:
+                os.close(pid_fd)
+
+    @staticmethod
+    def _wait_for_recording_ready_fallback(
+        process: subprocess.Popen[bytes], path: Path, deadline: float
+    ) -> bool:
+        while time.monotonic() < deadline:
+            if AudioRecorder._recording_file_ready(path):
+                return True
+            if process.poll() is not None:
+                return False
+        return AudioRecorder._recording_file_ready(path)
+
+    @staticmethod
+    def _recording_file_ready(path: Path) -> bool:
+        try:
+            return path.stat().st_size > 44
+        except OSError:
+            return False
+
+    @staticmethod
+    def _stop_failed_start(process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            process.wait()
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()

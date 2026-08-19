@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 from typing import Any
 
 from agentdictate.config import load_settings
@@ -9,7 +10,7 @@ from agentdictate.paths import APP_DESKTOP_ID
 from agentdictate.widgets import UsageGraph
 
 from .base_widgets import UiWidgetMixin
-from .gtk import Gio, Gtk
+from .gtk import Gio, GLib, Gtk
 from .history import HistoryMixin
 from .replacements import ReplacementsMixin
 from .settings_actions import SettingsActionsMixin
@@ -67,12 +68,26 @@ class AgentDictateGtkApp(
             refresh_callback=self._controller_refresh,
             settings=self.settings,
         )
+        self._termination_sources = [
+            GLib.unix_signal_add(
+                GLib.PRIORITY_DEFAULT,
+                signal_number,
+                self._handle_termination,
+            )
+            for signal_number in (signal.SIGINT, signal.SIGTERM)
+        ]
         self.graph = UsageGraph()
         self.history_rows: dict[int, Any] = {}
         self.selected_history_id: int | None = None
+        self.recovery_rows: dict[int, Any] = {}
+        self.selected_recovery_id: int | None = None
         self.selected_mapping_id: int | None = None
         self.cleanup_price_entries: dict[str, tuple[Gtk.Entry, Gtk.Entry]] = {}
         self.transcription_price_entries: dict[str, Gtk.Entry] = {}
+
+    def _handle_termination(self) -> bool:
+        self.quit()
+        return GLib.SOURCE_REMOVE
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         args = list(command_line.get_arguments()[1:])

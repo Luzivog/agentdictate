@@ -1,0 +1,15 @@
+[package]
+name = "agentdictate-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+native-hotkey = ["dep:evdev"]
+
+[dependencies]
+agentdictate-core.workspace = true
+evdev = { version = "0.13.2", optional = true }
+libc = "0.2"

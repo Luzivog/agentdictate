@@ -56,8 +56,11 @@ class StatsMixin:
         cleanup = "Off"
         if self.settings.cleanup_enabled:
             cleanup = f"On, {self.settings.active_cleanup_model()}, {self.settings.cleanup_style}"
+        hotkey = self.settings.hotkey
+        if not self.controller.hotkey_available:
+            hotkey += " (unavailable)"
         self.overview_status.set_text(self.controller.status)
-        self.overview_hotkey.set_text(self.settings.hotkey)
+        self.overview_hotkey.set_text(hotkey)
         self.overview_transcription.set_text(self.settings.active_transcription_model())
         self.overview_cleanup.set_text(cleanup)
         self.overview_last.set_text(last)

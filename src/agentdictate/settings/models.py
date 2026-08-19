@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .constants import CLEANUP_REASONING_EFFORTS, DEFAULT_CLEANUP_PROMPT
+from .constants import (
+    CLEANUP_REASONING_EFFORTS,
+    DEFAULT_CLEANUP_PROMPT,
+    PASTE_SHORTCUT_AUTO,
+)
 
 
 @dataclass
@@ -23,6 +27,7 @@ class TranscriptionPrice:
 
 def default_transcription_prices() -> dict[str, dict[str, Any]]:
     return {
+        "gpt-transcribe": asdict(TranscriptionPrice("gpt-transcribe", 0.0045)),
         "gpt-4o-transcribe": asdict(TranscriptionPrice("gpt-4o-transcribe", 0.006)),
         "gpt-4o-mini-transcribe": asdict(
             TranscriptionPrice("gpt-4o-mini-transcribe", 0.003)
@@ -42,7 +47,7 @@ def default_cleanup_prices() -> dict[str, dict[str, Any]]:
 @dataclass
 class Settings:
     openai_api_key: str = ""
-    transcription_model: str = "gpt-4o-transcribe"
+    transcription_model: str = "gpt-transcribe"
     custom_transcription_model: str = ""
     language: str = ""
     transcription_prompt: str = ""
@@ -69,7 +74,7 @@ class Settings:
     debug_mode: bool = False
     preserve_temp_audio: bool = False
     save_history: bool = True
-    paste_method: str = "clipboard"
+    paste_shortcut: str = PASTE_SHORTCUT_AUTO
     currency: str = "USD"
     transcription_prices: dict[str, dict[str, Any]] = field(
         default_factory=default_transcription_prices

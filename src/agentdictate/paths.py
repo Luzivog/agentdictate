@@ -34,6 +34,10 @@ def logs_dir() -> Path:
     return state_dir() / "logs"
 
 
+def recordings_dir() -> Path:
+    return data_dir() / "recordings"
+
+
 def config_path() -> Path:
     return config_dir() / "config.json"
 
@@ -43,5 +47,11 @@ def database_path() -> Path:
 
 
 def ensure_app_dirs() -> None:
-    for path in (config_dir(), data_dir(), logs_dir(), cache_dir()):
+    for path in (
+        config_dir(),
+        data_dir(),
+        logs_dir(),
+        cache_dir(),
+        recordings_dir(),
+    ):
         path.mkdir(parents=True, exist_ok=True)

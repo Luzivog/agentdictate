@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS pricing_settings (
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON dictation_sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON transcript_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_history_session_id ON transcript_history(session_id);
+
+CREATE TABLE IF NOT EXISTS dictation_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    audio_path TEXT NOT NULL UNIQUE,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    transcription_model TEXT NOT NULL DEFAULT '',
+    raw_transcript TEXT NOT NULL DEFAULT '',
+    final_text TEXT NOT NULL DEFAULT '',
+    copied_to_clipboard INTEGER NOT NULL DEFAULT 0,
+    paste_triggered INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dictation_jobs_state ON dictation_jobs(state);
+CREATE INDEX IF NOT EXISTS idx_dictation_jobs_updated_at ON dictation_jobs(updated_at);
 """
 
 

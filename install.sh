@@ -2,59 +2,96 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${PROJECT_DIR}/packaging/native-readiness.sh"
 BIN_DIR="${HOME}/.local/bin"
-APP_DIR="${HOME}/.local/share/applications"
-ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
-WRAPPER="${BIN_DIR}/agentdictate"
+DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+APP_DIR="${DATA_HOME}/applications"
+AUTOSTART_DIR="${CONFIG_HOME}/autostart"
+ICON_DIR="${DATA_HOME}/icons/hicolor/scalable/apps"
+SYSTEMD_USER_DIR="${DATA_HOME}/systemd/user"
+NATIVE_ACCESS_DIR="${DATA_HOME}/agentdictate/native-access"
 DESKTOP_ID="local.agentdictate.AgentDictate"
-DESKTOP_FILE="${APP_DIR}/${DESKTOP_ID}.desktop"
-LEGACY_DESKTOP_FILE="${APP_DIR}/agentdictate.desktop"
-ICON_FILE="${ICON_DIR}/agentdictate.svg"
 
-mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"
+case "${1:-}" in
+  --check-native-access)
+    agentdictate_check_native_readiness
+    exit
+    ;;
+  "") ;;
+  *)
+    echo "Usage: ./install.sh [--check-native-access]" >&2
+    exit 64
+    ;;
+esac
 
-cat > "${WRAPPER}" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-export PYTHONPATH="${PROJECT_DIR}/src\${PYTHONPATH:+:\${PYTHONPATH}}"
-export AGENTDICTATE_EXEC="${WRAPPER}"
-export GDK_BACKEND="\${GDK_BACKEND:-wayland,x11}"
-exec python3 -m agentdictate "\$@"
-EOF
-chmod +x "${WRAPPER}"
+source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
+cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
+  --locked --release --features desktop -p agentdictate-app --bins
 
-cat > "${DESKTOP_FILE}" <<EOF
-[Desktop Entry]
-Type=Application
-Name=AgentDictate
-Comment=Personal Linux speech-to-text app for AI coding prompts
-Exec=${WRAPPER}
-Icon=${ICON_FILE}
-Terminal=false
-Categories=Utility;
-StartupWMClass=${DESKTOP_ID}
-EOF
+mkdir -p "${BIN_DIR}" "${APP_DIR}" "${AUTOSTART_DIR}" "${ICON_DIR}" \
+  "${SYSTEMD_USER_DIR}" "${NATIVE_ACCESS_DIR}"
+install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${BIN_DIR}/agentdictate"
+install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentdictated"
 
-rm -f "${LEGACY_DESKTOP_FILE}"
+# Desktop launchers do not guarantee that ~/.local/bin is in PATH. Render
+# absolute paths for both entry points so launch and autostart are reliable.
+DESKTOP_TARGET="${APP_DIR}/${DESKTOP_ID}.desktop"
+AUTOSTART_TARGET="${AUTOSTART_DIR}/${DESKTOP_ID}.desktop"
+DESKTOP_TEMP="$(mktemp "${APP_DIR}/.${DESKTOP_ID}.XXXXXX")"
+AUTOSTART_TEMP="$(mktemp "${AUTOSTART_DIR}/.${DESKTOP_ID}.XXXXXX")"
+trap 'rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}"' EXIT
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  if [[ "${line}" == "Exec=agentdictate" ]]; then
+    printf 'Exec="%s"\n' "${BIN_DIR}/agentdictate"
+  else
+    printf '%s\n' "${line}"
+  fi
+done < "${PROJECT_DIR}/agentdictate.desktop" > "${DESKTOP_TEMP}"
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  if [[ "${line}" == "Exec=agentdictated" ]]; then
+    printf 'Exec="%s"\n' "${BIN_DIR}/agentdictated"
+  else
+    printf '%s\n' "${line}"
+  fi
+done < "${PROJECT_DIR}/packaging/agentdictate-autostart.desktop" > "${AUTOSTART_TEMP}"
+install -m 0644 "${DESKTOP_TEMP}" "${DESKTOP_TARGET}"
+install -m 0644 "${AUTOSTART_TEMP}" "${AUTOSTART_TARGET}"
+rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}"
+trap - EXIT
 
-cp "${PROJECT_DIR}/assets/agentdictate.svg" "${ICON_FILE}"
+install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" \
+  "${ICON_DIR}/agentdictate.svg"
+install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-ydotoold.service" \
+  "${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
+install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
+  "${NATIVE_ACCESS_DIR}/70-agentdictate-input.rules"
+install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
+  "${NATIVE_ACCESS_DIR}/NATIVE_ACCESS.md"
 
-if [[ ! -f "${HOME}/.local/share/icons/hicolor/index.theme" && -f /usr/share/icons/hicolor/index.theme ]]; then
-  cp /usr/share/icons/hicolor/index.theme "${HOME}/.local/share/icons/hicolor/index.theme"
-fi
-
+rm -f "${APP_DIR}/agentdictate.desktop" "${AUTOSTART_DIR}/agentdictate.desktop"
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "${APP_DIR}" >/dev/null 2>&1 || true
 fi
-
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-  gtk-update-icon-cache -q -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+  gtk-update-icon-cache --force --ignore-theme-index "${DATA_HOME}/icons/hicolor" \
+    >/dev/null 2>&1 || true
 fi
 
-echo "Installed AgentDictate:"
-echo "  ${WRAPPER}"
-echo "  ${DESKTOP_FILE}"
-echo "  ${ICON_FILE}"
-echo
+echo "Installed native AgentDictate:"
+echo "  ${BIN_DIR}/agentdictate"
+echo "  ${BIN_DIR}/agentdictated"
+echo "  ${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
+
+if ! agentdictate_check_native_readiness; then
+  cat >&2 <<EOF
+
+AgentDictate was installed, but native input setup is incomplete.
+No privileged changes or services were started automatically.
+Follow: ${NATIVE_ACCESS_DIR}/NATIVE_ACCESS.md
+Then rerun: ${PROJECT_DIR}/install.sh --check-native-access
+EOF
+  exit 2
+fi
+
 echo "Run: agentdictate"
-echo "Uninstall: rm -f '${WRAPPER}' '${DESKTOP_FILE}' '${LEGACY_DESKTOP_FILE}' '${ICON_FILE}' '${HOME}/.config/autostart/${DESKTOP_ID}.desktop' '${HOME}/.config/autostart/agentdictate.desktop'"

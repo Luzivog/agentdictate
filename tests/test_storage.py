@@ -55,6 +55,44 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(len(storage.graph_days(days=1)), 1)
             storage.close()
 
+    def test_blank_source_mappings_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage = Storage(Path(directory) / "agentdictate.sqlite")
+            with self.assertRaisesRegex(ValueError, "source_phrase"):
+                storage.add_mapping(ReplacementMapping.new("", "Vercel"))
+
+            mapping_id = storage.add_mapping(ReplacementMapping.new("  versel  ", "Vercel"))
+            mapping = storage.list_mappings()[0]
+            self.assertEqual(mapping.id, mapping_id)
+            self.assertEqual(mapping.source_phrase, "versel")
+
+            mapping.source_phrase = " "
+            with self.assertRaisesRegex(ValueError, "source_phrase"):
+                storage.update_mapping(mapping)
+            storage.close()
+
+    def test_existing_blank_source_mappings_are_removed_on_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agentdictate.sqlite"
+            storage = Storage(path)
+            now = ReplacementMapping.now_iso()
+            with storage.conn:
+                storage.conn.execute(
+                    """
+                    INSERT INTO replacement_mappings (
+                        source_phrase, replacement_phrase, enabled, case_sensitive,
+                        whole_word_only, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("", "", 1, 0, 1, now, now),
+                )
+            storage.close()
+
+            storage = Storage(path)
+            self.assertEqual(storage.list_mappings(), [])
+            storage.close()
+
     def test_history_can_be_written_from_background_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             storage = Storage(Path(directory) / "agentdictate.sqlite")

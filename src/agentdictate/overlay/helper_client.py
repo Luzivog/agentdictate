@@ -44,18 +44,36 @@ class DictationOverlayHelperClient:
         self.process = None
         if process is None:
             return
+        self._stop_process(process)
+
+    @staticmethod
+    def _stop_process(process: subprocess.Popen[str]) -> None:
         try:
             if process.stdin is not None:
                 process.stdin.close()
         except OSError:
             pass
         try:
-            process.terminate()
-        except OSError:
-            pass
+            process.wait(timeout=1.0)
+            return
+        except subprocess.TimeoutExpired:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            process.wait()
 
     def _tick(self) -> bool:
         if self.process is None or self.process.poll() is not None:
+            if self.process is not None:
+                self.process.wait()
             self.process = None
             self._tick_id = None
             return False
@@ -68,6 +86,9 @@ class DictationOverlayHelperClient:
     def _ensure_process(self) -> bool:
         if self.process is not None and self.process.poll() is None:
             return True
+        if self.process is not None:
+            self.process.wait()
+            self.process = None
         env = os.environ.copy()
         env["GDK_BACKEND"] = "x11"
         try:
@@ -105,3 +126,4 @@ class DictationOverlayHelperClient:
             process.stdin.flush()
         except (BrokenPipeError, OSError):
             self.process = None
+            self._stop_process(process)

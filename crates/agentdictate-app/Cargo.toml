@@ -1,0 +1,43 @@
+[package]
+name = "agentdictate-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+desktop = ["agentdictate-ui/desktop"]
+
+[dependencies]
+agentdictate-core.workspace = true
+agentdictate-linux = { workspace = true, features = ["native-hotkey"] }
+agentdictate-runtime.workspace = true
+agentdictate-ui.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+libc = "0.2"
+ksni = { version = "0.3.6", features = ["blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+signal-hook = "0.3.18"
+thiserror.workspace = true
+tracing.workspace = true
+tracing-appender = "0.2.4"
+tracing-subscriber = "0.3.23"
+
+[dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3.23"
+
+[[bin]]
+name = "agentdictated"
+path = "src/bin/agentdictated.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "agentdictate"
+path = "src/bin/agentdictate.rs"
+required-features = ["desktop"]

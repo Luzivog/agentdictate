@@ -4,12 +4,13 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from agentdictate.audio import AudioRecorder, Recording
 from agentdictate.cleanup import build_cleanup_instruction
-from agentdictate.hotkey import InputHotkeyListener, KEY_ESC, KEY_LEFTCTRL, KEY_SPACE, parse_hotkey
+from agentdictate.overlay import OverlayHelperState
 from agentdictate.startup import desktop_entry
+from agentdictate.ui.settings_actions import SettingsActionsMixin
 
 
 class CleanupPromptTests(unittest.TestCase):
@@ -20,28 +21,20 @@ class CleanupPromptTests(unittest.TestCase):
         self.assertIn("Goal", structured)
 
 
-class HotkeyTests(unittest.TestCase):
-    def test_parse_ctrl_space(self) -> None:
-        spec = parse_hotkey("Ctrl+Space")
-        self.assertTrue(spec.matches({29, 57}))
-        self.assertTrue(spec.matches({97, 57}))
-        self.assertFalse(spec.matches({57}))
+class OverlayStateTests(unittest.TestCase):
+    def test_waveform_frames_do_not_repeat_window_status_transitions(self) -> None:
+        state = OverlayHelperState()
+        recording = {
+            "status": "Recording",
+            "cleanup_enabled": False,
+            "elapsed": 1.5,
+            "waveform": [0.1, 0.2],
+        }
 
-    def test_escape_cancels_active_hotkey_without_stopping(self) -> None:
-        events: list[str] = []
-        listener = InputHotkeyListener(
-            hotkey="Ctrl+Space",
-            recording_mode="toggle",
-            on_start=lambda: events.append("start"),
-            on_stop=lambda: events.append("stop"),
-            on_cancel=lambda: events.append("cancel"),
-            on_error=lambda _message: events.append("error"),
-        )
-        listener._handle_key_event(KEY_LEFTCTRL, 1, {KEY_LEFTCTRL})
-        listener._handle_key_event(KEY_SPACE, 1, {KEY_LEFTCTRL, KEY_SPACE})
-        listener._handle_key_event(KEY_ESC, 1, {KEY_LEFTCTRL, KEY_SPACE, KEY_ESC})
-        listener._handle_key_event(KEY_SPACE, 0, {KEY_LEFTCTRL})
-        self.assertEqual(events, ["start", "cancel"])
+        self.assertTrue(state.apply(recording))
+        self.assertFalse(state.apply({**recording, "elapsed": 1.6}))
+        self.assertEqual(state.elapsed, 1.6)
+        self.assertEqual(state.waveform, [0.1, 0.2])
 
 
 class StartupTests(unittest.TestCase):
@@ -51,8 +44,48 @@ class StartupTests(unittest.TestCase):
         self.assertIn("StartupWMClass=local.agentdictate.AgentDictate", entry)
         self.assertIn("X-GNOME-Autostart-enabled=true", entry)
 
+    def test_background_refresh_skips_unbuilt_cleanup_preview(self) -> None:
+        partial_ui = object.__new__(SettingsActionsMixin)
+
+        partial_ui._update_cleanup_preview()
+
 
 class AudioTests(unittest.TestCase):
+    def test_start_uses_recording_readiness_instead_of_sleep(self) -> None:
+        process = Mock(pid=1234)
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = AudioRecorder()
+            with patch("agentdictate.audio.recordings_dir", return_value=Path(directory)), patch.object(
+                recorder, "_record_command", return_value=["pw-record", "test.wav"]
+            ), patch("agentdictate.audio.subprocess.Popen", return_value=process), patch.object(
+                recorder, "_wait_for_recording_ready", return_value=True
+            ) as ready, patch("agentdictate.audio.time.sleep") as sleep:
+                recording = recorder.start()
+
+        ready.assert_called_once_with(process, recording.path)
+        sleep.assert_not_called()
+
+    def test_failed_start_reaps_the_recorder_process(self) -> None:
+        process = Mock(pid=1234)
+        process.poll.return_value = None
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = AudioRecorder()
+            with patch(
+                "agentdictate.audio.recordings_dir", return_value=Path(directory)
+            ), patch.object(
+                recorder, "_record_command", return_value=["pw-record", "test.wav"]
+            ), patch(
+                "agentdictate.audio.subprocess.Popen", return_value=process
+            ), patch.object(
+                recorder, "_wait_for_recording_ready", return_value=False
+            ):
+                with self.assertRaisesRegex(RuntimeError, "default microphone"):
+                    recorder.start()
+
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=1.0)
+
     def test_input_level_reflects_recent_wav_samples(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             audio_path = Path(directory) / "speech.wav"

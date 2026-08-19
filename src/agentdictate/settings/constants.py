@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 TRANSCRIPTION_MODELS = [
+    "gpt-transcribe",
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "whisper-1",
@@ -50,6 +51,15 @@ TRANSCRIPTION_LANGUAGES = [
 RECORDING_MODES = [
     "toggle",
     "hold",
+]
+
+PASTE_SHORTCUT_AUTO = "Automatic"
+PASTE_SHORTCUT_STANDARD = "Standard (Ctrl+V)"
+PASTE_SHORTCUT_TERMINAL = "Terminal (Ctrl+Shift+V)"
+PASTE_SHORTCUT_MODES = [
+    PASTE_SHORTCUT_AUTO,
+    PASTE_SHORTCUT_STANDARD,
+    PASTE_SHORTCUT_TERMINAL,
 ]
 
 DEFAULT_CLEANUP_PROMPT = (
