@@ -1,3 +1,4 @@
+use agentdictate_core::HISTORY_CONTINUATION_PAGE_SIZE;
 use gpui::{Context, Entity, SharedString, prelude::*, px};
 use gpui_component::{
     Sizable, h_flex,
@@ -129,7 +130,7 @@ pub(super) fn surface(
                             action_button("history-load-more")
                                 .debug_selector(|| "history-load-more".to_owned())
                                 .small()
-                                .label("Show 10 more")
+                                .label(format!("Show {HISTORY_CONTINUATION_PAGE_SIZE} more"))
                                 .on_click(cx.listener(|shell, _, _, cx| {
                                     shell.emit_workspace_action(
                                         WorkspaceAction::LoadMoreHistory,

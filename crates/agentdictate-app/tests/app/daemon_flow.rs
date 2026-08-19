@@ -600,8 +600,9 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
 
     let workspace = daemon.workspace_snapshot().unwrap();
 
-    assert_eq!(workspace.history.len(), 10);
-    assert_eq!(workspace.recent_history, workspace.history);
+    assert_eq!(workspace.history.len(), 20);
+    assert_eq!(workspace.recent_history.len(), 10);
+    assert_eq!(workspace.recent_history, workspace.history[..10]);
     assert_eq!(workspace.history_total, 251);
     assert!(workspace.history_has_more);
     assert!(!workspace.history.iter().any(|entry| entry.id == 1));

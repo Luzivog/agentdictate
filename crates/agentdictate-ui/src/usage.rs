@@ -108,6 +108,15 @@ impl UsageViewModel {
         self.format_cost(self.totals.estimated_cost_usd)
     }
 
+    pub fn average_wpm_value(&self) -> String {
+        let average_wpm = if self.totals.audio_seconds == 0 {
+            0
+        } else {
+            ((self.totals.words as f64 * 60.0) / self.totals.audio_seconds as f64).round() as u64
+        };
+        format!("{average_wpm} WPM")
+    }
+
     pub fn format_cost(&self, value: f64) -> String {
         format_currency_amount(&self.currency, value)
     }

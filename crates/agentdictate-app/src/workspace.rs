@@ -12,8 +12,9 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HistoryPageCursor, JobId, ReplacementRule,
-    ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot, WorkspaceSnapshot,
+    ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE, HistoryPageCursor,
+    JobId, ReplacementRule, ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot,
+    WorkspaceSnapshot,
 };
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
@@ -21,6 +22,8 @@ use agentdictate_ui::{
     ReplacementRuleViewModel, ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel,
     UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
+
+const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 10;
 
 pub struct WorkspaceClient {
     runtime_directory: PathBuf,
@@ -212,7 +215,11 @@ impl WorkspaceClient {
             .send(ClientCommand::get_history_page(
                 request_id,
                 search.clone(),
-                DEFAULT_HISTORY_PAGE_SIZE,
+                if append {
+                    HISTORY_CONTINUATION_PAGE_SIZE
+                } else {
+                    DEFAULT_HISTORY_PAGE_SIZE
+                },
                 after,
             ))
             .map_err(|error| error.to_string())?;
@@ -503,7 +510,7 @@ pub fn workspace_view_model(
     let recent_transcripts = snapshot
         .recent_history
         .iter()
-        .take(DEFAULT_HISTORY_PAGE_SIZE)
+        .take(OVERVIEW_RECENT_HISTORY_LIMIT)
         .map(transcript_view_model)
         .collect();
     let replacements = snapshot
@@ -707,7 +714,7 @@ mod tests {
                 panic!("history client sent an unexpected command")
             };
             assert_eq!(request.search, "needle");
-            assert_eq!(request.page_size, DEFAULT_HISTORY_PAGE_SIZE);
+            assert_eq!(request.page_size, 20);
             assert!(request.after.is_none());
             ServerMessage::history_page(
                 request_id,
@@ -738,6 +745,8 @@ mod tests {
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
+                history_next_cursor: Some(HistoryPageCursor::new("stale-query-cursor")),
+                history_has_more: true,
                 recent_history: vec![HistorySnapshot {
                     id: 7,
                     created_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
@@ -791,7 +800,7 @@ mod tests {
                 panic!("history client sent an unexpected command")
             };
             assert!(request.search.is_empty());
-            assert_eq!(request.page_size, DEFAULT_HISTORY_PAGE_SIZE);
+            assert_eq!(request.page_size, 50);
             assert_eq!(
                 request.after.as_ref().map(HistoryPageCursor::as_str),
                 Some("page-one")
@@ -881,6 +890,7 @@ mod tests {
                 request.after.as_ref().map(HistoryPageCursor::as_str),
                 Some("expired-cursor")
             );
+            assert_eq!(request.page_size, 50);
             ServerMessage::history_page(
                 request_id,
                 HistoryPageSnapshot {

@@ -54,7 +54,8 @@ pub struct HistorySnapshot {
     pub duration_seconds: f64,
 }
 
-pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 10;
+pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 20;
+pub const HISTORY_CONTINUATION_PAGE_SIZE: usize = 50;
 
 /// Opaque continuation token returned by the daemon for a specific history query.
 ///

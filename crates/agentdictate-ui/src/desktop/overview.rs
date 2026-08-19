@@ -179,6 +179,13 @@ fn activity_summary(usage: &UsageViewModel, theme: ThemeTokens) -> gpui::Div {
                     usage.cost_value(),
                     false,
                     theme,
+                ))
+                .child(summary_metric(
+                    "overview-summary-wpm",
+                    "AVG. WPM",
+                    usage.average_wpm_value(),
+                    false,
+                    theme,
                 )),
         )
 }

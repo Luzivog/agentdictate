@@ -856,8 +856,16 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
     assert!(summary.right() <= plot.left());
     harness.bounds("overview-summary-dictations");
     harness.bounds("overview-summary-words");
-    harness.bounds("overview-summary-audio");
-    harness.bounds("overview-summary-cost");
+    let audio = harness.bounds("overview-summary-audio");
+    let cost = harness.bounds("overview-summary-cost");
+    let wpm = harness.bounds("overview-summary-wpm");
+    assert!(audio.right() <= cost.left());
+    assert!(cost.right() <= wpm.left());
+    assert!(
+        [audio, cost, wpm]
+            .into_iter()
+            .all(|metric| metric.size.width >= px(90.))
+    );
     harness.bounds("overview-recent-history");
     harness.bounds("overview-recent-transcript-17");
     assert!(!harness.has("overview-metric-dictations"));
@@ -1244,10 +1252,10 @@ fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestA
 }
 
 #[gpui::test]
-fn history_page_fills_the_route_and_loads_ten_more_without_rendering_the_archive(
+fn history_page_fills_the_route_and_loads_more_without_rendering_the_archive(
     cx: &mut TestAppContext,
 ) {
-    let transcripts = (0..10)
+    let transcripts = (0..20)
         .map(|index| {
             agentdictate_ui::TranscriptViewModel::new(
                 index,
@@ -1285,8 +1293,18 @@ fn history_page_fills_the_route_and_loads_ten_more_without_rendering_the_archive
     let page = harness.bounds("history-page");
     assert!(page.size.width >= route.size.width - px(56.));
     assert!(harness.has("history-transcript-item-0"));
-    assert!(harness.has("history-transcript-item-9"));
-    assert!(!harness.has("history-transcript-item-10"));
+    assert!(harness.has("history-transcript-item-19"));
+    assert!(!harness.has("history-transcript-item-20"));
+
+    harness
+        .cx
+        .simulate_mouse_move(route.center(), None::<MouseButton>, Modifiers::none());
+    harness.cx.simulate_event(ScrollWheelEvent {
+        position: route.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
 
     harness.click("history-load-more");
     assert_eq!(
