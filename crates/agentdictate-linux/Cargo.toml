@@ -13,3 +13,6 @@ native-hotkey = ["dep:evdev"]
 agentdictate-core.workspace = true
 evdev = { version = "0.13.2", optional = true }
 libc = "0.2"
+
+[dev-dependencies]
+proptest = "1"

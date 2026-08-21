@@ -1,0 +1,276 @@
+{
+ "cases": [
+  {
+   "duration_seconds": 30.0,
+   "raw": "a",
+   "cleaned": "bbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 4.5e-07,
+    "total_cost": 0.00300045,
+    "cleanup_input_tokens": 1,
+    "cleanup_output_tokens": 1
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aa",
+   "cleaned": "bbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 4.5e-07,
+    "total_cost": 0.00300045,
+    "cleanup_input_tokens": 1,
+    "cleanup_output_tokens": 1
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaa",
+   "cleaned": "bbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 4.5e-07,
+    "total_cost": 0.00300045,
+    "cleanup_input_tokens": 1,
+    "cleanup_output_tokens": 1
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaa",
+   "cleaned": "bbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 9e-07,
+    "total_cost": 0.0030009,
+    "cleanup_input_tokens": 2,
+    "cleanup_output_tokens": 2
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaa",
+   "cleaned": "bbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 9e-07,
+    "total_cost": 0.0030009,
+    "cleanup_input_tokens": 2,
+    "cleanup_output_tokens": 2
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 1.3000000000000003e-06,
+    "total_cost": 0.0030013,
+    "cleanup_input_tokens": 2,
+    "cleanup_output_tokens": 3
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 1.3500000000000002e-06,
+    "total_cost": 0.00300135,
+    "cleanup_input_tokens": 3,
+    "cleanup_output_tokens": 3
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 1.8e-06,
+    "total_cost": 0.0030018,
+    "cleanup_input_tokens": 4,
+    "cleanup_output_tokens": 4
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 1.8e-06,
+    "total_cost": 0.0030018,
+    "cleanup_input_tokens": 4,
+    "cleanup_output_tokens": 4
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 2.2e-06,
+    "total_cost": 0.0030022,
+    "cleanup_input_tokens": 4,
+    "cleanup_output_tokens": 5
+   }
+  },
+  {
+   "duration_seconds": 30.0,
+   "raw": "aaaaaaaaaaaaaaaaaaa",
+   "cleaned": "bbbbbbbbbbbbbbbbbbbbb",
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.003,
+    "cleanup_cost": 2.2500000000000005e-06,
+    "total_cost": 0.00300225,
+    "cleanup_input_tokens": 5,
+    "cleanup_output_tokens": 5
+   }
+  },
+  {
+   "duration_seconds": 0.0,
+   "raw": "",
+   "cleaned": "",
+   "cleanup_enabled": false,
+   "transcription_price": 0.0045,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.0,
+    "cleanup_cost": 0.0,
+    "total_cost": 0.0,
+    "cleanup_input_tokens": 0,
+    "cleanup_output_tokens": 0
+   }
+  },
+  {
+   "duration_seconds": 0.0,
+   "raw": "",
+   "cleaned": null,
+   "cleanup_enabled": true,
+   "transcription_price": 0.0045,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.0,
+    "cleanup_cost": 0.0,
+    "total_cost": 0.0,
+    "cleanup_input_tokens": 0,
+    "cleanup_output_tokens": 0
+   }
+  },
+  {
+   "duration_seconds": -5.0,
+   "raw": "hello world",
+   "cleaned": "hello",
+   "cleanup_enabled": true,
+   "transcription_price": -1.0,
+   "input_price": -2.0,
+   "output_price": -3.0,
+   "expected": {
+    "transcription_cost": 0.0,
+    "cleanup_cost": 0.0,
+    "total_cost": 0.0,
+    "cleanup_input_tokens": 3,
+    "cleanup_output_tokens": 1
+   }
+  },
+  {
+   "duration_seconds": 91.0,
+   "raw": "word word word word word word word word word word ",
+   "cleaned": null,
+   "cleanup_enabled": true,
+   "transcription_price": 0.006,
+   "input_price": 0.25,
+   "output_price": 2.0,
+   "expected": {
+    "transcription_cost": 0.0091,
+    "cleanup_cost": 0.0,
+    "total_cost": 0.0091,
+    "cleanup_input_tokens": 0,
+    "cleanup_output_tokens": 0
+   }
+  },
+  {
+   "duration_seconds": 45.5,
+   "raw": "x",
+   "cleaned": "yy",
+   "cleanup_enabled": false,
+   "transcription_price": 0.003,
+   "input_price": 0.0,
+   "output_price": 0.0,
+   "expected": {
+    "transcription_cost": 0.002275,
+    "cleanup_cost": 0.0,
+    "total_cost": 0.002275,
+    "cleanup_input_tokens": 0,
+    "cleanup_output_tokens": 0
+   }
+  },
+  {
+   "duration_seconds": 120.0,
+   "raw": "zzzzzzzz",
+   "cleaned": "wwwwwwwww",
+   "cleanup_enabled": true,
+   "transcription_price": 0.0,
+   "input_price": 0.05,
+   "output_price": 0.4,
+   "expected": {
+    "transcription_cost": 0.0,
+    "cleanup_cost": 9e-07,
+    "total_cost": 9e-07,
+    "cleanup_input_tokens": 2,
+    "cleanup_output_tokens": 2
+   }
+  }
+ ]
+}

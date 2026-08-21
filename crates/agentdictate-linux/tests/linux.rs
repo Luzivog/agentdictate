@@ -12,6 +12,8 @@ mod focus;
 mod hotkey;
 #[path = "linux/hotkey_listener.rs"]
 mod hotkey_listener;
+#[path = "linux/hotkey_property.rs"]
+mod hotkey_property;
 #[path = "linux/injection.rs"]
 mod injection;
 #[path = "linux/paste_delivery.rs"]
