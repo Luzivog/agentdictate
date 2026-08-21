@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # rustup's threaded downloader can die with SIGPIPE (exit 141) while
+  # fetching toolchain components on hosted runners.
+  RUSTUP_IO_THREADS: "1"
+
 jobs:
   package:
     name: Package ${{ github.ref_name }}
@@ -25,8 +30,13 @@ jobs:
             build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig1-dev libfreetype6-dev
 
-      # The pinned toolchain from rust-toolchain.toml is installed
-      # automatically by rustup on first cargo invocation.
+      # Install the rust-toolchain.toml pin up front so download failures are
+      # isolated from the packaging steps.
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show
+
       - name: Build Debian package
         run: ./packaging/build-deb.sh
 
