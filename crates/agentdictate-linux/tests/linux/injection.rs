@@ -13,7 +13,7 @@ use agentdictate_linux::{
 use support::TestDirectory;
 
 #[test]
-fn wayland_injection_invokes_ydotool_once_with_zero_delay() {
+fn wayland_injection_paces_the_chord_for_busy_event_loops() {
     let directory = TestDirectory::new();
     let log = directory.path().join("ydotool.log");
     let ydotool = directory.executable(
@@ -37,7 +37,7 @@ fn wayland_injection_invokes_ydotool_once_with_zero_delay() {
     assert_eq!(receipt.tool, PlatformTool::Ydotool);
     assert_eq!(
         fs::read_to_string(log).expect("invocation log"),
-        "key --delay 0 --key-delay 0 ctrl+v\n"
+        "key --delay 50 --key-delay 25 ctrl+v\n"
     );
 }
 
@@ -65,7 +65,7 @@ fn universal_injection_sends_shift_insert() {
 
     assert_eq!(
         fs::read_to_string(log).expect("invocation log"),
-        "key --delay 0 --key-delay 0 shift+insert\n"
+        "key --delay 50 --key-delay 25 shift+insert\n"
     );
 }
 

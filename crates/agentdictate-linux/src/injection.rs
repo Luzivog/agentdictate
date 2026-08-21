@@ -59,12 +59,15 @@ impl PasteInjector {
             ClipboardProtocol::Wayland => (
                 PlatformCapability::WaylandPasteInjection,
                 &self.ydotool,
+                // Paced like a physical chord: busy application event loops
+                // (Electron in particular) intermittently drop zero-gap
+                // synthetic press/release bursts.
                 vec![
                     OsString::from("key"),
                     OsString::from("--delay"),
-                    OsString::from("0"),
+                    OsString::from("50"),
                     OsString::from("--key-delay"),
-                    OsString::from("0"),
+                    OsString::from("25"),
                     OsString::from(shortcut),
                 ],
             ),
