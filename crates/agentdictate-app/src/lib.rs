@@ -4,7 +4,7 @@ use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
 mod audio_ducking;
 mod daemon;
-mod diagnostics;
+pub mod diagnostics;
 mod model_catalog;
 mod openai;
 mod overlay_process;
