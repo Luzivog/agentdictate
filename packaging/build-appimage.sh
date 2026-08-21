@@ -10,7 +10,9 @@ if [[ -z "${VERSION}" ]]; then
   exit 1
 fi
 DESKTOP_ID="local.agentdictate.AgentDictate"
-RUST_HOST="$(rustc -vV | awk '/^host: / { print $2; exit }')"
+# Consume the full rustc output; exiting early can SIGPIPE the rustup shim
+# under pipefail.
+RUST_HOST="$(rustc -vV | awk '/^host: / { host = $2 } END { print host }')"
 case "${RUST_HOST%%-*}" in
   x86_64) APPIMAGE_ARCH="x86_64" ;;
   aarch64) APPIMAGE_ARCH="aarch64" ;;

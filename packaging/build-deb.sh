@@ -9,7 +9,9 @@ if [[ -z "${VERSION}" ]]; then
   exit 1
 fi
 ARCHITECTURE="$(dpkg --print-architecture)"
-RUST_HOST="$(rustc -vV | awk '/^host: / { print $2; exit }')"
+# Consume the full rustc output; exiting early can SIGPIPE the rustup shim
+# under pipefail.
+RUST_HOST="$(rustc -vV | awk '/^host: / { host = $2 } END { print host }')"
 case "${RUST_HOST%%-*}" in
   x86_64) EXPECTED_ARCHITECTURE="amd64" ;;
   aarch64) EXPECTED_ARCHITECTURE="arm64" ;;
