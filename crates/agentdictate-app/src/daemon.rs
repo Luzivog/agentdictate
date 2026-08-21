@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::{ActiveRecordingUpdate, AppPaths, OverlayUpdate};
 
-const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
+pub(crate) const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CapturedRecording {

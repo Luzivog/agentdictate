@@ -17,13 +17,13 @@ use agentdictate_core::{
     WorkspaceSnapshot,
 };
 use agentdictate_runtime::IpcClient;
+
+use crate::daemon::OVERVIEW_RECENT_HISTORY_LIMIT;
 use agentdictate_ui::{
     HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel, RecoveryStage,
     ReplacementRuleViewModel, ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel,
     UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
-
-const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
 pub struct WorkspaceClient {
     runtime_directory: PathBuf,

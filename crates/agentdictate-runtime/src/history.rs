@@ -43,6 +43,9 @@ pub struct HistoryQuery {
     pub after: Option<HistoryCursor>,
 }
 
+/// Storage-side continuation state. Decoded from the protocol's opaque
+/// `HistoryPageCursor` at the IPC boundary so persistence never trusts
+/// client-constructed pagination state.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
 pub struct HistoryCursor(String);
