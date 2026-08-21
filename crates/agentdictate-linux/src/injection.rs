@@ -51,6 +51,7 @@ impl PasteInjector {
         deadline: Instant,
     ) -> Result<InjectionReceipt, PlatformCommandError> {
         let shortcut = match shortcut {
+            PasteShortcut::Universal => "shift+insert",
             PasteShortcut::Standard => "ctrl+v",
             PasteShortcut::Terminal => "ctrl+shift+v",
         };

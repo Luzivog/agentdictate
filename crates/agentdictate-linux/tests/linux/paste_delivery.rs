@@ -21,7 +21,7 @@ fn paste_is_not_injected_until_clipboard_readiness_is_observed() {
         delivery.advance(DeliveryObservation::Focus(target.clone())),
         DeliveryAction::InjectPaste {
             target,
-            shortcut: PasteShortcut::Standard,
+            shortcut: PasteShortcut::Universal,
         }
     );
 }
@@ -153,7 +153,7 @@ fn x11_focus_identity_is_the_window_id_not_mutable_class_metadata() {
         delivery.advance(DeliveryObservation::Focus(same_window.clone())),
         DeliveryAction::InjectPaste {
             target: same_window,
-            shortcut: PasteShortcut::Standard,
+            shortcut: PasteShortcut::Universal,
         }
     );
 }
@@ -204,19 +204,48 @@ fn confirmed_injection_completes_as_copied_and_pasted() {
 }
 
 #[test]
-fn delivery_follows_current_focus_and_uses_terminal_paste_without_refocusing() {
+fn auto_mode_injects_the_universal_shortcut_without_identifying_the_app() {
     let chat = FocusTarget::x11("42", "chatgpt Chatgpt");
-    let terminal = FocusTarget::x11("84", "kitty kitty");
+    let terminal = FocusTarget::wayland();
     let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
 
     delivery.advance(DeliveryObservation::Focus(chat));
     delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
     assert_eq!(
         delivery.advance(DeliveryObservation::Focus(terminal.clone())),
-        DeliveryAction::ObserveFocus
+        DeliveryAction::PublishClipboard(ClipboardProtocol::Wayland)
     );
+    delivery.advance(DeliveryObservation::ClipboardReady(
+        ClipboardProtocol::Wayland,
+    ));
     assert_eq!(
         delivery.advance(DeliveryObservation::Focus(terminal.clone())),
+        DeliveryAction::InjectPaste {
+            target: terminal,
+            shortcut: PasteShortcut::Universal,
+        }
+    );
+}
+
+#[test]
+fn explicit_modes_pin_their_shortcut_regardless_of_window_class() {
+    let terminal = FocusTarget::x11("84", "kitty kitty");
+    let mut standard = PasteDelivery::new(ShortcutMode::Standard);
+    standard.advance(DeliveryObservation::Focus(terminal.clone()));
+    standard.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    assert_eq!(
+        standard.advance(DeliveryObservation::Focus(terminal.clone())),
+        DeliveryAction::InjectPaste {
+            target: terminal.clone(),
+            shortcut: PasteShortcut::Standard,
+        }
+    );
+
+    let mut forced_terminal = PasteDelivery::new(ShortcutMode::Terminal);
+    forced_terminal.advance(DeliveryObservation::Focus(terminal.clone()));
+    forced_terminal.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    assert_eq!(
+        forced_terminal.advance(DeliveryObservation::Focus(terminal.clone())),
         DeliveryAction::InjectPaste {
             target: terminal,
             shortcut: PasteShortcut::Terminal,

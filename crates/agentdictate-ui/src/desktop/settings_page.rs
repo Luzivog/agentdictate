@@ -517,7 +517,7 @@ fn delivery_storage_section(
     )
     .child(select_row(
         "Paste shortcut",
-        "Automatic chooses the native shortcut for the active app",
+        "Automatic pastes with Shift+Insert, which works in terminals and apps alike",
         &settings.paste_shortcut,
         "settings-input-paste-shortcut",
         editor.map(|editor| editor.paste_shortcut.clone()),

@@ -1104,7 +1104,7 @@ fn recording_mode_options() -> Vec<SettingOption> {
 
 fn paste_shortcut_options() -> Vec<SettingOption> {
     setting_options(&[
-        ("Automatic", "Automatic"),
+        ("Automatic (Shift+Insert)", "Automatic"),
         ("Standard (Ctrl+V)", "Standard (Ctrl+V)"),
         ("Terminal (Ctrl+Shift+V)", "Terminal (Ctrl+Shift+V)"),
     ])
