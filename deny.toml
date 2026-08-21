@@ -1,0 +1,28 @@
+# cargo-deny configuration: advisories, licenses, and duplicate detection.
+# Run with `cargo deny check` (install: cargo install cargo-deny --locked).
+
+[advisories]
+version = 2
+yanked = "warn"
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+# Workspace inheritance (`foo.workspace = true`) registers as a wildcard.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

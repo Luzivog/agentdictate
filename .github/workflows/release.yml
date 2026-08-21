@@ -1,0 +1,47 @@
+name: Release
+
+# Tag-gated packaging only. This workflow never runs on ordinary pushes or
+# pull requests, and GitHub Actions on this public repository do not consume
+# usage minutes for standard runners.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype6-dev
+
+      # The pinned toolchain from rust-toolchain.toml is installed
+      # automatically by rustup on first cargo invocation.
+      - name: Build Debian package
+        run: ./packaging/build-deb.sh
+
+      - name: Build AppImage
+        run: |
+          mkdir -p dist/tools
+          curl -fsSL -o dist/tools/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod 0755 dist/tools/appimagetool-x86_64.AppImage
+          ./packaging/build-appimage.sh
+
+      - name: Publish release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.deb
+            dist/*.AppImage
