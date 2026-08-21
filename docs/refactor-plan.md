@@ -1,53 +1,102 @@
-# AgentDictate Refactor Plan
+# AgentDictate Architecture
 
-## Goals
+AgentDictate is a native Linux dictation app written in Rust. A daemon records
+audio, transcribes it through the OpenAI speech-to-text API, and pastes the
+transcript into the focused window. A GPUI desktop app provides settings and
+history. The workspace is split by responsibility; dependencies flow downward.
 
-- Keep recording, transcription, cleanup, paste, storage, and UI concerns in clear modules.
-- Preserve existing runtime behavior while reducing the size and coupling of `ui.py`.
-- Prefer small, mechanical moves first so behavior changes remain easy to review.
+## Crate Layering
 
-## Current Boundaries
+```
+                 +----------------------+
+                 |   agentdictate-app   |
+                 | agentdictated daemon |
+                 | agentdictate desktop |
+                 +----------+-----------+
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
+        v                   v                   v
++---------------+ +-----------------+ +---------------+
+|    runtime    | |      linux      | |       ui      |
++-------+-------+ +--------+--------+ +-------+-------+
+        |                   |                  |
+        +-------------------+------------------+
+                            |
+                            v
+                  +-------------------+
+                  |       core        |
+                  +-------------------+
 
-- `controller.py` coordinates the dictation workflow and owns cross-cutting session state.
-- `ui.py` owns the GTK application shell, settings tabs, tray menu, status propagation, overlay, history views, stats views, and custom drawing.
-- `storage.py` owns persistence and reporting queries.
-- Audio capture, playback feedback, ducking, hotkeys, clipboard, OpenAI calls, startup, and replacements already live in separate modules.
+Arrows show "depends on": app -> {runtime, linux, ui} -> core.
+runtime, linux, and ui do not depend on each other.
+```
 
-## Phase 1: UI Infrastructure Extraction
+## Crates
 
-Status: implemented.
+- **agentdictate-core**: Platform-independent domain types: protocol v2 wire
+  messages and command enums, settings, the spoken-replacement engine,
+  transcription cost estimation, and the dictation workflow state machine.
+  Depends on nothing Linux-specific.
+- **agentdictate-runtime**: Durable state on top of core: SQLite history with
+  FTS5 search, model pricing tables, recovery of interrupted recordings, usage
+  reporting, and the IPC server over a Unix domain socket.
+- **agentdictate-linux**: Desktop integration: PipeWire recording, evdev
+  hotkey listening with udev-driven recovery, clipboard publication, paced
+  paste-chord injection, and focus observation.
+- **agentdictate-ui**: Toolkit-free view models plus GPUI presentation behind
+  the `desktop` feature, including route surfaces and the recording overlay.
+  The view models stay testable without a display server.
+- **agentdictate-app**: Composition root. Builds the `agentdictated` daemon
+  binary and the `agentdictate` desktop binary, wires all crates together, and
+  implements the OpenAI transcriber.
 
-- Move reusable GTK drawing widgets to `widgets.py`.
-- Move the recording status overlay, overlay helper process, and helper IPC to `overlay.py`.
-- Keep overlay placement logic unchanged: centered near the bottom of the primary monitor and constrained above the work area.
-- Keep `AgentDictateGtkApp` responsible for application lifecycle, tray integration, settings pages, history, and stats wiring.
+## Daemon And Settings App Communication
 
-## Phase 2: Settings UI Decomposition
+The settings app (`agentdictate`) talks to the daemon (`agentdictated`) over a
+Unix domain socket at `$XDG_RUNTIME_DIR/agentdictate/agentdictate.sock`,
+created with mode 0600 and guarded by a singleton lock file so only one daemon
+listens.
 
-Status: planned.
+The protocol is newline-delimited JSON, versioned by `protocol_version`
+(currently 2) carried in every message. On connect the daemon pushes a full
+snapshot before waiting for commands, so reconnects never depend on replayed
+events; subsequent commands receive per-command responses. While connected,
+the desktop app watches the SQLite database and the model-catalog cache file
+with inotify and refreshes its workspace when they change, so writes made by
+the daemon appear without polling or debounce delays.
 
-- Extract settings tab builders into a `settings_ui.py` module or package.
-- Keep persistence of `Settings` in `config.py`; UI modules should only read from and write to a `Settings` instance.
-- Preserve `AgentDictateGtkApp` as the owner of save/apply actions until the settings surface is split enough to introduce a presenter cleanly.
+## Text Delivery Pipeline
 
-## Phase 3: History And Stats Views
+After transcription, the daemon delivers text to the focused application:
 
-Status: planned.
+1. Observe the focused window.
+2. Publish the transcript to the clipboard using `wl-copy` (Wayland) or a
+   live non-detaching `xsel` owner (X11), then read the clipboard back to
+   verify the content actually landed.
+3. Inject one paced paste chord: `ydotool key shift+insert` via uinput on
+   Wayland, or `xdotool` on X11.
 
-- Extract history list/detail rendering and actions into a dedicated view module.
-- Extract stats labels and graph refresh logic into a stats view module.
-- Keep storage queries in `storage.py`; view modules should receive prepared rows or call through app-owned storage adapters.
+Auto shortcut mode sends Shift+Insert universally because Wayland cannot
+observe window classes, so no per-application chord selection is possible.
 
-## Phase 4: Controller Workflow Boundaries
+Injection follows a single-injection-no-retry policy. A retry after a failed
+or ambiguous paste risks duplicating already-inserted text, which is worse
+than missing text the user can re-dictate. A failure is reported once and the
+user decides what happens next.
 
-Status: planned.
+## Runtime Data Locations
 
-- Split long workflow branches in `controller.py` into session-oriented helpers only if duplication or test complexity justifies it.
-- Keep external side effects injectable where practical: audio recorder, OpenAI client, clipboard paste, feedback, storage, and audio ducking.
-- Add focused unit tests around each extracted workflow seam before changing behavior.
+Runtime data lives under XDG directories, each created with mode 0700:
 
-## Review Rules
+- `~/.config/agentdictate/config.json` — settings; autostart entry at
+  `~/.config/autostart/local.agentdictate.AgentDictate.desktop`.
+- `~/.local/share/agentdictate/` — SQLite history database (`agentdictate.sqlite`)
+  and retained audio under `recordings/`.
+- `~/.local/state/agentdictate/logs/` — logs.
+- `~/.cache/agentdictate/` — model catalog cache (`model-catalog.json`).
+- `$XDG_RUNTIME_DIR/agentdictate/` — IPC socket and singleton lock; not durable.
 
-- Each phase should pass `./run-tests.sh`.
-- Refactor-only commits should not change public defaults, config schema meaning, overlay placement, or runtime data locations.
-- Behavior changes should be separate commits from mechanical moves unless the behavior change is required to make the move safe.
+A legacy Python implementation under `src/agentdictate/` remains only as a
+migration-parity suite; installed binaries are Rust-only. See
+[docs/parity-exit-strategy.md](parity-exit-strategy.md) for its exit strategy.

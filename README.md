@@ -22,6 +22,39 @@
 - **Custom** — optional prompt cleanup and spoken replacements.
 - **Searchable** — local, typo-tolerant transcript history.
 
+## Architecture
+
+AgentDictate is a Rust workspace of five crates:
+
+```
+                 +----------------------+
+                 |   agentdictate-app   |
+                 | agentdictated daemon |
+                 | agentdictate desktop |
+                 +----------+-----------+
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
+        v                   v                   v
++---------------+ +-----------------+ +---------------+
+|    runtime    | |      linux      | |       ui      |
++-------+-------+ +--------+--------+ +-------+-------+
+        |                   |                  |
+        +-------------------+------------------+
+                            |
+                            v
+                  +-------------------+
+                  |       core        |
+                  +-------------------+
+```
+
+Platform-independent domain logic lives in `core`; `runtime`, `linux`, and
+`ui` each add one concern (persistence/IPC, desktop integration, presentation)
+and depend only on `core`; `app` composes everything into the two binaries.
+See [docs/refactor-plan.md](docs/refactor-plan.md) for the full architecture
+and [docs/parity-exit-strategy.md](docs/parity-exit-strategy.md) for how the
+legacy Python migration suite will be retired.
+
 ## Install
 
 The source installer currently targets Ubuntu/Debian. Install the [system prerequisites](docs/INSTALL.md#requirements), then:
