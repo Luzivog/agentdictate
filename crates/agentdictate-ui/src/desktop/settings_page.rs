@@ -1,5 +1,22 @@
-use super::*;
+use gpui::{Context, Entity, prelude::*, px};
+use gpui_component::{
+    Disableable, Selectable, Sizable,
+    button::{ButtonCustomVariant, ButtonVariants},
+    h_flex,
+    input::{Input, InputState, NumberInput},
+    select::Select,
+    v_flex,
+};
+
 use crate::action::action_button;
+use crate::{ModelCatalogViewModel, SettingsDraft, ThemeTokens};
+
+use super::{
+    SettingsShell, SettingsSurfaceModel, gpui_color,
+    settings_controller::{
+        SettingOption, SettingSelectState, SettingsEditorState, selected_setting,
+    },
+};
 
 /// Keeps short controls compact while allowing long-form prompts to use the
 /// page width. This is the single sizing policy for Settings controls.
@@ -911,4 +928,49 @@ fn stacked_setting_label(
 
 const fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "On" } else { "Off" }
+}
+
+fn setting_options(options: &[(&str, &str)]) -> Vec<SettingOption> {
+    options
+        .iter()
+        .map(|(label, value)| SettingOption::new((*label).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+pub(super) fn language_options() -> Vec<SettingOption> {
+    setting_options(&[
+        ("Auto-detect", ""),
+        ("English (en)", "en"),
+        ("French (fr)", "fr"),
+        ("Spanish (es)", "es"),
+        ("German (de)", "de"),
+        ("Portuguese (pt)", "pt"),
+        ("Italian (it)", "it"),
+        ("Dutch (nl)", "nl"),
+        ("Polish (pl)", "pl"),
+        ("Arabic (ar)", "ar"),
+        ("Chinese (zh)", "zh"),
+        ("Japanese (ja)", "ja"),
+        ("Korean (ko)", "ko"),
+        ("Hindi (hi)", "hi"),
+    ])
+}
+
+pub(super) fn cleanup_style_options() -> Vec<SettingOption> {
+    setting_options(&[
+        ("Light cleanup", "Light cleanup"),
+        ("Structured coding prompt", "Structured coding prompt"),
+    ])
+}
+
+pub(super) fn recording_mode_options() -> Vec<SettingOption> {
+    setting_options(&[("Toggle", "toggle"), ("Hold", "hold")])
+}
+
+pub(super) fn paste_shortcut_options() -> Vec<SettingOption> {
+    setting_options(&[
+        ("Automatic (Shift+Insert)", "Automatic"),
+        ("Standard (Ctrl+V)", "Standard (Ctrl+V)"),
+        ("Terminal (Ctrl+Shift+V)", "Terminal (Ctrl+Shift+V)"),
+    ])
 }
