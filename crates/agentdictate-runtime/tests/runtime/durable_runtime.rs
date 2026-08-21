@@ -112,14 +112,14 @@ impl Transcriber for CountingTranscriber {
     }
 }
 
-struct CountingCommittedDeliverer {
+struct CountingSubmittedDeliverer {
     attempts: usize,
 }
 
-impl Deliverer for CountingCommittedDeliverer {
+impl Deliverer for CountingSubmittedDeliverer {
     fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
-        Ok(DeliveryDisposition::Committed {
+        Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
         })
@@ -143,7 +143,7 @@ impl Deliverer for InspectingDeliverer {
         self.saw_durable_delivery_attempt = reader
             .job(job.id)?
             .is_some_and(|persisted| persisted.delivery_status == DeliveryStatus::Attempting);
-        Ok(DeliveryDisposition::Committed {
+        Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
         })
@@ -367,7 +367,7 @@ fn transcript_is_durable_before_delivery_is_attempted() {
     runtime.capture_recording(job.id, 31.0).unwrap();
     let mut transcriber = FixedTranscriber;
     let mut deliverer = InspectingDeliverer {
-        database_path,
+        database_path: database_path.clone(),
         saw_persisted_transcript: false,
         saw_durable_delivery_attempt: false,
     };
@@ -379,8 +379,80 @@ fn transcript_is_durable_before_delivery_is_attempted() {
     assert!(deliverer.saw_persisted_transcript);
     assert!(deliverer.saw_durable_delivery_attempt);
     assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(delivered.delivery_status, DeliveryStatus::Submitted);
     assert!(delivered.copied_to_clipboard);
     assert!(delivered.paste_triggered);
+    drop(runtime);
+    assert_eq!(
+        rusqlite::Connection::open(&database_path)
+            .unwrap()
+            .query_row(
+                "SELECT delivery_status FROM dictation_jobs WHERE runtime_id = ?1",
+                [job.id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "submitted"
+    );
+    let restarted = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
+    assert_eq!(
+        restarted.job(job.id).unwrap().unwrap().delivery_status,
+        DeliveryStatus::Submitted
+    );
+    assert!(restarted.recovery_entries().unwrap().is_empty());
+}
+
+#[test]
+fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let mut recorder = InspectingRecorder {
+        database_path: database_path.clone(),
+        saw_durable_starting_job: false,
+    };
+    let job = runtime
+        .start_recording(
+            request(&directory.path().join("recordings/legacy-committed.wav")),
+            &mut recorder,
+        )
+        .unwrap();
+    runtime.capture_recording(job.id, 5.0).unwrap();
+    let delivered = runtime
+        .process_captured(
+            job.id,
+            &mut FixedTranscriber,
+            &mut CountingSubmittedDeliverer { attempts: 0 },
+        )
+        .unwrap();
+    assert_eq!(delivered.delivery_status, DeliveryStatus::Submitted);
+    drop(runtime);
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute(
+            "UPDATE dictation_jobs SET delivery_status = 'committed' WHERE runtime_id = ?1",
+            [job.id.to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        rusqlite::Connection::open(&database_path)
+            .unwrap()
+            .query_row(
+                "SELECT delivery_status FROM dictation_jobs WHERE runtime_id = ?1",
+                [job.id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "committed"
+    );
+
+    let restarted = Runtime::open(&database_path).unwrap();
+
+    assert_eq!(
+        restarted.job(job.id).unwrap().unwrap().delivery_status,
+        DeliveryStatus::Submitted
+    );
+    assert!(restarted.recovery_entries().unwrap().is_empty());
 }
 
 #[test]
@@ -403,7 +475,7 @@ fn transcribing_stage_is_durable_before_the_network_adapter_runs() {
         database_path,
         saw_durable_transcribing_job: false,
     };
-    let mut deliverer = CountingCommittedDeliverer { attempts: 0 };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     runtime
         .process_captured(job.id, &mut transcriber, &mut deliverer)
@@ -488,7 +560,7 @@ fn duplicate_processing_signal_cannot_transcribe_or_paste_a_delivered_job_again(
         .unwrap();
     runtime.capture_recording(job.id, 2.0).unwrap();
     let mut transcriber = CountingTranscriber { attempts: 0 };
-    let mut deliverer = CountingCommittedDeliverer { attempts: 0 };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     runtime
         .process_captured(job.id, &mut transcriber, &mut deliverer)
         .unwrap();
@@ -639,7 +711,7 @@ fn captured_checkpoint_can_be_retried_after_restart() {
         JobStage::Captured
     );
     let mut transcriber = CountingTranscriber { attempts: 0 };
-    let mut deliverer = CountingCommittedDeliverer { attempts: 0 };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     let delivered = runtime
         .retry_transcription(job.id, &mut transcriber, &mut deliverer)
@@ -667,7 +739,7 @@ fn failed_transcription_can_be_retried_explicitly_without_a_duplicate_first_atte
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
     let mut failing = FailingTranscriber { attempts: 0 };
-    let mut deliverer = CountingCommittedDeliverer { attempts: 0 };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     assert!(
         runtime
             .process_captured(job.id, &mut failing, &mut deliverer)
@@ -706,13 +778,13 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
     runtime
         .process_captured(job.id, &mut transcriber, &mut ambiguous)
         .unwrap();
-    let mut committed = CountingCommittedDeliverer { attempts: 0 };
+    let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime.retry_delivery(job.id, &mut committed).unwrap();
+    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
 
     assert_eq!(transcriber.attempts, 1);
     assert_eq!(ambiguous.attempts, 1);
-    assert_eq!(committed.attempts, 1);
+    assert_eq!(submitted.attempts, 1);
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert_eq!(delivered.final_text, "Only once.");
 }
@@ -745,12 +817,12 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
             [job.id.to_string()],
         )
         .unwrap();
-    let mut committed = CountingCommittedDeliverer { attempts: 0 };
+    let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let error = runtime.retry_delivery(job.id, &mut committed).unwrap_err();
+    let error = runtime.retry_delivery(job.id, &mut submitted).unwrap_err();
 
     assert!(error.to_string().contains("no durable outcome"));
-    assert_eq!(committed.attempts, 0);
+    assert_eq!(submitted.attempts, 0);
 }
 
 #[test]
@@ -887,7 +959,7 @@ fn enabled_replacements_are_applied_after_cleanup_and_before_delivery() {
         .unwrap();
     runtime.capture_recording(job.id, 4.0).unwrap();
     let mut transcriber = FixedTranscriber;
-    let mut deliverer = CountingCommittedDeliverer { attempts: 0 };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     let delivered = runtime
         .process_captured(job.id, &mut transcriber, &mut deliverer)

@@ -29,11 +29,11 @@ impl Transcriber for CleaningTranscriber {
     }
 }
 
-struct CommittedDeliverer;
+struct SubmittedDeliverer;
 
-impl Deliverer for CommittedDeliverer {
+impl Deliverer for SubmittedDeliverer {
     fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
-        Ok(DeliveryDisposition::Committed {
+        Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
         })
@@ -68,7 +68,7 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
         .unwrap();
     runtime.capture_recording(job.id, 60.0).unwrap();
     runtime
-        .process_captured(job.id, &mut CleaningTranscriber, &mut CommittedDeliverer)
+        .process_captured(job.id, &mut CleaningTranscriber, &mut SubmittedDeliverer)
         .unwrap()
 }
 

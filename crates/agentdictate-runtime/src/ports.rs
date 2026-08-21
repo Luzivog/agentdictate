@@ -121,7 +121,7 @@ pub trait Transcriber {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryDisposition {
-    Committed {
+    Submitted {
         copied_to_clipboard: bool,
         paste_triggered: bool,
     },
@@ -135,7 +135,7 @@ pub enum DeliveryDisposition {
 pub enum DeliveryStatus {
     NotAttempted,
     Attempting,
-    Committed,
+    Submitted,
     Ambiguous,
 }
 

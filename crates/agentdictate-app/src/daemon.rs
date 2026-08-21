@@ -225,11 +225,10 @@ where
             .apply(WorkflowSignal::DeliveryStarted { job_id: id })?;
         if result.stage == JobStage::Delivered {
             self.workflow
-                .apply(WorkflowSignal::DeliveryCommitted { job_id: id })?;
+                .apply(WorkflowSignal::DeliverySubmitted { job_id: id })?;
             if let Err(error) = self.runtime.record_delivered_session(id, &self.settings) {
-                // Delivery already reached the target application. A secondary
-                // analytics failure must never turn that committed outcome into
-                // a retryable delivery and risk a duplicate paste.
+                // The paste command was already submitted. A secondary analytics
+                // failure must never make it retryable and risk a duplicate paste.
                 tracing::error!(job_id = %id, %error, "could not record delivered session history");
             }
             self.cleanup_delivered_audio(&result);

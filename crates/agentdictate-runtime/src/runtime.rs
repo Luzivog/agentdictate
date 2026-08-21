@@ -527,7 +527,7 @@ impl Runtime {
             }
         };
         match disposition {
-            DeliveryDisposition::Committed {
+            DeliveryDisposition::Submitted {
                 copied_to_clipboard,
                 paste_triggered,
             } => {
@@ -536,7 +536,7 @@ impl Runtime {
                     UPDATE dictation_jobs
                     SET state = 'delivered', stage = 'delivered', updated_at = ?1,
                         copied_to_clipboard = ?2, paste_triggered = ?3,
-                        delivery_status = 'committed', error_message = NULL
+                        delivery_status = 'submitted', error_message = NULL
                     WHERE runtime_id = ?4
                     "#,
                     params![

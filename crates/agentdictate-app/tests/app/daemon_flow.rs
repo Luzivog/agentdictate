@@ -98,14 +98,14 @@ impl Transcriber for FixedTranscriber {
 }
 
 #[derive(Default)]
-struct CommittedDelivery {
+struct SubmittedDelivery {
     attempts: usize,
 }
 
-impl Deliverer for CommittedDelivery {
+impl Deliverer for SubmittedDelivery {
     fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
-        Ok(DeliveryDisposition::Committed {
+        Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
         })
@@ -128,7 +128,7 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
         paths.clone(),
         recorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
 
     let started = daemon.start_recording().unwrap();
@@ -177,7 +177,7 @@ fn daemon_publishes_active_wav_metadata_only_to_the_overlay_channel() {
         paths,
         recorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let (sender, receiver) = std::sync::mpsc::channel();
     daemon.set_overlay_sender(sender);
@@ -216,7 +216,7 @@ fn recorder_finalize_failure_is_immediately_durable_and_recoverable() {
         paths.clone(),
         FailingFinishRecorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
 
@@ -248,7 +248,7 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
         paths.clone(),
         PreservingRecorder::default(),
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let (sender, receiver) = std::sync::mpsc::channel();
     daemon.set_overlay_sender(sender);
@@ -308,7 +308,7 @@ fn escape_discards_audio_and_returns_ready_even_when_audio_retention_is_enabled(
         paths.clone(),
         PreservingRecorder::default(),
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
 
@@ -333,7 +333,7 @@ fn failed_escape_delete_restores_audio_and_surfaces_recovery_attention() {
         paths.clone(),
         PreservingRecorder::default(),
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
     rusqlite::Connection::open(&paths.database_file)
@@ -376,7 +376,7 @@ fn escape_finalize_failure_preserves_partial_audio_for_recovery() {
         paths.clone(),
         FailingFinishRecorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
 
@@ -406,7 +406,7 @@ fn discard_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
         paths.clone(),
         PreservingRecorder::default(),
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
     let connection = rusqlite::Connection::open(&paths.database_file).unwrap();
@@ -450,7 +450,7 @@ fn recorder_start_failure_is_published_as_recoverable_attention() {
         paths,
         FailingStartRecorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
 
     assert!(daemon.start_recording().is_err());
@@ -481,7 +481,7 @@ fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() 
         paths.clone(),
         recorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
 
@@ -524,7 +524,7 @@ fn graceful_shutdown_finalizes_and_preserves_active_audio_for_recovery() {
         paths.clone(),
         recorder,
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let started = daemon.start_recording().unwrap();
 
@@ -595,7 +595,7 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
             started_after_checkpoint: false,
         },
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
 
     let workspace = daemon.workspace_snapshot().unwrap();
@@ -634,7 +634,7 @@ fn daemon_restarts_an_expired_fuzzy_cursor_at_page_one() {
             started_after_checkpoint: false,
         },
         FixedTranscriber,
-        CommittedDelivery::default(),
+        SubmittedDelivery::default(),
     );
     let first_page = daemon
         .history_page_snapshot(HistoryPageRequest {

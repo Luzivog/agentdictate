@@ -449,15 +449,32 @@ impl Deliverer for SystemDeliverer {
                 DeliveryAction::InjectPaste { target, shortcut } => {
                     // This is deliberately exactly one injection. Once the
                     // command starts, an error is ambiguous and must not retry.
-                    let sent = self
-                        .injector
-                        .inject(target.protocol(), shortcut, deadline)
-                        .is_ok();
+                    let protocol = target.protocol();
+                    let sent = match self.injector.inject(protocol, shortcut, deadline) {
+                        Ok(receipt) => {
+                            tracing::info!(
+                                ?protocol,
+                                ?shortcut,
+                                tool = receipt.tool.executable_name(),
+                                "paste command submitted"
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                ?protocol,
+                                ?shortcut,
+                                %error,
+                                "paste command outcome is ambiguous"
+                            );
+                            false
+                        }
+                    };
                     delivery.advance(DeliveryObservation::InjectionFinished(sent))
                 }
                 DeliveryAction::Finished(result) => {
                     return match result.failure {
-                        None => Ok(DeliveryDisposition::Committed {
+                        None => Ok(DeliveryDisposition::Submitted {
                             copied_to_clipboard: result.copied,
                             paste_triggered: result.paste_triggered,
                         }),
@@ -521,6 +538,98 @@ mod tests {
 
         assert_eq!(result, None);
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn successful_paste_command_is_reported_as_submitted() {
+        let directory = tempdir().unwrap();
+        let clipboard_state = directory.path().join("clipboard.txt");
+        let xsel = directory.path().join("xsel");
+        fs::write(
+            &xsel,
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "case \"$*\" in\n",
+                    "  *--output*) cat '{}' ;;\n",
+                    "  *) cat > '{}'; exec tail -f /dev/null ;;\n",
+                    "esac\n",
+                ),
+                clipboard_state.display(),
+                clipboard_state.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&xsel, fs::Permissions::from_mode(0o755)).unwrap();
+        let xdotool = directory.path().join("xdotool");
+        fs::write(
+            &xdotool,
+            "#!/bin/sh\ncase \"$1\" in\n  getactivewindow) printf '42\\n' ;;\n  key) exit 0 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&xdotool, fs::Permissions::from_mode(0o755)).unwrap();
+        let xprop = directory.path().join("xprop");
+        fs::write(
+            &xprop,
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' 'WM_CLASS(STRING) = \"chatgpt\", \"Chatgpt\"'\n",
+                "printf '%s\\n' '_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED'\n",
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&xprop, fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = SystemCommandRunner;
+        let xdotool = PlatformExecutable::at(PlatformTool::Xdotool, xdotool);
+        let mut deliverer = SystemDeliverer {
+            clipboard: CommandClipboard::new(
+                runner,
+                PlatformExecutable::missing(PlatformTool::WlCopy),
+                PlatformExecutable::missing(PlatformTool::WlPaste),
+                PlatformExecutable::at(PlatformTool::Xsel, xsel),
+            ),
+            focus: X11FocusObserver::new(
+                runner,
+                xdotool.clone(),
+                PlatformExecutable::at(PlatformTool::Xprop, xprop),
+            ),
+            injector: PasteInjector::new(
+                runner,
+                PlatformExecutable::missing(PlatformTool::Ydotool),
+                xdotool,
+            ),
+            shortcut_mode: ShortcutMode::Standard,
+            wayland_session: false,
+            active_publication: None,
+        };
+        let now = Utc::now();
+        let job = RecordingJob {
+            id: JobId::new(),
+            legacy_id: 1,
+            started_at: now,
+            updated_at: now,
+            stage: JobStage::ReadyToDeliver,
+            audio_path: directory.path().join("recording.wav"),
+            duration_seconds: 1.0,
+            transcription_model: "test".to_owned(),
+            raw_transcript: "submitted words".to_owned(),
+            final_text: "Submitted words.".to_owned(),
+            copied_to_clipboard: false,
+            paste_triggered: false,
+            delivery_status: DeliveryStatus::NotAttempted,
+            error_message: None,
+            cleanup_error: None,
+        };
+
+        let disposition = deliverer.deliver(&job).unwrap();
+
+        assert_eq!(
+            disposition,
+            DeliveryDisposition::Submitted {
+                copied_to_clipboard: true,
+                paste_triggered: true,
+            }
+        );
     }
 
     use super::*;

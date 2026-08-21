@@ -68,7 +68,7 @@ fn completed_dictation_returns_the_workflow_to_ready() {
         .apply(WorkflowSignal::DeliveryStarted { job_id })
         .unwrap();
     let completed = workflow
-        .apply(WorkflowSignal::DeliveryCommitted { job_id })
+        .apply(WorkflowSignal::DeliverySubmitted { job_id })
         .unwrap();
 
     assert_eq!(completed.phase, WorkflowPhase::Ready);

@@ -534,7 +534,7 @@ fn delivery_storage_section(
     )
     .child(select_row(
         "Paste shortcut",
-        "Automatic pastes with Shift+Insert, which works in terminals and apps alike",
+        "Automatic uses Ctrl+Shift+V for detected terminals and Ctrl+V otherwise",
         &settings.paste_shortcut,
         "settings-input-paste-shortcut",
         editor.map(|editor| editor.paste_shortcut.clone()),
@@ -969,7 +969,7 @@ pub(super) fn recording_mode_options() -> Vec<SettingOption> {
 
 pub(super) fn paste_shortcut_options() -> Vec<SettingOption> {
     setting_options(&[
-        ("Automatic (Shift+Insert)", "Automatic"),
+        ("Automatic", "Automatic"),
         ("Standard (Ctrl+V)", "Standard (Ctrl+V)"),
         ("Terminal (Ctrl+Shift+V)", "Terminal (Ctrl+Shift+V)"),
     ])

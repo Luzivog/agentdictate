@@ -198,7 +198,7 @@ impl Runtime {
         Ok(inserted)
     }
 
-    /// Adds one Python-compatible history row for a committed delivery.
+    /// Adds one Python-compatible history row for a submitted delivery.
     /// The persisted job id is unique, making repeated calls crash-safe.
     pub fn record_delivered_session(
         &mut self,

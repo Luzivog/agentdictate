@@ -136,9 +136,6 @@ pub enum ShortcutMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteShortcut {
-    /// Works in terminals and regular text fields alike, so automatic
-    /// delivery does not need to identify the focused application.
-    Universal,
     Standard,
     Terminal,
 }
@@ -258,7 +255,7 @@ impl PasteDelivery {
                 .is_some_and(|known| known.same_focus(&target))
         {
             self.action = DeliveryAction::InjectPaste {
-                shortcut: shortcut_for(self.shortcut_mode),
+                shortcut: shortcut_for(self.shortcut_mode, &target),
                 target,
             };
             return;
@@ -275,10 +272,33 @@ impl PasteDelivery {
     }
 }
 
-fn shortcut_for(mode: ShortcutMode) -> PasteShortcut {
+fn shortcut_for(mode: ShortcutMode, target: &FocusTarget) -> PasteShortcut {
     match mode {
-        ShortcutMode::Auto => PasteShortcut::Universal,
-        ShortcutMode::Standard => PasteShortcut::Standard,
+        ShortcutMode::Auto if is_terminal_class(target.window_class()) => PasteShortcut::Terminal,
+        ShortcutMode::Auto | ShortcutMode::Standard => PasteShortcut::Standard,
         ShortcutMode::Terminal => PasteShortcut::Terminal,
     }
+}
+
+fn is_terminal_class(window_class: &str) -> bool {
+    window_class
+        .to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| {
+            matches!(
+                word,
+                "kitty"
+                    | "terminal"
+                    | "alacritty"
+                    | "wezterm"
+                    | "konsole"
+                    | "xterm"
+                    | "tilix"
+                    | "terminator"
+                    | "foot"
+                    | "ghostty"
+                    | "rio"
+                    | "st"
+            )
+        })
 }

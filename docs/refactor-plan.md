@@ -74,16 +74,18 @@ After transcription, the daemon delivers text to the focused application:
 2. Publish the transcript to the clipboard using `wl-copy` (Wayland) or a
    live non-detaching `xsel` owner (X11), then read the clipboard back to
    verify the content actually landed.
-3. Inject one paced paste chord: `ydotool key shift+insert` via uinput on
-   Wayland, or `xdotool` on X11.
-
-Auto shortcut mode sends Shift+Insert universally because Wayland cannot
-observe window classes, so no per-application chord selection is possible.
+3. Select the paste chord. Automatic mode uses `Ctrl+Shift+V` for detected
+   terminals and `Ctrl+V` for regular or unknown targets. Standard and
+   Terminal modes bypass target detection and use their named shortcuts.
+4. Inject one paced paste chord with `ydotool` via uinput on Wayland or
+   `xdotool` on X11.
 
 Injection follows a single-injection-no-retry policy. A retry after a failed
 or ambiguous paste risks duplicating already-inserted text, which is worse
-than missing text the user can re-dictate. A failure is reported once and the
-user decides what happens next.
+than missing text the user can re-dictate. A successful injection command is
+stored as `submitted`: the backend accepted the command, but the target
+application did not acknowledge consuming it. Submitted delivery is therefore
+complete and non-retryable rather than falsely reported as confirmed.
 
 ## Runtime Data Locations
 

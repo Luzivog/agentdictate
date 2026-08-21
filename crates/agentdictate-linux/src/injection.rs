@@ -51,7 +51,6 @@ impl PasteInjector {
         deadline: Instant,
     ) -> Result<InjectionReceipt, PlatformCommandError> {
         let shortcut = match shortcut {
-            PasteShortcut::Universal => "shift+insert",
             PasteShortcut::Standard => "ctrl+v",
             PasteShortcut::Terminal => "ctrl+shift+v",
         };
@@ -78,7 +77,7 @@ impl PasteInjector {
                     OsString::from("key"),
                     OsString::from("--clearmodifiers"),
                     OsString::from("--delay"),
-                    OsString::from("0"),
+                    OsString::from("50"),
                     OsString::from(shortcut),
                 ],
             ),

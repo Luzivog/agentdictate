@@ -129,7 +129,7 @@ pub enum WorkflowSignal {
     DeliveryStarted {
         job_id: JobId,
     },
-    DeliveryCommitted {
+    DeliverySubmitted {
         job_id: JobId,
     },
     Interrupted {
@@ -153,7 +153,7 @@ impl WorkflowSignal {
             | Self::TranscriptStoredForCleanup { job_id }
             | Self::CleanupStored { job_id }
             | Self::DeliveryStarted { job_id }
-            | Self::DeliveryCommitted { job_id }
+            | Self::DeliverySubmitted { job_id }
             | Self::Interrupted { job_id, .. }
             | Self::RetryDeliveryRequested { job_id } => Some(job_id),
         }
@@ -280,7 +280,7 @@ impl Workflow {
                     job_id: expected,
                     stage: ProcessingStage::Delivering,
                 },
-                WorkflowSignal::DeliveryCommitted { job_id },
+                WorkflowSignal::DeliverySubmitted { job_id },
             ) if expected == job_id => WorkflowPhase::Ready,
             (
                 WorkflowPhase::Starting { job_id: expected }

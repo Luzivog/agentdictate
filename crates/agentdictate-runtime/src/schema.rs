@@ -137,7 +137,7 @@ fn parse_delivery_status(value: &str) -> Result<DeliveryStatus, RuntimeError> {
     match value {
         "not_attempted" => Ok(DeliveryStatus::NotAttempted),
         "attempting" => Ok(DeliveryStatus::Attempting),
-        "committed" => Ok(DeliveryStatus::Committed),
+        "submitted" | "committed" => Ok(DeliveryStatus::Submitted),
         "ambiguous" => Ok(DeliveryStatus::Ambiguous),
         other => Err(RuntimeError::InvalidJobId(format!(
             "unknown delivery status {other:?}"

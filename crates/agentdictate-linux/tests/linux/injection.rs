@@ -42,30 +42,31 @@ fn wayland_injection_paces_the_chord_for_busy_event_loops() {
 }
 
 #[test]
-fn universal_injection_sends_shift_insert() {
+fn x11_injection_paces_the_chord_for_busy_event_loops() {
     let directory = TestDirectory::new();
-    let log = directory.path().join("ydotool.log");
-    let ydotool = directory.executable(
-        "ydotool",
+    let log = directory.path().join("xdotool.log");
+    let xdotool = directory.executable(
+        "xdotool",
         &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
     );
     let injector = PasteInjector::new(
         SystemCommandRunner,
-        PlatformExecutable::at(PlatformTool::Ydotool, ydotool),
-        PlatformExecutable::missing(PlatformTool::Xdotool),
+        PlatformExecutable::missing(PlatformTool::Ydotool),
+        PlatformExecutable::at(PlatformTool::Xdotool, xdotool),
     );
 
-    injector
+    let receipt = injector
         .inject(
-            ClipboardProtocol::Wayland,
-            PasteShortcut::Universal,
+            ClipboardProtocol::X11,
+            PasteShortcut::Standard,
             Instant::now() + Duration::from_secs(2),
         )
-        .expect("the universal chord is sent");
+        .expect("one paste chord is sent");
 
+    assert_eq!(receipt.tool, PlatformTool::Xdotool);
     assert_eq!(
         fs::read_to_string(log).expect("invocation log"),
-        "key --delay 50 --key-delay 25 shift+insert\n"
+        "key --clearmodifiers --delay 50 ctrl+v\n"
     );
 }
 
@@ -104,6 +105,6 @@ fn failed_x11_injection_is_reported_after_exactly_one_xdotool_attempt() {
     ));
     assert_eq!(
         fs::read_to_string(log).expect("invocation log"),
-        "key --clearmodifiers --delay 0 ctrl+shift+v\n"
+        "key --clearmodifiers --delay 50 ctrl+shift+v\n"
     );
 }
