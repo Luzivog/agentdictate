@@ -325,7 +325,7 @@ fn dictation_section(
     .child(select_row(
         "Transcription source",
         if uses_chatgpt_subscription {
-            "Experimental · Uses your Codex sign-in"
+            "Uses your Codex sign-in"
         } else {
             "How speech is transcribed"
         },
@@ -410,7 +410,7 @@ fn dictation_section(
 const fn transcription_provider_label(provider: TranscriptionProvider) -> &'static str {
     match provider {
         TranscriptionProvider::OpenAiApi => "OpenAI API",
-        TranscriptionProvider::ChatGptSubscription => "ChatGPT subscription (experimental)",
+        TranscriptionProvider::ChatGptSubscription => "ChatGPT subscription",
     }
 }
 

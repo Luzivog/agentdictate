@@ -539,7 +539,7 @@ fn transcription_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOp
 fn transcription_provider_options() -> Vec<SettingOption> {
     vec![
         SettingOption::new(
-            "ChatGPT subscription (experimental)",
+            "ChatGPT subscription",
             TranscriptionProvider::ChatGptSubscription.as_str(),
         ),
         SettingOption::new("OpenAI API", TranscriptionProvider::OpenAiApi.as_str()),
