@@ -824,7 +824,10 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
                 audio_seconds: 754,
                 estimated_cost_usd: 0.1842,
             },
-            vec![UsageDayViewModel::new("Mon", 4, 820, 113, 0.031)],
+            vec![
+                UsageDayViewModel::new("Mon", 8, 820, 40, 0.031),
+                UsageDayViewModel::new("Tue", 2, 120, 113, 0.012),
+            ],
         ),
         ..WorkspaceViewModel::default()
     });
@@ -859,7 +862,7 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
     let audio = harness.bounds("overview-summary-audio");
     let wpm = harness.bounds("overview-summary-wpm");
     let cost = harness.bounds("overview-summary-cost");
-    let metrics = [dictations, words, audio, wpm, cost];
+    let metrics = [audio, dictations, words, wpm, cost];
     assert!(
         metrics
             .windows(2)
@@ -871,6 +874,12 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
             .all(|metric| metric.left() == summary.left() && metric.right() == summary.right())
     );
     assert_eq!(summary.size.height, plot.size.height);
+    let shorter_day = harness.bounds("overview-activity-marker-0");
+    let longer_day = harness.bounds("overview-activity-marker-1");
+    assert!(
+        longer_day.top() < shorter_day.top(),
+        "the chart should place the day with more dictation time higher"
+    );
     harness.bounds("overview-recent-history");
     harness.bounds("overview-recent-transcript-17");
     assert!(!harness.has("overview-metric-dictations"));

@@ -79,7 +79,7 @@ fn usage_formats_real_totals_and_preserves_activity_order() {
     assert_eq!(usage.audio_value(), "12m 34s");
     assert_eq!(usage.cost_value(), "$0.18");
     assert_eq!(usage.activity[0].label, "Mon");
-    assert_eq!(usage.peak_dictations(), 7);
+    assert_eq!(usage.peak_audio_seconds(), 241);
 }
 
 #[test]

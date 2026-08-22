@@ -29,6 +29,7 @@ pub(super) fn surface(
 ) -> gpui::Div {
     let activity = usage.activity.clone();
     let activity_empty = activity.is_empty();
+    let peak_audio_seconds = usage.peak_audio_seconds();
     let tick_margin = match usage.period {
         UsagePeriod::Last7Days => 1,
         UsagePeriod::Last30Days => 7,
@@ -74,6 +75,7 @@ pub(super) fn surface(
                                 .when(!activity_empty, |plot| {
                                     plot.child(activity_plot(
                                         activity,
+                                        peak_audio_seconds,
                                         usage.currency.clone(),
                                         tick_margin,
                                         theme,
@@ -152,6 +154,13 @@ fn activity_summary(usage: &UsageViewModel, theme: ThemeTokens) -> gpui::Div {
         .h(px(CHART_HEIGHT))
         .flex_shrink_0()
         .child(summary_metric(
+            "overview-summary-audio",
+            "DICTATION TIME",
+            usage.audio_value(),
+            false,
+            theme,
+        ))
+        .child(summary_metric(
             "overview-summary-dictations",
             "DICTATIONS",
             usage.dictations_value(),
@@ -162,13 +171,6 @@ fn activity_summary(usage: &UsageViewModel, theme: ThemeTokens) -> gpui::Div {
             "overview-summary-words",
             "WORDS",
             usage.words_value(),
-            false,
-            theme,
-        ))
-        .child(summary_metric(
-            "overview-summary-audio",
-            "DICTATION TIME",
-            usage.audio_value(),
             false,
             theme,
         ))
@@ -227,24 +229,22 @@ fn summary_metric(
 
 fn activity_plot(
     data: Vec<UsageDayViewModel>,
+    peak_audio_seconds: u64,
     currency: String,
     tick_margin: usize,
     theme: ThemeTokens,
     cx: &App,
 ) -> gpui::Div {
-    let maximum = data
-        .iter()
-        .map(|point| point.dictations as f64)
-        .fold(0.0_f64, f64::max);
+    let maximum = peak_audio_seconds as f64;
     let point_count = data.len();
     let hover_targets = data
         .iter()
         .cloned()
         .enumerate()
-        .filter(|(_, point)| point.dictations > 0)
+        .filter(|(_, point)| point.audio_seconds > 0)
         .map(|(index, point)| {
             let (left, width, marker_x) = hover_geometry(index, point_count);
-            let marker_y = marker_top(point.dictations as f64, maximum);
+            let marker_y = marker_top(point.audio_seconds as f64, maximum);
             let group: SharedString = format!("activity-point-{index}").into();
             let currency = currency.clone();
             gpui::div()
@@ -265,6 +265,7 @@ fn activity_plot(
                 .child(
                     gpui::div()
                         .absolute()
+                        .debug_selector(move || format!("overview-activity-marker-{index}"))
                         .left(relative(marker_x))
                         .top(relative(marker_y))
                         .ml(px(-5.))
@@ -288,7 +289,7 @@ fn activity_plot(
         .child(
             AreaChart::new(data)
                 .x(|point: &UsageDayViewModel| SharedString::from(point.label.clone()))
-                .y(|point: &UsageDayViewModel| point.dictations as f64)
+                .y(|point: &UsageDayViewModel| point.audio_seconds as f64)
                 .stroke(gpui_color(theme.accent))
                 .fill(gpui_color(theme.accent).opacity(0.22))
                 .linear()
@@ -315,13 +316,13 @@ fn activity_tooltip(point: &UsageDayViewModel, currency: &str, cx: &App) -> gpui
                 .font_semibold()
                 .child(point.label.clone()),
         )
-        .child(tooltip_row("Dictations", point.dictations.to_string(), cx))
-        .child(tooltip_row("Words", point.words.to_string(), cx))
         .child(tooltip_row(
-            "Audio",
+            "Dictation time",
             format_duration(point.audio_seconds),
             cx,
         ))
+        .child(tooltip_row("Dictations", point.dictations.to_string(), cx))
+        .child(tooltip_row("Words", point.words.to_string(), cx))
         .child(tooltip_row(
             "Est. cost",
             format_currency_amount(currency, point.estimated_cost_usd),

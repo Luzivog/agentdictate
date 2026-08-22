@@ -121,10 +121,10 @@ impl UsageViewModel {
         format_currency_amount(&self.currency, value)
     }
 
-    pub fn peak_dictations(&self) -> u64 {
+    pub fn peak_audio_seconds(&self) -> u64 {
         self.activity
             .iter()
-            .map(|day| day.dictations)
+            .map(|day| day.audio_seconds)
             .max()
             .unwrap_or(0)
     }
