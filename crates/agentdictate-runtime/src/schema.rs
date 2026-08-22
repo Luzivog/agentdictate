@@ -3,6 +3,8 @@ use std::str::FromStr;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
+use agentdictate_core::TranscriptionProvider;
+
 use crate::{DeliveryStatus, JobId, JobStage, RecordingJob, RuntimeError};
 
 pub(crate) const SCHEMA: &str = r#"
@@ -14,6 +16,7 @@ CREATE TABLE IF NOT EXISTS dictation_sessions (
     ended_at TEXT NOT NULL,
     duration_seconds REAL NOT NULL DEFAULT 0,
     transcription_model TEXT NOT NULL,
+    transcription_provider TEXT NOT NULL DEFAULT 'openai_api',
     cleanup_enabled INTEGER NOT NULL DEFAULT 0,
     cleanup_model TEXT,
     cleanup_style TEXT,
@@ -87,6 +90,7 @@ CREATE TABLE IF NOT EXISTS dictation_jobs (
     audio_path TEXT NOT NULL UNIQUE,
     duration_seconds REAL NOT NULL DEFAULT 0,
     transcription_model TEXT NOT NULL DEFAULT '',
+    transcription_provider TEXT NOT NULL DEFAULT 'openai_api',
     raw_transcript TEXT NOT NULL DEFAULT '',
     final_text TEXT NOT NULL DEFAULT '',
     copied_to_clipboard INTEGER NOT NULL DEFAULT 0,
@@ -122,13 +126,17 @@ pub(crate) fn row_to_job(
             audio_path: PathBuf::from(row.get::<_, String>(5)?),
             duration_seconds: row.get(6)?,
             transcription_model: row.get(7)?,
-            raw_transcript: row.get(8)?,
-            final_text: row.get(9)?,
-            copied_to_clipboard: row.get(10)?,
-            paste_triggered: row.get(11)?,
-            delivery_status: parse_delivery_status(&row.get::<_, String>(12)?)?,
-            error_message: row.get(13)?,
-            cleanup_error: row.get(14)?,
+            transcription_provider: row
+                .get::<_, String>(8)?
+                .parse::<TranscriptionProvider>()
+                .map_err(|error| RuntimeError::InvalidTranscriptionProvider(error.to_string()))?,
+            raw_transcript: row.get(9)?,
+            final_text: row.get(10)?,
+            copied_to_clipboard: row.get(11)?,
+            paste_triggered: row.get(12)?,
+            delivery_status: parse_delivery_status(&row.get::<_, String>(13)?)?,
+            error_message: row.get(14)?,
+            cleanup_error: row.get(15)?,
         })
     })())
 }

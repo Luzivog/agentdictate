@@ -1,4 +1,4 @@
-use agentdictate_core::{Settings, SettingsSnapshot};
+use agentdictate_core::{Settings, SettingsSnapshot, TranscriptionProvider};
 
 #[test]
 fn reasoning_effort_has_one_exhaustive_settings_and_openai_mapping() {
@@ -43,15 +43,48 @@ fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
     .unwrap();
 
     assert_eq!(settings.active_transcription_model(), "my-transcriber");
+    assert_eq!(
+        settings.transcription_provider,
+        TranscriptionProvider::OpenAiApi
+    );
     assert!(!settings.cleanup_enabled);
     assert_eq!(settings.max_recording_seconds, 300);
     assert_eq!(settings.audio_ducking_volume_percent, 15);
 }
 
 #[test]
+fn transcription_provider_has_stable_settings_values() {
+    let subscription: Settings =
+        serde_json::from_str(r#"{"transcription_provider":"chatgpt_subscription"}"#).unwrap();
+    assert_eq!(
+        subscription.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
+
+    let wire = serde_json::to_value(Settings::default()).unwrap();
+    assert_eq!(wire["transcription_provider"], "openai_api");
+    assert_eq!(
+        "chatgpt_subscription"
+            .parse::<TranscriptionProvider>()
+            .unwrap(),
+        TranscriptionProvider::ChatGptSubscription
+    );
+    assert!("unknown".parse::<TranscriptionProvider>().is_err());
+    assert_eq!(
+        TranscriptionProvider::OpenAiApi.marginal_price_per_audio_minute(0.0045),
+        0.0045
+    );
+    assert_eq!(
+        TranscriptionProvider::ChatGptSubscription.marginal_price_per_audio_minute(0.0045),
+        0.0
+    );
+}
+
+#[test]
 fn settings_sent_to_the_ui_never_include_the_api_key() {
     let settings = Settings {
         openai_api_key: "sk-private-value".into(),
+        transcription_provider: TranscriptionProvider::ChatGptSubscription,
         ..Settings::default()
     };
 
@@ -60,6 +93,10 @@ fn settings_sent_to_the_ui_never_include_the_api_key() {
 
     assert!(snapshot.has_api_key);
     assert!(snapshot.values.openai_api_key.is_empty());
+    assert_eq!(
+        snapshot.values.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
     assert!(!wire.contains("sk-private-value"));
 }
 

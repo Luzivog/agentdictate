@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use agentdictate_core::{ReplacementRule, Settings};
+use agentdictate_core::{ReplacementRule, Settings, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, ExternalError, HeadlessDeliveryGate, HistoryQuery, JobStage,
     Recorder, RecordingJob, RecordingRequest, Runtime, Transcriber, Transcript, UsageMetric,
@@ -41,14 +41,30 @@ impl Deliverer for SubmittedDeliverer {
 }
 
 fn request(audio_path: &Path) -> RecordingRequest {
+    request_with_provider(audio_path, TranscriptionProvider::OpenAiApi)
+}
+
+fn request_with_provider(
+    audio_path: &Path,
+    transcription_provider: TranscriptionProvider,
+) -> RecordingRequest {
     RecordingRequest {
         audio_path: audio_path.to_owned(),
         started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
+        transcription_provider,
         transcription_model: "gpt-4o-transcribe".to_owned(),
     }
 }
 
 fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
+    delivered_job_with_provider(runtime, directory, TranscriptionProvider::OpenAiApi)
+}
+
+fn delivered_job_with_provider(
+    runtime: &mut Runtime,
+    directory: &TempDir,
+    transcription_provider: TranscriptionProvider,
+) -> RecordingJob {
     runtime
         .create_replacement(ReplacementRule {
             id: None,
@@ -62,7 +78,10 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
     let mut recorder = ReadyRecorder;
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/history.wav")),
+            request_with_provider(
+                &directory.path().join("recordings/history.wav"),
+                transcription_provider,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -75,6 +94,54 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
             &mut SubmittedDeliverer,
         )
         .unwrap()
+}
+
+#[test]
+fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let delivered = delivered_job_with_provider(
+        &mut runtime,
+        &directory,
+        TranscriptionProvider::ChatGptSubscription,
+    );
+
+    assert_eq!(
+        delivered.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
+    let recorded = runtime
+        .record_delivered_session(delivered.id, &Settings::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        recorded.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
+    assert_eq!(recorded.estimated_transcription_cost, 0.0);
+    assert!(recorded.estimated_cleanup_cost > 0.0);
+
+    let mut repriced = Settings::default();
+    repriced
+        .transcription_prices
+        .get_mut("gpt-4o-transcribe")
+        .unwrap()
+        .price_per_audio_minute = 99.0;
+    runtime.sync_pricing(&repriced).unwrap();
+    let repriced = runtime.history(recorded.id).unwrap().unwrap();
+    assert_eq!(repriced.estimated_transcription_cost, 0.0);
+    assert_eq!(
+        rusqlite::Connection::open(database_path)
+            .unwrap()
+            .query_row(
+                "SELECT transcription_provider FROM dictation_sessions WHERE id = ?1",
+                [recorded.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "chatgpt_subscription"
+    );
 }
 
 #[test]

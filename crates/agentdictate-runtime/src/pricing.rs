@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use agentdictate_core::{Settings, estimate_session_cost};
+use agentdictate_core::{Settings, TranscriptionProvider, estimate_session_cost};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
@@ -11,6 +11,7 @@ struct StoredSession {
     started_at: DateTime<Utc>,
     duration_seconds: f64,
     transcription_model: String,
+    transcription_provider: TranscriptionProvider,
     cleanup_enabled: bool,
     cleanup_model: Option<String>,
     raw_transcript: String,
@@ -64,10 +65,13 @@ impl Runtime {
 
         let mut changed_days = BTreeSet::new();
         for session in sessions {
-            let transcription_price = settings
+            let api_transcription_price = settings
                 .transcription_prices
                 .get(&session.transcription_model)
                 .map_or(0.0, |price| price.price_per_audio_minute);
+            let transcription_price = session
+                .transcription_provider
+                .marginal_price_per_audio_minute(api_transcription_price);
             let cleanup_price = session
                 .cleanup_model
                 .as_ref()
@@ -110,7 +114,8 @@ impl Runtime {
         let mut statement = self.connection.prepare(
             r#"
             SELECT s.id, s.started_at, s.duration_seconds,
-                   s.transcription_model, s.cleanup_enabled, s.cleanup_model,
+                   s.transcription_model, s.transcription_provider,
+                   s.cleanup_enabled, s.cleanup_model,
                    h.raw_transcript, h.cleaned_transcript
             FROM dictation_sessions s
             LEFT JOIN transcript_history h ON h.session_id = s.id
@@ -123,10 +128,11 @@ impl Runtime {
                     row.get::<_, String>(1)?,
                     row.get::<_, f64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, bool>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -137,10 +143,13 @@ impl Runtime {
                     started_at: parse_timestamp(&row.1)?,
                     duration_seconds: row.2,
                     transcription_model: row.3,
-                    cleanup_enabled: row.4,
-                    cleanup_model: row.5,
-                    raw_transcript: row.6,
-                    cleaned_transcript: row.7,
+                    transcription_provider: row.4.parse::<TranscriptionProvider>().map_err(
+                        |error| RuntimeError::InvalidTranscriptionProvider(error.to_string()),
+                    )?,
+                    cleanup_enabled: row.5,
+                    cleanup_model: row.6,
+                    raw_transcript: row.7,
+                    cleaned_transcript: row.8,
                 })
             })
             .collect()

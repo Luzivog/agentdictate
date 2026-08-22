@@ -114,11 +114,11 @@ fn assert_content_aware_control_geometry(cx: &mut TestAppContext, viewport_width
         size(px(viewport_width), px(900.)),
     );
 
-    let choice = harness.bounds("settings-input-transcription-model-control");
+    let choice = harness.bounds("settings-input-transcription-provider-control");
     let shortcut = harness.bounds("settings-hotkey-row-control");
     let number = harness.bounds("settings-input-max-recording-control");
     let prompt = harness.bounds("settings-input-transcription-prompt-control");
-    let choice_row = harness.bounds("settings-input-transcription-model");
+    let choice_row = harness.bounds("settings-input-transcription-provider");
     let number_row = harness.bounds("settings-input-max-recording");
     let prompt_row = harness.bounds("settings-input-transcription-prompt");
 
@@ -200,7 +200,8 @@ fn settings_sections_form_one_flat_ordered_column(cx: &mut TestAppContext) {
 #[gpui::test]
 fn toggles_are_draft_changes_until_the_user_saves(cx: &mut TestAppContext) {
     let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = SettingsHarness::open(cx, Arc::clone(&commands));
+    let mut harness =
+        SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
 
     assert!(!harness.has("settings-save-bar"));
     harness.click("toggle-cleanup");
@@ -220,7 +221,8 @@ fn toggles_are_draft_changes_until_the_user_saves(cx: &mut TestAppContext) {
 #[gpui::test]
 fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext) {
     let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = SettingsHarness::open(cx, Arc::clone(&commands));
+    let mut harness =
+        SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
 
     harness.click("toggle-cleanup");
     harness.bounds("settings-save-bar");

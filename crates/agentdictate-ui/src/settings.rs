@@ -1,9 +1,10 @@
-use agentdictate_core::Settings;
+use agentdictate_core::{Settings, TranscriptionProvider};
 use thiserror::Error;
 
-/// Text entered in the settings form before numeric and enum validation.
+/// Values edited in the settings form before validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsDraft {
+    pub transcription_provider: TranscriptionProvider,
     pub transcription_model: String,
     pub custom_transcription_model: String,
     pub language: String,
@@ -36,9 +37,17 @@ impl SettingsDraft {
     }
 
     pub fn apply_to(&self, current: &Settings) -> Result<Settings, SettingsDraftError> {
-        let transcription_model = required("Transcription model", &self.transcription_model)?;
+        let transcription_model = if self.transcription_provider == TranscriptionProvider::OpenAiApi
+        {
+            required("Transcription model", &self.transcription_model)?
+        } else {
+            self.transcription_model.trim().to_owned()
+        };
         let cleanup_model = required("Cleanup model", &self.cleanup_model)?;
-        let custom_transcription_model = if transcription_model == "Custom" {
+        let custom_transcription_model = if self.transcription_provider
+            == TranscriptionProvider::OpenAiApi
+            && transcription_model == "Custom"
+        {
             required(
                 "Custom transcription model",
                 &self.custom_transcription_model,
@@ -66,6 +75,7 @@ impl SettingsDraft {
         }
 
         Ok(Settings {
+            transcription_provider: self.transcription_provider,
             transcription_model,
             custom_transcription_model,
             language: self.language.trim().to_owned(),
@@ -93,6 +103,7 @@ impl SettingsDraft {
 impl From<&Settings> for SettingsDraft {
     fn from(settings: &Settings) -> Self {
         Self {
+            transcription_provider: settings.transcription_provider,
             transcription_model: settings.transcription_model.clone(),
             custom_transcription_model: settings.custom_transcription_model.clone(),
             language: settings.language.clone(),

@@ -1,3 +1,4 @@
+use agentdictate_core::TranscriptionProvider;
 use gpui::{Context, Entity, prelude::*, px};
 use gpui_component::{
     Disableable, Selectable, Sizable,
@@ -15,6 +16,7 @@ use super::{
     SettingsShell, SettingsSurfaceModel, gpui_color,
     settings_controller::{
         SettingOption, SettingSelectState, SettingsEditorState, selected_setting,
+        selected_transcription_provider,
     },
 };
 
@@ -70,6 +72,18 @@ pub(super) fn surface(
         shortcut_capture_active,
         shortcut_capture_error,
     } = model;
+    let transcription_provider =
+        settings_editor
+            .as_ref()
+            .map_or(settings.transcription_provider, |editor| {
+                selected_transcription_provider(
+                    &editor.transcription_provider,
+                    settings.transcription_provider,
+                    cx,
+                )
+            });
+    let uses_chatgpt_subscription =
+        transcription_provider == TranscriptionProvider::ChatGptSubscription;
     h_flex().w_full().justify_center().child(
         v_flex()
             .debug_selector(|| "settings-page".to_owned())
@@ -102,6 +116,8 @@ pub(super) fn surface(
                 has_api_key,
                 api_key_input,
                 api_key_feedback,
+                uses_chatgpt_subscription,
+                settings.cleanup_enabled,
                 theme,
                 cx,
             ))
@@ -186,13 +202,15 @@ fn account_section(
     has_api_key: bool,
     api_key_input: Option<Entity<InputState>>,
     api_key_feedback: Option<String>,
+    uses_chatgpt_subscription: bool,
+    cleanup_enabled: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
     settings_section(
         "settings-group-account",
         "Account",
-        "OpenAI access is stored locally and separately from ordinary settings.",
+        "API access is stored locally.",
         false,
         theme,
     )
@@ -209,10 +227,14 @@ fn account_section(
             .py_2()
             .child(setting_label(
                 "OpenAI API key",
-                if has_api_key {
-                    "Configured for transcription"
+                if uses_chatgpt_subscription {
+                    if cleanup_enabled {
+                        "Required for cleanup"
+                    } else {
+                        "Not needed for transcription"
+                    }
                 } else {
-                    "Required before transcription can run"
+                    "Used for transcription and cleanup"
                 },
                 theme,
             ))
@@ -248,11 +270,15 @@ fn account_section(
                             .text_xs()
                             .text_color(gpui_color(if has_api_key {
                                 theme.success
+                            } else if uses_chatgpt_subscription && !cleanup_enabled {
+                                theme.text_muted
                             } else {
                                 theme.danger
                             }))
                             .child(if has_api_key {
                                 "Configured"
+                            } else if uses_chatgpt_subscription && !cleanup_enabled {
+                                "Not needed"
                             } else {
                                 "Required"
                             }),
@@ -280,6 +306,15 @@ fn dictation_section(
     theme: ThemeTokens,
     cx: &Context<SettingsShell>,
 ) -> gpui::Div {
+    let transcription_provider = editor.map_or(settings.transcription_provider, |editor| {
+        selected_transcription_provider(
+            &editor.transcription_provider,
+            settings.transcription_provider,
+            cx,
+        )
+    });
+    let uses_chatgpt_subscription =
+        transcription_provider == TranscriptionProvider::ChatGptSubscription;
     settings_section(
         "settings-group-dictation",
         "Dictation",
@@ -287,36 +322,61 @@ fn dictation_section(
         true,
         theme,
     )
-    .child(model_catalog_status(model_catalog, theme))
     .child(select_row(
-        "Speech model",
-        "OpenAI transcription model",
-        settings.active_transcription_model(),
-        "settings-input-transcription-model",
-        editor.map(|editor| editor.transcription_model.clone()),
+        "Transcription source",
+        if uses_chatgpt_subscription {
+            "Experimental · Uses your Codex sign-in"
+        } else {
+            "How speech is transcribed"
+        },
+        transcription_provider_label(transcription_provider),
+        "settings-input-transcription-provider",
+        editor.map(|editor| editor.transcription_provider.clone()),
         false,
         theme,
     ))
-    .when(
-        editor.is_some_and(|editor| {
-            selected_setting(
-                &editor.transcription_model,
-                &settings.transcription_model,
-                cx,
-            ) == "Custom"
-        }),
-        |section| {
-            section.child(input_row(
-                "Custom speech model",
-                "Exact OpenAI model identifier",
-                &settings.custom_transcription_model,
-                "settings-input-custom-transcription-model",
-                editor.map(|editor| editor.custom_transcription_model.clone()),
+    .when(uses_chatgpt_subscription, |section| {
+        section.child(value_row(
+            "Speech model",
+            "Selected automatically",
+            "Managed by ChatGPT",
+            "settings-transcription-managed-by-chatgpt",
+            theme,
+        ))
+    })
+    .when(!uses_chatgpt_subscription, |section| {
+        section
+            .child(model_catalog_status(model_catalog, theme))
+            .child(select_row(
+                "Speech model",
+                "OpenAI transcription model",
+                settings.active_transcription_model(),
+                "settings-input-transcription-model",
+                editor.map(|editor| editor.transcription_model.clone()),
                 false,
                 theme,
             ))
-        },
-    )
+            .when(
+                editor.is_some_and(|editor| {
+                    selected_setting(
+                        &editor.transcription_model,
+                        &settings.transcription_model,
+                        cx,
+                    ) == "Custom"
+                }),
+                |section| {
+                    section.child(input_row(
+                        "Custom speech model",
+                        "Exact OpenAI model identifier",
+                        &settings.custom_transcription_model,
+                        "settings-input-custom-transcription-model",
+                        editor.map(|editor| editor.custom_transcription_model.clone()),
+                        false,
+                        theme,
+                    ))
+                },
+            )
+    })
     .child(select_row(
         "Language",
         "Language hint, or automatic detection",
@@ -330,19 +390,28 @@ fn dictation_section(
         false,
         theme,
     ))
-    .child(prompt_row(
-        "Context prompt",
-        "Names and technical terms the model should recognize",
-        if settings.transcription_prompt.is_empty() {
-            "None"
-        } else {
-            &settings.transcription_prompt
-        },
-        "settings-input-transcription-prompt",
-        editor.map(|editor| editor.transcription_prompt.clone()),
-        false,
-        theme,
-    ))
+    .when(!uses_chatgpt_subscription, |section| {
+        section.child(prompt_row(
+            "Context prompt",
+            "Names and technical terms the model should recognize",
+            if settings.transcription_prompt.is_empty() {
+                "None"
+            } else {
+                &settings.transcription_prompt
+            },
+            "settings-input-transcription-prompt",
+            editor.map(|editor| editor.transcription_prompt.clone()),
+            false,
+            theme,
+        ))
+    })
+}
+
+const fn transcription_provider_label(provider: TranscriptionProvider) -> &'static str {
+    match provider {
+        TranscriptionProvider::OpenAiApi => "OpenAI API",
+        TranscriptionProvider::ChatGptSubscription => "ChatGPT subscription (experimental)",
+    }
 }
 
 fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeTokens) -> gpui::Div {
@@ -638,6 +707,34 @@ fn select_row(
                 }),
         )
         .when(disabled, |row| row.opacity(0.48))
+}
+
+fn value_row(
+    label: &'static str,
+    detail: &'static str,
+    value: &'static str,
+    selector: &'static str,
+    theme: ThemeTokens,
+) -> gpui::Div {
+    h_flex()
+        .debug_selector(move || selector.to_owned())
+        .min_h(px(54.))
+        .items_start()
+        .flex_wrap()
+        .justify_between()
+        .gap_6()
+        .border_b_1()
+        .border_color(gpui_color(theme.border))
+        .py_2()
+        .child(setting_label(label, detail, theme))
+        .child(
+            control_slot(selector, SettingsControlKind::Choice).child(
+                gpui::div()
+                    .text_sm()
+                    .text_color(gpui_color(theme.text_muted))
+                    .child(value),
+            ),
+        )
 }
 
 #[allow(clippy::too_many_arguments)]

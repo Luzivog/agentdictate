@@ -1,6 +1,6 @@
 //! Settings draft contracts.
 
-use agentdictate_core::Settings;
+use agentdictate_core::{Settings, TranscriptionProvider};
 use agentdictate_ui::{SettingsDraft, SettingsDraftError};
 
 #[test]
@@ -11,6 +11,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
         ..Settings::default()
     };
     let mut draft = SettingsDraft::from(&original);
+    draft.transcription_provider = TranscriptionProvider::ChatGptSubscription;
     draft.transcription_model = "gpt-4o-transcribe".to_owned();
     draft.language = "en".to_owned();
     draft.transcription_prompt = "Leadlord, AgentDictate".to_owned();
@@ -31,6 +32,10 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
 
     let updated = draft.apply_to(&original).unwrap();
 
+    assert_eq!(
+        updated.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
     assert_eq!(updated.transcription_model, "gpt-4o-transcribe");
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
@@ -67,6 +72,19 @@ fn settings_draft_rejects_invalid_modes_and_out_of_range_volume() {
         draft.apply_to(&original),
         Err(SettingsDraftError::DuckedVolumeOutOfRange)
     );
+}
+
+#[test]
+fn subscription_does_not_validate_the_hidden_api_model() {
+    let original = Settings {
+        transcription_model: "Custom".to_owned(),
+        custom_transcription_model: String::new(),
+        ..Settings::default()
+    };
+    let mut draft = SettingsDraft::from(&original);
+    draft.transcription_provider = TranscriptionProvider::ChatGptSubscription;
+
+    assert!(draft.apply_to(&original).is_ok());
 }
 
 #[test]

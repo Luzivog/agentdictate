@@ -4,8 +4,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use agentdictate_app::{
-    CleanupRequest, OpenAiTransport, ReqwestOpenAiTransport, TranscriptionRequest,
+    CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest,
 };
+use agentdictate_core::TranscriptionProvider;
 use tempfile::tempdir;
 
 #[test]
@@ -116,6 +117,7 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
     let text = transport
         .transcribe_audio(TranscriptionRequest {
             audio_path: &audio_path,
+            provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-transcribe",
             language: "en",
             prompt: "AgentDictate and GPUI",
@@ -163,6 +165,7 @@ fn openai_gpt_transcription_uses_its_json_response_and_language_profile() {
     let text = transport
         .transcribe_audio(TranscriptionRequest {
             audio_path: &audio_path,
+            provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-4o-mini-transcribe",
             language: "fr",
             prompt: "AgentDictate",
@@ -205,6 +208,7 @@ fn a_future_unverified_transcription_model_is_sent_using_the_safe_standard_profi
     let text = transport
         .transcribe_audio(TranscriptionRequest {
             audio_path: &audio_path,
+            provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-6-transcribe",
             language: "en",
             prompt: "AgentDictate",
@@ -250,6 +254,7 @@ fn long_incomplete_transcription_retries_with_whisper_and_keeps_the_better_text(
     let text = transport
         .transcribe_audio(TranscriptionRequest {
             audio_path: &audio_path,
+            provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-transcribe",
             language: "en",
             prompt: "AgentDictate",

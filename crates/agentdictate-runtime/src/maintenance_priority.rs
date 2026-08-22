@@ -172,6 +172,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::sync_channel;
 
+    use agentdictate_core::TranscriptionProvider;
     use chrono::Utc;
     use rusqlite::params;
     use tempfile::tempdir;
@@ -222,6 +223,7 @@ mod tests {
                 RecordingRequest {
                     audio_path: directory.path().join("recording.wav"),
                     started_at: Utc::now(),
+                    transcription_provider: TranscriptionProvider::OpenAiApi,
                     transcription_model: "gpt-transcribe".to_owned(),
                 },
                 &mut ReadyRecorder,

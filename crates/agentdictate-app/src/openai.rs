@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agentdictate_core::{DEFAULT_CLEANUP_PROMPT, ReasoningEffort, Settings};
+use agentdictate_core::{DEFAULT_CLEANUP_PROMPT, ReasoningEffort, Settings, TranscriptionProvider};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -67,6 +67,7 @@ fn build_cleanup_instruction(style: &str, custom_prompt: &str) -> String {
 
 pub struct TranscriptionRequest<'a> {
     pub audio_path: &'a Path,
+    pub provider: TranscriptionProvider,
     pub model: &'a str,
     pub language: &'a str,
     pub prompt: &'a str,
@@ -80,26 +81,58 @@ pub struct CleanupRequest<'a> {
     pub reasoning_effort: Option<&'a str>,
 }
 
-pub trait OpenAiTransport {
+pub trait SpeechTransport {
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError>;
+}
 
+pub trait CleanupTransport {
     fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError>;
 }
 
-pub struct OpenAiTranscriber<T> {
-    settings: Settings,
-    transport: T,
+pub struct SpeechRouter<A, C> {
+    openai: A,
+    chatgpt: C,
 }
 
-impl<T> OpenAiTranscriber<T> {
+impl<A, C> SpeechRouter<A, C> {
     #[must_use]
-    pub fn new(settings: Settings, transport: T) -> Self {
+    pub const fn new(openai: A, chatgpt: C) -> Self {
+        Self { openai, chatgpt }
+    }
+
+    pub const fn openai_mut(&mut self) -> &mut A {
+        &mut self.openai
+    }
+}
+
+impl<A: SpeechTransport, C: SpeechTransport> SpeechTransport for SpeechRouter<A, C> {
+    fn transcribe_audio(
+        &mut self,
+        request: TranscriptionRequest<'_>,
+    ) -> Result<String, ExternalError> {
+        match request.provider {
+            TranscriptionProvider::OpenAiApi => self.openai.transcribe_audio(request),
+            TranscriptionProvider::ChatGptSubscription => self.chatgpt.transcribe_audio(request),
+        }
+    }
+}
+
+pub struct TranscriptionPipeline<S, C> {
+    settings: Settings,
+    speech: S,
+    cleanup: C,
+}
+
+impl<S, C> TranscriptionPipeline<S, C> {
+    #[must_use]
+    pub fn new(settings: Settings, speech: S, cleanup: C) -> Self {
         Self {
             settings,
-            transport,
+            speech,
+            cleanup,
         }
     }
 
@@ -107,22 +140,27 @@ impl<T> OpenAiTranscriber<T> {
         self.settings = settings;
     }
 
-    pub const fn transport_mut(&mut self) -> &mut T {
-        &mut self.transport
+    pub const fn speech_mut(&mut self) -> &mut S {
+        &mut self.speech
+    }
+
+    pub const fn cleanup_mut(&mut self) -> &mut C {
+        &mut self.cleanup
     }
 }
 
-impl<T: OpenAiTransport> Transcriber for OpenAiTranscriber<T> {
+impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipeline<S, C> {
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        let raw = self.transport.transcribe_audio(TranscriptionRequest {
+        let raw = self.speech.transcribe_audio(TranscriptionRequest {
             audio_path: &job.audio_path,
+            provider: job.transcription_provider,
             model: &job.transcription_model,
             language: &self.settings.language,
             prompt: &self.settings.transcription_prompt,
             duration_seconds: job.duration_seconds,
         })?;
         if raw.trim().is_empty() {
-            return Err(ExternalError::new("OpenAI returned an empty transcript"));
+            return Err(ExternalError::new("Transcription returned an empty result"));
         }
 
         let (final_text, cleaned_text, cleanup_error) = if self.settings.cleanup_enabled {
@@ -131,7 +169,7 @@ impl<T: OpenAiTransport> Transcriber for OpenAiTranscriber<T> {
                 &self.settings.cleanup_style,
                 &self.settings.cleanup_prompt,
             );
-            match self.transport.cleanup_text(CleanupRequest {
+            match self.cleanup.cleanup_text(CleanupRequest {
                 transcript: &raw,
                 model: self.settings.active_cleanup_model(),
                 instruction: &instruction,
@@ -323,7 +361,7 @@ impl ReqwestOpenAiTransport {
     }
 }
 
-impl OpenAiTransport for ReqwestOpenAiTransport {
+impl SpeechTransport for ReqwestOpenAiTransport {
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
@@ -348,7 +386,9 @@ impl OpenAiTransport for ReqwestOpenAiTransport {
             Ok(primary)
         }
     }
+}
 
+impl CleanupTransport for ReqwestOpenAiTransport {
     fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError> {
         if request.model.trim().is_empty() {
             return Err(ExternalError::new(

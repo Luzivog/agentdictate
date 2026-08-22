@@ -13,7 +13,7 @@ use std::{
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, ModelCatalogEntry, ModelCatalogFallback, ModelCatalogOrigin,
     ModelCatalogSnapshot, ModelCatalogStatus, ModelCatalogSupport, ReasoningEffort, Settings,
-    WorkflowPhase, WorkflowSnapshot,
+    TranscriptionProvider, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel,
@@ -373,6 +373,7 @@ fn catalog_updates_do_not_reset_the_current_dirty_settings_draft(cx: &mut TestAp
     let mut harness =
         Harness::open_connected_with(cx, model, Settings::default(), false, Arc::clone(&commands));
 
+    harness.scroll_route_by(-120.);
     harness.click("toggle-cleanup");
     harness.bounds("settings-save-bar");
     harness.shell.update(harness.cx, |shell, cx| {
@@ -386,6 +387,7 @@ fn catalog_updates_do_not_reset_the_current_dirty_settings_draft(cx: &mut TestAp
     });
     harness.cx.run_until_parked();
     harness.bounds("settings-model-catalog-builtin");
+    harness.scroll_route_by(10_000.);
     harness.click("save-settings");
 
     let commands = commands.lock().expect("command lock");
@@ -1490,6 +1492,7 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     let commands = Arc::new(Mutex::new(Vec::new()));
     let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
 
+    harness.bounds("settings-input-transcription-provider");
     harness.bounds("settings-input-transcription-model");
     harness.bounds("settings-input-language");
     harness.bounds("settings-input-cleanup-model");
@@ -1500,8 +1503,10 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     harness.bounds("settings-input-paste-shortcut");
     assert!(!harness.has("settings-clipboard"));
     assert!(!harness.has("settings-save-bar"));
+    harness.scroll_route_by(-120.);
     harness.click("toggle-cleanup");
     assert!(commands.lock().expect("command lock").is_empty());
+    harness.scroll_route_by(10_000.);
     harness.bounds("settings-save-bar");
     harness.click("save-settings");
 
@@ -1514,6 +1519,40 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
                 && settings.recording_mode == "toggle"
                 && settings.max_recording_seconds == 300
                 && settings.cleanup_enabled != Settings::default().cleanup_enabled
+    ));
+}
+
+#[gpui::test]
+fn chatgpt_subscription_replaces_api_controls_with_one_managed_model_status(
+    cx: &mut TestAppContext,
+) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
+
+    harness.shell.update_in(harness.cx, |shell, window, cx| {
+        shell.select_transcription_provider_for_test(
+            TranscriptionProvider::ChatGptSubscription,
+            window,
+            cx,
+        );
+    });
+    harness.cx.run_until_parked();
+
+    harness.bounds("settings-input-transcription-provider");
+    harness.bounds("settings-transcription-managed-by-chatgpt");
+    harness.bounds("settings-input-language");
+    harness.bounds("settings-api-key");
+    assert!(!harness.has("settings-input-transcription-model"));
+    assert!(!harness.has("settings-input-transcription-prompt"));
+    assert!(!harness.has("settings-model-catalog-builtin"));
+    harness.click("save-settings");
+
+    let commands = commands.lock().expect("command lock");
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0].kind,
+        ClientCommandKind::UpdateSettings { settings, .. }
+            if settings.transcription_provider == TranscriptionProvider::ChatGptSubscription
     ));
 }
 

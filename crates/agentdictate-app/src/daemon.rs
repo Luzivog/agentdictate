@@ -128,6 +128,7 @@ where
             RecordingRequest {
                 audio_path: path.clone(),
                 started_at: now,
+                transcription_provider: self.settings.transcription_provider,
                 transcription_model: self.settings.active_transcription_model().to_owned(),
             },
             &mut self.recorder,

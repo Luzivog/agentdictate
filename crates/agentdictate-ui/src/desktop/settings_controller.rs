@@ -6,6 +6,8 @@ use gpui_component::{
 };
 use std::sync::Arc;
 
+use agentdictate_core::TranscriptionProvider;
+
 use crate::{ModelCatalogViewModel, Route, SettingsDraft, WorkspaceAction, WorkspaceViewModel};
 
 use super::{
@@ -47,6 +49,7 @@ pub(super) type SettingSelectState = SelectState<SearchableVec<SettingOption>>;
 
 #[derive(Clone)]
 pub(super) struct SettingsEditorState {
+    pub(super) transcription_provider: Entity<SettingSelectState>,
     pub(super) transcription_model: Entity<SettingSelectState>,
     pub(super) custom_transcription_model: Entity<InputState>,
     pub(super) language: Entity<SettingSelectState>,
@@ -74,6 +77,13 @@ impl SettingsEditorState {
         let cleanup_reasoning_effort = model_catalog
             .normalized_reasoning_effort(cleanup_model, &draft.cleanup_reasoning_effort);
         Self {
+            transcription_provider: settings_select(
+                transcription_provider_options(),
+                draft.transcription_provider.as_str(),
+                false,
+                window,
+                cx,
+            ),
             transcription_model: settings_select(
                 transcription_model_options(model_catalog),
                 &draft.transcription_model,
@@ -168,6 +178,11 @@ impl SettingsEditorState {
         cx: &Context<SettingsShell>,
     ) -> SettingsDraft {
         SettingsDraft {
+            transcription_provider: selected_transcription_provider(
+                &self.transcription_provider,
+                current.transcription_provider,
+                cx,
+            ),
             transcription_model: selected_setting(
                 &self.transcription_model,
                 &current.transcription_model,
@@ -219,6 +234,7 @@ impl SettingsEditorState {
 
     pub(super) fn selects(&self) -> Vec<Entity<SettingSelectState>> {
         vec![
+            self.transcription_provider.clone(),
             self.transcription_model.clone(),
             self.language.clone(),
             self.cleanup_model.clone(),
@@ -264,6 +280,10 @@ impl SettingsEditorState {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         }
         let select_values = [
+            (
+                self.transcription_provider.clone(),
+                draft.transcription_provider.as_str().to_owned(),
+            ),
             (self.transcription_model.clone(), draft.transcription_model),
             (self.language.clone(), draft.language),
             (self.cleanup_model.clone(), draft.cleanup_model),
@@ -449,6 +469,16 @@ pub(super) fn selected_setting(
         .unwrap_or_else(|| fallback.to_owned())
 }
 
+pub(super) fn selected_transcription_provider(
+    state: &Entity<SettingSelectState>,
+    fallback: TranscriptionProvider,
+    cx: &Context<SettingsShell>,
+) -> TranscriptionProvider {
+    selected_setting(state, fallback.as_str(), cx)
+        .parse()
+        .unwrap_or(fallback)
+}
+
 fn captured_shortcut(keystroke: &gpui::Keystroke) -> Result<String, String> {
     if keystroke.modifiers.function {
         return Err("The Function modifier is not supported".to_owned());
@@ -504,6 +534,16 @@ fn transcription_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOp
         .map(|model| SettingOption::new(model.label.clone(), model.id.clone()))
         .chain(std::iter::once(SettingOption::new("Custom…", "Custom")))
         .collect()
+}
+
+fn transcription_provider_options() -> Vec<SettingOption> {
+    vec![
+        SettingOption::new(
+            "ChatGPT subscription (experimental)",
+            TranscriptionProvider::ChatGptSubscription.as_str(),
+        ),
+        SettingOption::new("OpenAI API", TranscriptionProvider::OpenAiApi.as_str()),
+    ]
 }
 
 fn cleanup_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOption> {
@@ -573,6 +613,25 @@ impl SettingsShell {
             cx,
         );
         self.recompute_settings_dirty(cx);
+        cx.notify();
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn select_transcription_provider_for_test(
+        &mut self,
+        provider: TranscriptionProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.settings_editor.clone() else {
+            return;
+        };
+        editor.transcription_provider.update(cx, |state, cx| {
+            state.set_selected_value(&provider.as_str().to_owned(), window, cx);
+        });
+        self.recompute_settings_dirty(cx);
+        self.clear_route_feedback();
         cx.notify();
     }
 

@@ -2,8 +2,8 @@
 
 pub use agentdictate_core::{
     AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, JobId, JobStage,
-    ReplacementRule, ServerMessage, ServerMessageKind, Settings, Workflow, WorkflowPhase,
-    WorkflowSignal,
+    ReplacementRule, ServerMessage, ServerMessageKind, Settings, TranscriptionProvider, Workflow,
+    WorkflowPhase, WorkflowSignal,
 };
 
 mod ipc;

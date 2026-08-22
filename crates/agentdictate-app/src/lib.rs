@@ -3,6 +3,7 @@
 use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
 mod audio_ducking;
+mod codex_subscription;
 mod daemon;
 pub mod diagnostics;
 mod model_catalog;
@@ -14,11 +15,12 @@ mod system;
 mod tray;
 mod workspace;
 
+pub use codex_subscription::CodexSubscriptionTransport;
 pub use daemon::{CapturedRecording, Daemon, DaemonError, RecordingController};
 pub use diagnostics::init_file_logging;
 pub use openai::{
-    CleanupRequest, OpenAiTranscriber, OpenAiTransport, ReqwestOpenAiTransport,
-    TranscriptionRequest,
+    CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechRouter, SpeechTransport,
+    TranscriptionPipeline, TranscriptionRequest,
 };
 pub use overlay_process::{
     ActiveRecordingUpdate, OverlayController, OverlayProcessAction, OverlayProcessState,

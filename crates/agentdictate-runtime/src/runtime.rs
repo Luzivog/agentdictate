@@ -87,8 +87,8 @@ impl Runtime {
             r#"
             INSERT INTO dictation_jobs (
                 runtime_id, started_at, updated_at, state, stage, audio_path,
-                transcription_model
-            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5)
+                transcription_model, transcription_provider
+            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5, ?6)
             "#,
             params![
                 id.to_string(),
@@ -96,6 +96,7 @@ impl Runtime {
                 now,
                 request.audio_path.to_string_lossy(),
                 request.transcription_model,
+                request.transcription_provider.as_str(),
             ],
         )?;
         let starting = self.job(id)?.expect("inserted job must be readable");
@@ -612,7 +613,8 @@ impl Runtime {
             .query_row(
                 r#"
                 SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
-                       duration_seconds, transcription_model, raw_transcript,
+                       duration_seconds, transcription_model, transcription_provider,
+                       raw_transcript,
                        final_text, copied_to_clipboard, paste_triggered,
                        delivery_status, error_message, cleanup_error
                 FROM dictation_jobs
@@ -629,7 +631,8 @@ impl Runtime {
         let mut statement = self.connection.prepare(
             r#"
             SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
-                   duration_seconds, transcription_model, raw_transcript,
+                   duration_seconds, transcription_model, transcription_provider,
+                   raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
                    delivery_status, error_message, cleanup_error
             FROM dictation_jobs
@@ -740,6 +743,18 @@ fn ensure_delivery_status_column(connection: &Connection) -> rusqlite::Result<()
 }
 
 fn ensure_history_columns(connection: &Connection) -> rusqlite::Result<()> {
+    ensure_column(
+        connection,
+        "dictation_jobs",
+        "transcription_provider",
+        "TEXT NOT NULL DEFAULT 'openai_api'",
+    )?;
+    ensure_column(
+        connection,
+        "dictation_sessions",
+        "transcription_provider",
+        "TEXT NOT NULL DEFAULT 'openai_api'",
+    )?;
     ensure_column(connection, "dictation_jobs", "cleaned_transcript", "TEXT")?;
     ensure_column(
         connection,

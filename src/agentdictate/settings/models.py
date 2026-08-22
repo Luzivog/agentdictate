@@ -47,6 +47,7 @@ def default_cleanup_prices() -> dict[str, dict[str, Any]]:
 @dataclass
 class Settings:
     openai_api_key: str = ""
+    transcription_provider: str = "openai_api"
     transcription_model: str = "gpt-transcribe"
     custom_transcription_model: str = ""
     language: str = ""

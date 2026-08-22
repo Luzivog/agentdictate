@@ -92,6 +92,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             settings = Settings(
+                transcription_provider="chatgpt_subscription",
                 transcription_model="Custom",
                 custom_transcription_model="new-transcribe",
                 cleanup_model="Custom",
@@ -104,6 +105,7 @@ class ConfigTests(unittest.TestCase):
             )
             save_settings(settings, path)
             loaded = load_settings(path)
+            self.assertEqual(loaded.transcription_provider, "chatgpt_subscription")
             self.assertEqual(loaded.active_transcription_model(), "new-transcribe")
             self.assertEqual(loaded.active_cleanup_model(), "new-cleanup")
             self.assertEqual(loaded.active_cleanup_reasoning_effort(), "high")

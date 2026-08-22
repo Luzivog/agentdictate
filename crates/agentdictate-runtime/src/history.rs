@@ -1,4 +1,6 @@
-use agentdictate_core::{AppliedReplacement, JobId, JobStage, Settings, estimate_session_cost};
+use agentdictate_core::{
+    AppliedReplacement, JobId, JobStage, Settings, TranscriptionProvider, estimate_session_cost,
+};
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, params};
 use std::sync::OnceLock;
@@ -15,6 +17,7 @@ pub struct HistoryEntry {
     pub ended_at: DateTime<Utc>,
     pub duration_seconds: f64,
     pub transcription_model: String,
+    pub transcription_provider: TranscriptionProvider,
     pub cleanup_enabled: bool,
     pub cleanup_model: Option<String>,
     pub cleanup_style: Option<String>,
@@ -239,10 +242,13 @@ impl Runtime {
             .then(|| settings.active_cleanup_model().to_owned())
             .filter(|model| !model.is_empty());
         let cleanup_style = cleanup_enabled.then(|| settings.cleanup_style.clone());
-        let transcription_price = settings
+        let api_transcription_price = settings
             .transcription_prices
             .get(&job.transcription_model)
             .map_or(0.0, |price| price.price_per_audio_minute);
+        let transcription_price = job
+            .transcription_provider
+            .marginal_price_per_audio_minute(api_transcription_price);
         let cleanup_price = cleanup_model
             .as_ref()
             .and_then(|model| settings.cleanup_prices.get(model));
@@ -262,13 +268,14 @@ impl Runtime {
             r#"
             INSERT INTO dictation_sessions (
                 started_at, ended_at, duration_seconds, transcription_model,
+                transcription_provider,
                 cleanup_enabled, cleanup_model, cleanup_style, raw_word_count,
                 final_word_count, final_character_count,
                 estimated_transcription_cost, estimated_cleanup_cost,
                 estimated_total_cost, success, error_message, runtime_job_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                1, NULL, ?14
+                ?14, 1, NULL, ?15
             )
             "#,
             params![
@@ -276,6 +283,7 @@ impl Runtime {
                 timestamp(job.updated_at),
                 job.duration_seconds,
                 job.transcription_model,
+                job.transcription_provider.as_str(),
                 cleanup_enabled,
                 cleanup_model,
                 cleanup_style,
@@ -425,6 +433,7 @@ pub(crate) fn history_select() -> &'static str {
     SELECT
         h.id, h.session_id, s.runtime_job_id, h.created_at,
         s.started_at, s.ended_at, s.duration_seconds, s.transcription_model,
+        s.transcription_provider,
         s.cleanup_enabled, s.cleanup_model, s.cleanup_style,
         h.raw_transcript, h.cleaned_transcript, h.final_text,
         h.replacements_applied, h.copied_to_clipboard, h.paste_triggered,
@@ -443,7 +452,7 @@ pub(crate) fn row_to_history(
     let created_at: String = row.get(3)?;
     let started_at: String = row.get(4)?;
     let ended_at: String = row.get(5)?;
-    let replacements_applied: String = row.get(14)?;
+    let replacements_applied: String = row.get(15)?;
     Ok((|| {
         Ok(HistoryEntry {
             id: row.get(0)?,
@@ -456,24 +465,28 @@ pub(crate) fn row_to_history(
             ended_at: parse_timestamp(&ended_at)?,
             duration_seconds: row.get(6)?,
             transcription_model: row.get(7)?,
-            cleanup_enabled: row.get(8)?,
-            cleanup_model: row.get(9)?,
-            cleanup_style: row.get(10)?,
-            raw_transcript: row.get(11)?,
-            cleaned_transcript: row.get(12)?,
-            final_text: row.get(13)?,
+            transcription_provider: row
+                .get::<_, String>(8)?
+                .parse::<TranscriptionProvider>()
+                .map_err(|error| RuntimeError::InvalidTranscriptionProvider(error.to_string()))?,
+            cleanup_enabled: row.get(9)?,
+            cleanup_model: row.get(10)?,
+            cleanup_style: row.get(11)?,
+            raw_transcript: row.get(12)?,
+            cleaned_transcript: row.get(13)?,
+            final_text: row.get(14)?,
             replacements_applied: deserialize_replacements(&replacements_applied)?,
-            copied_to_clipboard: row.get(15)?,
-            paste_triggered: row.get(16)?,
-            raw_word_count: row.get(17)?,
-            final_word_count: row.get(18)?,
-            final_character_count: row.get(19)?,
-            estimated_transcription_cost: row.get(20)?,
-            estimated_cleanup_cost: row.get(21)?,
-            estimated_total_cost: row.get(22)?,
-            success: row.get(23)?,
-            error_message: row.get(24)?,
-            cleanup_error: row.get(25)?,
+            copied_to_clipboard: row.get(16)?,
+            paste_triggered: row.get(17)?,
+            raw_word_count: row.get(18)?,
+            final_word_count: row.get(19)?,
+            final_character_count: row.get(20)?,
+            estimated_transcription_cost: row.get(21)?,
+            estimated_cleanup_cost: row.get(22)?,
+            estimated_total_cost: row.get(23)?,
+            success: row.get(24)?,
+            error_message: row.get(25)?,
+            cleanup_error: row.get(26)?,
         })
     })())
 }

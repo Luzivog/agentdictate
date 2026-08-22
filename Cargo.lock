@@ -38,6 +38,7 @@ dependencies = [
  "agentdictate-runtime",
  "agentdictate-ui",
  "anyhow",
+ "base64",
  "chrono",
  "ksni",
  "libc",
@@ -52,6 +53,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

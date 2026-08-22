@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use agentdictate_core::ReplacementRule;
+use agentdictate_core::{ReplacementRule, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
     HeadlessDeliveryGate, JobStage, Recorder, RecordingJob, RecordingRequest, Runtime,
@@ -204,9 +204,17 @@ impl Recorder for CompensatingRecorder {
 }
 
 fn request(audio_path: &Path) -> RecordingRequest {
+    request_with_provider(audio_path, TranscriptionProvider::OpenAiApi)
+}
+
+fn request_with_provider(
+    audio_path: &Path,
+    transcription_provider: TranscriptionProvider,
+) -> RecordingRequest {
     RecordingRequest {
         audio_path: audio_path.to_owned(),
         started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
+        transcription_provider,
         transcription_model: "gpt-transcribe".to_owned(),
     }
 }
@@ -804,16 +812,21 @@ fn captured_checkpoint_can_be_retried_after_restart() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/captured-restart.wav")),
+            request_with_provider(
+                &directory.path().join("recordings/captured-restart.wav"),
+                TranscriptionProvider::ChatGptSubscription,
+            ),
             &mut recorder,
         )
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
     drop(runtime);
     let mut runtime = Runtime::open(&database_path).unwrap();
+    let restarted = runtime.job(job.id).unwrap().unwrap();
+    assert_eq!(restarted.stage, JobStage::Captured);
     assert_eq!(
-        runtime.job(job.id).unwrap().unwrap().stage,
-        JobStage::Captured
+        restarted.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
     );
     let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
@@ -828,6 +841,10 @@ fn captured_checkpoint_can_be_retried_after_restart() {
         .unwrap();
 
     assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(
+        delivered.transcription_provider,
+        TranscriptionProvider::ChatGptSubscription
+    );
     assert_eq!(transcriber.attempts, 1);
     assert_eq!(deliverer.attempts, 1);
 }

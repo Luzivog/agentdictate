@@ -12,12 +12,17 @@ use agentdictate_runtime::{
 
 use crate::model_catalog::ModelCatalog;
 use crate::{
-    AppPaths, Daemon, OpenAiTranscriber, OverlayController, ReqwestOpenAiTransport,
-    SystemDeliverer, SystemRecordingController, sync_autostart,
+    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
+    SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
+    sync_autostart,
 };
 
+pub type ProductionTranscriber = TranscriptionPipeline<
+    SpeechRouter<ReqwestOpenAiTransport, CodexSubscriptionTransport>,
+    ReqwestOpenAiTransport,
+>;
 pub type ProductionDaemon =
-    Daemon<SystemRecordingController, OpenAiTranscriber<ReqwestOpenAiTransport>, SystemDeliverer>;
+    Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
 /// Stable control seam used by settings updates. Implementations must only
 /// return success after the live listener has accepted the new shortcut.
@@ -45,8 +50,12 @@ impl AgentProcess {
         let settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
         let model_catalog = ModelCatalog::open(&paths.cache, &settings.openai_api_key);
-        let transport = ReqwestOpenAiTransport::new(&settings.openai_api_key);
-        let transcriber = OpenAiTranscriber::new(settings.clone(), transport);
+        let speech = SpeechRouter::new(
+            ReqwestOpenAiTransport::new(&settings.openai_api_key),
+            CodexSubscriptionTransport::new(),
+        );
+        let cleanup = ReqwestOpenAiTransport::new(&settings.openai_api_key);
+        let transcriber = TranscriptionPipeline::new(settings.clone(), speech, cleanup);
         let recorder = SystemRecordingController::for_system(&settings, &paths.runtime);
         let deliverer = SystemDeliverer::for_environment(&settings.paste_shortcut);
         let history_index_maintenance = HistoryIndexMaintenance::new();
@@ -238,13 +247,15 @@ impl AgentProcess {
         let mut settings = self.daemon.settings().clone();
         settings.openai_api_key = api_key.trim().to_owned();
         save_settings(&self.config_file, &settings)?;
-        self.daemon
-            .transcriber_mut()
-            .transport_mut()
+        let transcriber = self.daemon.transcriber_mut();
+        transcriber
+            .speech_mut()
+            .openai_mut()
             .set_api_key(&settings.openai_api_key);
-        self.daemon
-            .transcriber_mut()
-            .update_settings(settings.clone());
+        transcriber
+            .cleanup_mut()
+            .set_api_key(&settings.openai_api_key);
+        transcriber.update_settings(settings.clone());
         self.daemon.update_settings(settings);
         self.refresh_model_catalog()?;
         Ok(())

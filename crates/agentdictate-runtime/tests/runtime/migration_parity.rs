@@ -2,7 +2,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use agentdictate_runtime::{
-    DeliveryStatus, HistoryQuery, JobStage, Runtime, Settings, load_settings, save_settings,
+    DeliveryStatus, HistoryQuery, JobStage, Runtime, Settings, TranscriptionProvider,
+    load_settings, save_settings,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -155,6 +156,10 @@ fn legacy_python_dictation_jobs_are_migrated_without_losing_recovery_data() {
     let history = runtime.list_history(HistoryQuery::default()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].job_id, None);
+    assert_eq!(
+        history[0].transcription_provider,
+        TranscriptionProvider::OpenAiApi
+    );
     assert_eq!(history[0].replacements_applied[0].rule_id, Some(5));
     assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 1);
     let literal_before_backfill = runtime
@@ -193,6 +198,10 @@ fn legacy_python_dictation_jobs_are_migrated_without_losing_recovery_data() {
     let migrated = reopened.job(migrated_id).unwrap().unwrap();
 
     assert_eq!(migrated.legacy_id, 42);
+    assert_eq!(
+        migrated.transcription_provider,
+        TranscriptionProvider::OpenAiApi
+    );
     assert_eq!(migrated.stage, JobStage::Captured);
     assert_eq!(migrated.audio_path, audio_path);
     assert_eq!(migrated.raw_transcript, "legacy raw transcript");

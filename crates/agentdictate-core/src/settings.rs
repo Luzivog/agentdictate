@@ -5,6 +5,58 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CLEANUP_PROMPT: &str = "Clean up this dictation into a clear prompt. Preserve intent and technical terms. Fix punctuation and obvious filler. Do not add new requirements.";
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TranscriptionProvider {
+    #[default]
+    #[serde(rename = "openai_api")]
+    OpenAiApi,
+    #[serde(rename = "chatgpt_subscription")]
+    ChatGptSubscription,
+}
+
+impl TranscriptionProvider {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiApi => "openai_api",
+            Self::ChatGptSubscription => "chatgpt_subscription",
+        }
+    }
+
+    /// Returns the Platform API transcription price for this route.
+    /// The ChatGPT route does not send a Platform API billing credential.
+    #[must_use]
+    pub const fn marginal_price_per_audio_minute(self, openai_api_price: f64) -> f64 {
+        match self {
+            Self::OpenAiApi => openai_api_price,
+            Self::ChatGptSubscription => 0.0,
+        }
+    }
+}
+
+impl std::str::FromStr for TranscriptionProvider {
+    type Err = ParseTranscriptionProviderError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "openai_api" => Ok(Self::OpenAiApi),
+            "chatgpt_subscription" => Ok(Self::ChatGptSubscription),
+            _ => Err(ParseTranscriptionProviderError(value.to_owned())),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseTranscriptionProviderError(String);
+
+impl fmt::Display for ParseTranscriptionProviderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "unknown transcription provider {:?}", self.0)
+    }
+}
+
+impl std::error::Error for ParseTranscriptionProviderError {}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranscriptionPrice {
@@ -47,6 +99,7 @@ impl Default for CleanupPrice {
 #[serde(default)]
 pub struct Settings {
     pub openai_api_key: String,
+    pub transcription_provider: TranscriptionProvider,
     pub transcription_model: String,
     pub custom_transcription_model: String,
     pub language: String,
@@ -150,6 +203,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             openai_api_key: String::new(),
+            transcription_provider: TranscriptionProvider::OpenAiApi,
             transcription_model: "gpt-transcribe".into(),
             custom_transcription_model: String::new(),
             language: String::new(),
