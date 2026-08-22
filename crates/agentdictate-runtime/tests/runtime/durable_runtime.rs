@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use agentdictate_core::ReplacementRule;
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryStatus, ExternalError, JobStage, Recorder,
-    RecordingJob, RecordingRequest, Runtime, Transcriber, Transcript,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
+    HeadlessDeliveryGate, JobStage, Recorder, RecordingJob, RecordingRequest, Runtime,
+    RuntimeError, Transcriber, Transcript,
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
@@ -130,6 +131,36 @@ struct InspectingDeliverer {
     database_path: PathBuf,
     saw_persisted_transcript: bool,
     saw_durable_delivery_attempt: bool,
+}
+
+struct InspectingDeliveryGate {
+    database_path: PathBuf,
+    saw_ready_without_attempt: bool,
+}
+
+impl DeliveryGate for InspectingDeliveryGate {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        let reader = Runtime::open_observer(&self.database_path)
+            .map_err(|error| DeliveryGateError::new(error.to_string()))?;
+        self.saw_ready_without_attempt = reader
+            .recoverable_jobs()
+            .map_err(|error| DeliveryGateError::new(error.to_string()))?
+            .into_iter()
+            .any(|job| {
+                job.stage == JobStage::ReadyToDeliver
+                    && job.delivery_status == DeliveryStatus::NotAttempted
+                    && job.final_text == "Durable final words."
+            });
+        Ok(())
+    }
+}
+
+struct FailingDeliveryGate;
+
+impl DeliveryGate for FailingDeliveryGate {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        Err(DeliveryGateError::new("overlay exit was not acknowledged"))
+    }
 }
 
 impl Deliverer for InspectingDeliverer {
@@ -371,11 +402,16 @@ fn transcript_is_durable_before_delivery_is_attempted() {
         saw_persisted_transcript: false,
         saw_durable_delivery_attempt: false,
     };
+    let mut delivery_gate = InspectingDeliveryGate {
+        database_path: database_path.clone(),
+        saw_ready_without_attempt: false,
+    };
 
     let delivered = runtime
-        .process_captured(job.id, &mut transcriber, &mut deliverer)
+        .process_captured(job.id, &mut transcriber, &mut delivery_gate, &mut deliverer)
         .unwrap();
 
+    assert!(delivery_gate.saw_ready_without_attempt);
     assert!(deliverer.saw_persisted_transcript);
     assert!(deliverer.saw_durable_delivery_attempt);
     assert_eq!(delivered.stage, JobStage::Delivered);
@@ -403,6 +439,52 @@ fn transcript_is_durable_before_delivery_is_attempted() {
 }
 
 #[test]
+fn delivery_gate_failure_is_safe_to_retry_and_never_calls_the_deliverer() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let mut recorder = InspectingRecorder {
+        database_path: database_path.clone(),
+        saw_durable_starting_job: false,
+    };
+    let job = runtime
+        .start_recording(
+            request(&directory.path().join("recordings/blocked.wav")),
+            &mut recorder,
+        )
+        .unwrap();
+    runtime.capture_recording(job.id, 6.0).unwrap();
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
+
+    let error = runtime
+        .process_captured(
+            job.id,
+            &mut FixedTranscriber,
+            &mut FailingDeliveryGate,
+            &mut deliverer,
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, RuntimeError::DeliveryBlocked(_)));
+    assert_eq!(deliverer.attempts, 0);
+    let blocked = Runtime::open_observer(&database_path)
+        .unwrap()
+        .job(job.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(blocked.stage, JobStage::ReadyToDeliver);
+    assert_eq!(blocked.delivery_status, DeliveryStatus::NotAttempted);
+    assert!(!blocked.copied_to_clipboard);
+    assert!(!blocked.paste_triggered);
+    assert!(
+        blocked
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("overlay exit was not acknowledged"))
+    );
+}
+
+#[test]
 fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
@@ -422,6 +504,7 @@ fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
         .process_captured(
             job.id,
             &mut FixedTranscriber,
+            &mut HeadlessDeliveryGate,
             &mut CountingSubmittedDeliverer { attempts: 0 },
         )
         .unwrap();
@@ -478,7 +561,12 @@ fn transcribing_stage_is_durable_before_the_network_adapter_runs() {
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     runtime
-        .process_captured(job.id, &mut transcriber, &mut deliverer)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
     assert!(transcriber.saw_durable_transcribing_job);
@@ -504,11 +592,18 @@ fn ambiguous_delivery_is_not_retried_after_restart() {
     let mut deliverer = AmbiguousDeliverer { attempts: 0 };
 
     let ambiguous = runtime
-        .process_captured(job.id, &mut transcriber, &mut deliverer)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
     drop(runtime);
     let mut restarted = Runtime::open(&database_path).unwrap();
-    restarted.resume_safe_deliveries(&mut deliverer).unwrap();
+    restarted
+        .resume_safe_deliveries(&mut HeadlessDeliveryGate, &mut deliverer)
+        .unwrap();
 
     assert_eq!(deliverer.attempts, 1);
     assert_eq!(ambiguous.delivery_status, DeliveryStatus::Ambiguous);
@@ -562,13 +657,23 @@ fn duplicate_processing_signal_cannot_transcribe_or_paste_a_delivered_job_again(
     let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     runtime
-        .process_captured(job.id, &mut transcriber, &mut deliverer)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
     assert!(runtime.capture_recording(job.id, 2.0).is_err());
     assert!(
         runtime
-            .process_captured(job.id, &mut transcriber, &mut deliverer)
+            .process_captured(
+                job.id,
+                &mut transcriber,
+                &mut HeadlessDeliveryGate,
+                &mut deliverer,
+            )
             .is_err()
     );
     assert_eq!(transcriber.attempts, 1);
@@ -714,7 +819,12 @@ fn captured_checkpoint_can_be_retried_after_restart() {
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     let delivered = runtime
-        .retry_transcription(job.id, &mut transcriber, &mut deliverer)
+        .retry_transcription(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
     assert_eq!(delivered.stage, JobStage::Delivered);
@@ -742,13 +852,23 @@ fn failed_transcription_can_be_retried_explicitly_without_a_duplicate_first_atte
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     assert!(
         runtime
-            .process_captured(job.id, &mut failing, &mut deliverer)
+            .process_captured(
+                job.id,
+                &mut failing,
+                &mut HeadlessDeliveryGate,
+                &mut deliverer,
+            )
             .is_err()
     );
     let mut retry = CountingTranscriber { attempts: 0 };
 
     let delivered = runtime
-        .retry_transcription(job.id, &mut retry, &mut deliverer)
+        .retry_transcription(
+            job.id,
+            &mut retry,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
     assert_eq!(failing.attempts, 1);
@@ -776,11 +896,18 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
     let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut ambiguous = AmbiguousDeliverer { attempts: 0 };
     runtime
-        .process_captured(job.id, &mut transcriber, &mut ambiguous)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut ambiguous,
+        )
         .unwrap();
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
+    let delivered = runtime
+        .retry_delivery(job.id, &mut HeadlessDeliveryGate, &mut submitted)
+        .unwrap();
 
     assert_eq!(transcriber.attempts, 1);
     assert_eq!(ambiguous.attempts, 1);
@@ -808,7 +935,12 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
     let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut ambiguous = AmbiguousDeliverer { attempts: 0 };
     runtime
-        .process_captured(job.id, &mut transcriber, &mut ambiguous)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut ambiguous,
+        )
         .unwrap();
     rusqlite::Connection::open(&database_path)
         .unwrap()
@@ -819,7 +951,9 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
         .unwrap();
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let error = runtime.retry_delivery(job.id, &mut submitted).unwrap_err();
+    let error = runtime
+        .retry_delivery(job.id, &mut HeadlessDeliveryGate, &mut submitted)
+        .unwrap_err();
 
     assert!(error.to_string().contains("no durable outcome"));
     assert_eq!(submitted.attempts, 0);
@@ -962,7 +1096,12 @@ fn enabled_replacements_are_applied_after_cleanup_and_before_delivery() {
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     let delivered = runtime
-        .process_captured(job.id, &mut transcriber, &mut deliverer)
+        .process_captured(
+            job.id,
+            &mut transcriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
     assert_eq!(delivered.raw_transcript, "durable raw words");

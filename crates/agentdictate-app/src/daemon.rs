@@ -1,4 +1,4 @@
-use std::{fs, sync::mpsc::Sender};
+use std::fs;
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot,
@@ -7,14 +7,14 @@ use agentdictate_core::{
     WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
-    Deliverer, DeliveryStatus, ExternalError, HistoryCursor, HistoryEntry, HistoryQuery, Recorder,
-    RecordingJob, RecordingRequest, Runtime, RuntimeError, Transcriber, UsageAggregate,
-    UsageMetric,
+    Deliverer, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
+    HeadlessDeliveryGate, HistoryCursor, HistoryEntry, HistoryQuery, Recorder, RecordingJob,
+    RecordingRequest, Runtime, RuntimeError, Transcriber, UsageAggregate, UsageMetric,
 };
 use chrono::Utc;
 use thiserror::Error;
 
-use crate::{ActiveRecordingUpdate, AppPaths, OverlayUpdate};
+use crate::{ActiveRecordingUpdate, AppPaths, OverlayController, OverlayUpdate};
 
 pub(crate) const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
@@ -28,6 +28,20 @@ pub struct CapturedRecording {
 /// the Captured checkpoint is written.
 pub trait RecordingController: Recorder {
     fn finish(&mut self, job: &RecordingJob) -> Result<CapturedRecording, ExternalError>;
+}
+
+enum OverlayDeliveryGate {
+    Headless(HeadlessDeliveryGate),
+    Live(OverlayController),
+}
+
+impl DeliveryGate for OverlayDeliveryGate {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        match self {
+            Self::Headless(gate) => gate.confirm_ready(),
+            Self::Live(gate) => gate.confirm_ready(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -60,7 +74,7 @@ pub struct Daemon<R, T, D> {
     recoverable_count: usize,
     last_transcript: Option<String>,
     hotkey: HotkeyReadiness,
-    overlay_sender: Option<Sender<OverlayUpdate>>,
+    overlay: OverlayDeliveryGate,
 }
 
 impl<R, T, D> Daemon<R, T, D>
@@ -95,7 +109,7 @@ where
             recoverable_count,
             last_transcript: None,
             hotkey: HotkeyReadiness::Starting,
-            overlay_sender: None,
+            overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
         }
     }
 
@@ -199,26 +213,31 @@ where
         self.active_recording = None;
         self.sequence += 1;
         self.publish_overlay_update();
-        let result =
-            match self
-                .runtime
-                .process_captured(id, &mut self.transcriber, &mut self.deliverer)
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    tracing::error!(job_id = %id, %error, "dictation processing failed");
-                    self.workflow.apply(WorkflowSignal::Interrupted {
-                        job_id: id,
-                        at: JobStage::Failed,
-                    })?;
-                    self.active_job = None;
-                    self.active_recording = None;
-                    self.recoverable_count = self.attention_recovery_count()?;
-                    self.sequence += 1;
-                    self.publish_overlay_update();
-                    return Err(error.into());
-                }
-            };
+        let result = match self.runtime.process_captured(
+            id,
+            &mut self.transcriber,
+            &mut self.overlay,
+            &mut self.deliverer,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(job_id = %id, %error, "dictation processing failed");
+                let persisted_stage = self
+                    .runtime
+                    .job(id)?
+                    .map_or(JobStage::Failed, |job| job.stage);
+                self.workflow.apply(WorkflowSignal::Interrupted {
+                    job_id: id,
+                    at: persisted_stage,
+                })?;
+                self.active_job = None;
+                self.active_recording = None;
+                self.recoverable_count = self.attention_recovery_count()?;
+                self.sequence += 1;
+                self.publish_overlay_update();
+                return Err(error.into());
+            }
+        };
         self.workflow
             .apply(WorkflowSignal::TranscriptStored { job_id: id })?;
         self.workflow
@@ -338,9 +357,12 @@ where
     }
 
     pub fn retry_transcription(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        let result =
-            self.runtime
-                .retry_transcription(id, &mut self.transcriber, &mut self.deliverer)?;
+        let result = self.runtime.retry_transcription(
+            id,
+            &mut self.transcriber,
+            &mut self.overlay,
+            &mut self.deliverer,
+        )?;
         self.workflow = Workflow::new();
         if result.stage == JobStage::Delivered
             && let Err(error) = self.runtime.record_delivered_session(id, &self.settings)
@@ -358,7 +380,9 @@ where
     }
 
     pub fn retry_delivery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        let result = self.runtime.retry_delivery(id, &mut self.deliverer)?;
+        let result = self
+            .runtime
+            .retry_delivery(id, &mut self.overlay, &mut self.deliverer)?;
         self.workflow = Workflow::new();
         if result.stage == JobStage::Delivered
             && let Err(error) = self.runtime.record_delivered_session(id, &self.settings)
@@ -518,8 +542,8 @@ where
         self.publish_overlay_update();
     }
 
-    pub fn set_overlay_sender(&mut self, sender: Sender<OverlayUpdate>) {
-        self.overlay_sender = Some(sender);
+    pub fn set_overlay_controller(&mut self, controller: OverlayController) {
+        self.overlay = OverlayDeliveryGate::Live(controller);
         self.publish_overlay_update();
     }
 
@@ -561,8 +585,8 @@ where
     }
 
     fn publish_overlay_update(&self) {
-        if let Some(sender) = &self.overlay_sender {
-            let _ = sender.send(self.overlay_update());
+        if let OverlayDeliveryGate::Live(overlay) = &self.overlay {
+            overlay.update(self.overlay_update());
         }
     }
 

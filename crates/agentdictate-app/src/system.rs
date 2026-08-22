@@ -780,9 +780,21 @@ mod tests {
             fs::read_to_string(wl_copy_log).unwrap(),
             "--foreground --primary\n--foreground\n"
         );
-        assert_eq!(
-            fs::read_to_string(wl_paste_log).unwrap(),
-            "--no-newline --primary\n--no-newline\n"
+        let readback_arguments = fs::read_to_string(wl_paste_log).unwrap();
+        assert!(
+            readback_arguments
+                .lines()
+                .any(|arguments| arguments == "--no-newline --primary")
+        );
+        assert!(
+            readback_arguments
+                .lines()
+                .any(|arguments| arguments == "--no-newline")
+        );
+        assert!(
+            readback_arguments
+                .lines()
+                .all(|arguments| matches!(arguments, "--no-newline --primary" | "--no-newline"))
         );
         assert_eq!(
             fs::read_to_string(ydotool_log).unwrap(),

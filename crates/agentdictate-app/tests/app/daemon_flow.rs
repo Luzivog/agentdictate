@@ -1,6 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+};
 
-use agentdictate_app::{AppPaths, CapturedRecording, Daemon, RecordingController};
+use agentdictate_app::{
+    AppPaths, CapturedRecording, Daemon, OverlayUpdate, RecordingController,
+    start_overlay_presenter,
+};
 use agentdictate_core::{HistoryPageRequest, HotkeyReadiness, JobStage, Settings, WorkflowPhase};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, ExternalError, HistoryQuery, Recorder, RecordingJob, Runtime,
@@ -112,6 +118,21 @@ impl Deliverer for SubmittedDelivery {
     }
 }
 
+struct ExitInspectingDelivery {
+    helper_exited: PathBuf,
+    delivered_after_exit: bool,
+}
+
+impl Deliverer for ExitInspectingDelivery {
+    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+        self.delivered_after_exit = self.helper_exited.is_file();
+        Ok(DeliveryDisposition::Submitted {
+            copied_to_clipboard: true,
+            paste_triggered: true,
+        })
+    }
+}
+
 #[test]
 fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     let directory = tempdir().unwrap();
@@ -162,10 +183,26 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
 }
 
 #[test]
-fn daemon_publishes_active_wav_metadata_only_to_the_overlay_channel() {
+fn daemon_waits_for_overlay_exit_before_delivery() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());
     std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let received = directory.path().join("received");
+    let helper_exited = directory.path().join("helper-exited");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
+            received.display(),
+            helper_exited.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
     let runtime = Runtime::open(&paths.database_file).unwrap();
     let recorder = InspectingRecorder {
         database: paths.database_file.clone(),
@@ -177,16 +214,21 @@ fn daemon_publishes_active_wav_metadata_only_to_the_overlay_channel() {
         paths,
         recorder,
         FixedTranscriber,
-        SubmittedDelivery::default(),
+        ExitInspectingDelivery {
+            helper_exited: helper_exited.clone(),
+            delivered_after_exit: false,
+        },
     );
-    let (sender, receiver) = std::sync::mpsc::channel();
-    daemon.set_overlay_sender(sender);
-    let initial = receiver.recv().unwrap();
-    assert!(initial.active_recording.is_none());
+    daemon.set_overlay_controller(overlay);
 
     let started = daemon.start_recording().unwrap();
-    let recording = receiver.recv().unwrap();
+    let delivered = daemon.stop_recording().unwrap();
 
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    assert!(daemon.deliverer().delivered_after_exit);
+    assert_eq!(std::fs::read_to_string(helper_exited).unwrap(), "exited");
+    let encoded = std::fs::read_to_string(received).unwrap();
+    let recording: OverlayUpdate = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
         recording
             .active_recording
@@ -200,8 +242,14 @@ fn daemon_publishes_active_wav_metadata_only_to_the_overlay_channel() {
         .map(|active| active.started_at_unix_millis)
         .unwrap();
     assert!(overlay_started_at >= started.started_at.timestamp_millis());
-    assert_eq!(recording.workflow, daemon.snapshot().workflow);
-    assert_eq!(daemon.snapshot().last_transcript, None);
+    assert!(matches!(
+        recording.workflow.phase,
+        WorkflowPhase::Recording { job_id } if job_id == started.id
+    ));
+    assert!(!encoded.contains("last_transcript"));
+    assert!(!encoded.contains("recoverable_count"));
+    drop(daemon);
+    presenter.join().unwrap();
 }
 
 #[test]
@@ -250,11 +298,7 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
         FixedTranscriber,
         SubmittedDelivery::default(),
     );
-    let (sender, receiver) = std::sync::mpsc::channel();
-    daemon.set_overlay_sender(sender);
-    let _initial = receiver.recv().unwrap();
     let started = daemon.start_recording().unwrap();
-    let _recording = receiver.recv().unwrap();
     let connection = rusqlite::Connection::open(&paths.database_file).unwrap();
     reject_capture_checkpoint(&connection);
 
@@ -262,14 +306,6 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
 
     assert!(error.to_string().contains("capture checkpoint unavailable"));
     assert_eq!(daemon.recorder().finish_attempts, 1);
-    let recovery = receiver.try_iter().last().unwrap();
-    assert!(matches!(
-        recovery.workflow.phase,
-        WorkflowPhase::NeedsAttention {
-            job_id,
-            at: JobStage::Interrupted,
-        } if job_id == started.id
-    ));
     assert!(matches!(
         daemon.snapshot().workflow.phase,
         WorkflowPhase::NeedsAttention {

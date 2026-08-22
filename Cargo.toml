@@ -29,6 +29,9 @@ thiserror = "2.0"
 tracing = "0.1"
 uuid = { version = "1.18", features = ["serde", "v4"] }
 
+[patch.crates-io]
+gpui = { path = "vendor/gpui-0.2.2" }
+
 [profile.dev]
 debug = "line-tables-only"
 

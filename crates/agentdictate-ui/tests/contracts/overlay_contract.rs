@@ -34,6 +34,16 @@ fn overlay_window_policy_never_takes_focus_or_input_from_the_paste_target() {
 }
 
 #[test]
+fn vendored_gpui_x11_popup_bypasses_the_window_manager() {
+    let x11_window_source =
+        include_str!("../../../../vendor/gpui-0.2.2/src/platform/linux/x11/window.rs");
+
+    assert!(
+        x11_window_source.contains(".override_redirect((params.kind == WindowKind::PopUp) as u32)")
+    );
+}
+
+#[test]
 fn overlay_visibility_matches_the_previous_three_active_presentations() {
     for state in [
         OverlayState::Recording,

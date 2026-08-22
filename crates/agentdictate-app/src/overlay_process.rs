@@ -3,19 +3,23 @@ use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel},
     thread::JoinHandle,
+    time::Duration,
 };
 
 use agentdictate_core::WorkflowSnapshot;
+use agentdictate_runtime::{DeliveryGate, DeliveryGateError};
 use agentdictate_ui::{
     ActiveRecordingPresentation, LogicalRect, OverlayPresentation, OverlayState,
 };
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 const OVERLAY_HELPER_ARGUMENT: &str = "--overlay-helper";
 const OVERLAY_WORK_AREA: &str = "AGENTDICTATE_OVERLAY_WORK_AREA";
 const AUTOMATIC_RESTART_LIMIT_PER_UPDATE: u8 = 1;
+const OVERLAY_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Serializable recording metadata for the private daemon-to-overlay pipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -56,6 +60,57 @@ pub enum OverlayProcessAction {
     Stop,
 }
 
+#[derive(Debug, Error)]
+pub enum OverlayTeardownError {
+    #[error("recording overlay presenter is unavailable")]
+    PresenterUnavailable,
+    #[error("recording overlay helper did not exit before the teardown deadline")]
+    TimedOut,
+    #[error("recording overlay helper exit could not be confirmed: {0}")]
+    ExitObservation(#[source] io::Error),
+}
+
+#[derive(Clone)]
+pub struct OverlayController {
+    commands: Sender<OverlayCommand>,
+}
+
+impl OverlayController {
+    pub fn update(&self, update: OverlayUpdate) {
+        let _ = self.commands.send(OverlayCommand::Update(update));
+    }
+
+    pub fn dismiss_and_wait(&self) -> Result<(), OverlayTeardownError> {
+        let (reply, acknowledgment) = sync_channel(1);
+        self.commands
+            .send(OverlayCommand::Dismiss { reply })
+            .map_err(|_| OverlayTeardownError::PresenterUnavailable)?;
+        match acknowledgment.recv_timeout(OVERLAY_TEARDOWN_TIMEOUT) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => {
+                let _ = self.commands.send(OverlayCommand::ForceDismiss);
+                Err(OverlayTeardownError::TimedOut)
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(OverlayTeardownError::PresenterUnavailable),
+        }
+    }
+}
+
+impl DeliveryGate for OverlayController {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        self.dismiss_and_wait()
+            .map_err(|error| DeliveryGateError::new(error.to_string()))
+    }
+}
+
+enum OverlayCommand {
+    Update(OverlayUpdate),
+    Dismiss {
+        reply: SyncSender<Result<(), OverlayTeardownError>>,
+    },
+    ForceDismiss,
+}
+
 /// Tracks whether the transient notification helper exists. The daemon itself
 /// never creates a GPUI application or window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,12 +142,14 @@ impl OverlayProcessState {
 
 pub fn start_overlay_presenter(
     executable: PathBuf,
-    updates: Receiver<OverlayUpdate>,
     work_area: Option<LogicalRect>,
-) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
+) -> io::Result<(OverlayController, JoinHandle<()>)> {
+    let (commands, receiver) = channel();
+    let controller = OverlayController { commands };
+    let presenter = std::thread::Builder::new()
         .name("agentdictate-overlay-presenter".into())
-        .spawn(move || overlay_presenter_loop(&executable, updates, work_area))
+        .spawn(move || overlay_presenter_loop(&executable, receiver, work_area))?;
+    Ok((controller, presenter))
 }
 
 pub fn is_overlay_helper_argument(argument: Option<&str>) -> bool {
@@ -108,7 +165,7 @@ pub fn overlay_work_area_from_environment() -> Option<LogicalRect> {
 
 fn overlay_presenter_loop(
     executable: &Path,
-    updates: Receiver<OverlayUpdate>,
+    commands: Receiver<OverlayCommand>,
     work_area: Option<LogicalRect>,
 ) {
     let (events, event_receiver) = channel();
@@ -116,8 +173,11 @@ fn overlay_presenter_loop(
     let Ok(update_forwarder) = std::thread::Builder::new()
         .name("agentdictate-overlay-updates".into())
         .spawn(move || {
-            while let Ok(update) = updates.recv() {
-                if update_events.send(PresenterEvent::Update(update)).is_err() {
+            while let Ok(command) = commands.recv() {
+                if update_events
+                    .send(PresenterEvent::Command(command))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -131,7 +191,7 @@ fn overlay_presenter_loop(
     let mut supervisor = OverlaySupervisor::new(executable, work_area, events.clone());
     while let Ok(event) = event_receiver.recv() {
         match event {
-            PresenterEvent::Update(update) => supervisor.handle_update(update),
+            PresenterEvent::Command(command) => supervisor.handle_command(command),
             PresenterEvent::HelperExited { generation, result } => {
                 supervisor.handle_helper_exit(generation, result);
             }
@@ -145,7 +205,7 @@ fn overlay_presenter_loop(
 }
 
 enum PresenterEvent {
-    Update(OverlayUpdate),
+    Command(OverlayCommand),
     HelperExited {
         generation: u64,
         result: io::Result<()>,
@@ -162,6 +222,12 @@ struct OverlaySupervisor<'a> {
     last_visible_update: Option<OverlayUpdate>,
     remaining_restarts: u8,
     next_generation: u64,
+    pending_dismissal: Option<PendingDismissal>,
+}
+
+struct PendingDismissal {
+    generation: u64,
+    reply: SyncSender<Result<(), OverlayTeardownError>>,
 }
 
 impl<'a> OverlaySupervisor<'a> {
@@ -179,6 +245,39 @@ impl<'a> OverlaySupervisor<'a> {
             last_visible_update: None,
             remaining_restarts: 0,
             next_generation: 0,
+            pending_dismissal: None,
+        }
+    }
+
+    fn handle_command(&mut self, command: OverlayCommand) {
+        match command {
+            OverlayCommand::Update(update) => self.handle_update(update),
+            OverlayCommand::Dismiss { reply } => self.dismiss_and_wait(reply),
+            OverlayCommand::ForceDismiss => self.force_dismissal(),
+        }
+    }
+
+    fn dismiss_and_wait(&mut self, reply: SyncSender<Result<(), OverlayTeardownError>>) {
+        self.last_visible_update = None;
+        self.remaining_restarts = 0;
+        self.lifecycle.mark_stopped();
+        let Some(child) = self.helper.as_mut() else {
+            let _ = reply.send(Ok(()));
+            return;
+        };
+        let generation = child.generation();
+        child.finish();
+        self.pending_dismissal = Some(PendingDismissal { generation, reply });
+    }
+
+    fn force_dismissal(&mut self) {
+        let Some(pending) = self.pending_dismissal.as_ref() else {
+            return;
+        };
+        if let Some(child) = self.helper.as_mut()
+            && child.generation() == pending.generation
+        {
+            child.terminate();
         }
     }
 
@@ -206,7 +305,7 @@ impl<'a> OverlaySupervisor<'a> {
                     .and_then(|child| child.send(&update));
                 if let Err(error) = send_result {
                     tracing::warn!(%error, "recording overlay helper disconnected");
-                    if let Some(child) = self.helper.take() {
+                    if let Some(mut child) = self.helper.take() {
                         child.terminate();
                     }
                     self.lifecycle.mark_stopped();
@@ -225,6 +324,23 @@ impl<'a> OverlaySupervisor<'a> {
     }
 
     fn handle_helper_exit(&mut self, generation: u64, result: io::Result<()>) {
+        if self
+            .pending_dismissal
+            .as_ref()
+            .is_some_and(|pending| pending.generation == generation)
+        {
+            let pending = self
+                .pending_dismissal
+                .take()
+                .expect("matching pending dismissal must exist");
+            if self.helper.as_ref().map(OverlayChild::generation) == Some(generation) {
+                self.helper.take();
+                self.lifecycle.mark_stopped();
+            }
+            let acknowledgment = result.map_err(OverlayTeardownError::ExitObservation);
+            let _ = pending.reply.send(acknowledgment);
+            return;
+        }
         if self.helper.as_ref().map(OverlayChild::generation) != Some(generation) {
             return;
         }
@@ -277,8 +393,13 @@ impl<'a> OverlaySupervisor<'a> {
         self.last_visible_update = None;
         self.remaining_restarts = 0;
         self.lifecycle.mark_stopped();
-        if let Some(child) = self.helper.take() {
+        if let Some(mut child) = self.helper.take() {
             child.finish();
+        }
+        if let Some(pending) = self.pending_dismissal.take() {
+            let _ = pending
+                .reply
+                .send(Err(OverlayTeardownError::PresenterUnavailable));
         }
     }
 }
@@ -330,10 +451,10 @@ impl OverlayChild {
             .stderr(Stdio::null())
             .process_group(0);
         if std::env::var_os("DISPLAY").is_some() {
-            // GPUI 0.2 maps PopUp to a notification window on X11, while its
-            // Wayland backend currently treats it as a normal toplevel. Use
-            // XWayland for this tiny surface so GNOME keeps it out of the app
-            // switcher/taskbar and preserves the user's focused window.
+            // The pinned GPUI patch maps X11 PopUp windows as unmanaged
+            // notification surfaces. Its Wayland backend still treats PopUp as
+            // a normal toplevel, so use XWayland to keep this overlay out of
+            // focus handling, the app switcher, and the taskbar.
             command
                 .env_remove("WAYLAND_DISPLAY")
                 .env("XDG_SESSION_TYPE", "x11");
@@ -393,11 +514,11 @@ impl OverlayChild {
         input.flush()
     }
 
-    fn finish(mut self) {
+    fn finish(&mut self) {
         drop(self.input.take());
     }
 
-    fn terminate(mut self) {
+    fn terminate(&mut self) {
         drop(self.input.take());
         let _ = self.child.kill();
     }

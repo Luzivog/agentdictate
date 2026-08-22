@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use agentdictate_core::{ReplacementRule, Settings};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, ExternalError, HistoryQuery, JobStage, Recorder, RecordingJob,
-    RecordingRequest, Runtime, Transcriber, Transcript, UsageMetric,
+    Deliverer, DeliveryDisposition, ExternalError, HeadlessDeliveryGate, HistoryQuery, JobStage,
+    Recorder, RecordingJob, RecordingRequest, Runtime, Transcriber, Transcript, UsageMetric,
 };
 use chrono::{Datelike, Days, TimeZone, Utc};
 use tempfile::TempDir;
@@ -68,7 +68,12 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
         .unwrap();
     runtime.capture_recording(job.id, 60.0).unwrap();
     runtime
-        .process_captured(job.id, &mut CleaningTranscriber, &mut SubmittedDeliverer)
+        .process_captured(
+            job.id,
+            &mut CleaningTranscriber,
+            &mut HeadlessDeliveryGate,
+            &mut SubmittedDeliverer,
+        )
         .unwrap()
 }
 

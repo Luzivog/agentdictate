@@ -15,8 +15,9 @@ mod maintenance_priority;
 pub use maintenance_priority::{HistoryIndexMaintenance, RecordingPriorityGuard};
 mod ports;
 pub use ports::{
-    Deliverer, DeliveryDisposition, DeliveryStatus, ExternalError, Recorder, RecordingJob,
-    RecordingRequest, RuntimeError, RuntimeEvent, Transcriber, Transcript,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
+    HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest, RuntimeError, RuntimeEvent,
+    Transcriber, Transcript,
 };
 mod pricing;
 mod recovery;

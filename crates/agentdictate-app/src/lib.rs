@@ -21,8 +21,9 @@ pub use openai::{
     TranscriptionRequest,
 };
 pub use overlay_process::{
-    ActiveRecordingUpdate, OverlayProcessAction, OverlayProcessState, OverlayUpdate,
-    is_overlay_helper_argument, overlay_work_area_from_environment, start_overlay_presenter,
+    ActiveRecordingUpdate, OverlayController, OverlayProcessAction, OverlayProcessState,
+    OverlayTeardownError, OverlayUpdate, is_overlay_helper_argument,
+    overlay_work_area_from_environment, start_overlay_presenter,
 };
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
 pub use startup::{sync_autostart, sync_autostart_command};

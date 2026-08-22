@@ -2,7 +2,6 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -143,10 +142,9 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
         }),
     };
     let hidden = update(&Workflow::new());
-    let (updates, receiver) = mpsc::channel();
-    let presenter = start_overlay_presenter(executable, receiver, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
 
-    updates.send(visible).unwrap();
+    overlay.update(visible);
     let deadline = Instant::now() + Duration::from_secs(2);
     let relaunched = loop {
         let count = fs::read_to_string(&launches)
@@ -161,8 +159,8 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
         std::thread::yield_now();
     };
 
-    updates.send(hidden).unwrap();
-    drop(updates);
+    overlay.update(hidden);
+    drop(overlay);
     presenter.join().unwrap();
     let observed_launches = fs::read_to_string(&launches).unwrap_or_default();
     assert!(
@@ -202,10 +200,9 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     let visible = update(&recording);
-    let (updates, receiver) = mpsc::channel();
-    let presenter = start_overlay_presenter(executable, receiver, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
 
-    updates.send(visible.clone()).unwrap();
+    overlay.update(visible.clone());
     let first_deadline = Instant::now() + Duration::from_secs(2);
     let mut two_launches_seen_at = None;
     let bounded = loop {
@@ -228,7 +225,7 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
     };
 
     let recovered_after_update = if bounded {
-        updates.send(visible).unwrap();
+        overlay.update(visible);
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let count = fs::read_to_string(&launches)
@@ -246,12 +243,59 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
         false
     };
 
-    updates.send(update(&Workflow::new())).unwrap();
-    drop(updates);
+    overlay.update(update(&Workflow::new()));
+    drop(overlay);
     presenter.join().unwrap();
     assert!(bounded, "one update caused more than two helper launches");
     assert!(
         recovered_after_update,
         "a new visible update did not reset the helper restart budget"
     );
+}
+
+#[test]
+fn dismissal_acknowledges_only_after_the_helper_exits() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let exited = directory.path().join("exited");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
+            exited.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+
+    let job_id = JobId::new();
+    let mut recording = Workflow::new();
+    recording
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    recording
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    overlay.update(update(&recording));
+
+    overlay.dismiss_and_wait().unwrap();
+
+    assert_eq!(fs::read_to_string(exited).unwrap(), "exited");
+    drop(overlay);
+    presenter.join().unwrap();
+}
+
+#[test]
+fn dismissal_without_a_helper_is_immediately_acknowledged() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("unused-overlay-helper");
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+
+    overlay.dismiss_and_wait().unwrap();
+
+    drop(overlay);
+    presenter.join().unwrap();
 }

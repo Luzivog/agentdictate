@@ -13,8 +13,9 @@ use crate::history::serialize_replacements;
 use crate::history_search;
 use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
 use crate::{
-    Deliverer, DeliveryDisposition, DeliveryStatus, ExternalError, JobId, JobStage, Recorder,
-    RecordingJob, RecordingRequest, ReplacementRule, RuntimeError, RuntimeEvent, Transcriber,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryStatus, ExternalError, JobId, JobStage,
+    Recorder, RecordingJob, RecordingRequest, ReplacementRule, RuntimeError, RuntimeEvent,
+    Transcriber,
 };
 
 pub struct Runtime {
@@ -195,6 +196,7 @@ impl Runtime {
         &mut self,
         id: JobId,
         transcriber: &mut impl Transcriber,
+        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let captured = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -243,7 +245,7 @@ impl Runtime {
         let ready = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(ready.clone()));
 
-        self.deliver_ready(ready, deliverer)
+        self.deliver_ready(ready, delivery_gate, deliverer)
     }
 
     pub fn replacement_rules(&self) -> Result<Vec<ReplacementRule>, RuntimeError> {
@@ -341,6 +343,7 @@ impl Runtime {
         &mut self,
         id: JobId,
         transcriber: &mut impl Transcriber,
+        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -374,7 +377,7 @@ impl Runtime {
         )?;
         let captured = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(captured));
-        self.process_captured(id, transcriber, deliverer)
+        self.process_captured(id, transcriber, delivery_gate, deliverer)
     }
 
     /// Re-attempts only the delivery step after an explicit user action. This
@@ -384,6 +387,7 @@ impl Runtime {
     pub fn retry_delivery(
         &mut self,
         id: JobId,
+        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -426,7 +430,7 @@ impl Runtime {
         )?;
         let ready = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(ready.clone()));
-        self.deliver_ready(ready, deliverer)
+        self.deliver_ready(ready, delivery_gate, deliverer)
     }
 
     /// Deletes explicit recovery data without exposing a crash window where
@@ -477,6 +481,7 @@ impl Runtime {
     /// Attempts left in-flight by a crash are reconciled to `Ambiguous` on open.
     pub fn resume_safe_deliveries(
         &mut self,
+        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<Vec<RecordingJob>, RuntimeError> {
         let mut statement = self.connection.prepare(
@@ -496,7 +501,7 @@ impl Runtime {
             let id =
                 JobId::from_str(&value).map_err(|_| RuntimeError::InvalidJobId(value.clone()))?;
             let ready = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-            results.push(self.deliver_ready(ready, deliverer)?);
+            results.push(self.deliver_ready(ready, delivery_gate, deliverer)?);
         }
         Ok(results)
     }
@@ -504,8 +509,26 @@ impl Runtime {
     fn deliver_ready(
         &mut self,
         ready: RecordingJob,
+        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
+        if let Err(error) = delivery_gate.confirm_ready() {
+            self.connection.execute(
+                r#"
+                UPDATE dictation_jobs
+                SET updated_at = ?1, error_message = ?2
+                WHERE runtime_id = ?3
+                "#,
+                params![
+                    timestamp(Utc::now()),
+                    format!("delivery blocked before paste: {error}"),
+                    ready.id.to_string(),
+                ],
+            )?;
+            let blocked = self.job(ready.id)?.expect("updated job must be readable");
+            self.publish(RuntimeEvent::JobUpdated(blocked));
+            return Err(RuntimeError::DeliveryBlocked(error));
+        }
         self.connection.execute(
             r#"
             UPDATE dictation_jobs

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, mpsc::Sender};
+use std::sync::{Arc, RwLock};
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, HotkeyReadiness, ServerMessage, Settings, WorkflowPhase,
@@ -12,8 +12,8 @@ use agentdictate_runtime::{
 
 use crate::model_catalog::ModelCatalog;
 use crate::{
-    AppPaths, Daemon, OpenAiTranscriber, OverlayUpdate, ReqwestOpenAiTransport, SystemDeliverer,
-    SystemRecordingController, sync_autostart,
+    AppPaths, Daemon, OpenAiTranscriber, OverlayController, ReqwestOpenAiTransport,
+    SystemDeliverer, SystemRecordingController, sync_autostart,
 };
 
 pub type ProductionDaemon =
@@ -96,8 +96,8 @@ impl AgentProcess {
         self.daemon.set_hotkey_readiness(readiness);
     }
 
-    pub fn set_overlay_sender(&mut self, sender: Sender<OverlayUpdate>) {
-        self.daemon.set_overlay_sender(sender);
+    pub fn set_overlay_controller(&mut self, controller: OverlayController) {
+        self.daemon.set_overlay_controller(controller);
     }
 
     pub fn set_hotkey_reconfigurer(&mut self, control: Arc<dyn HotkeyReconfigurer>) {

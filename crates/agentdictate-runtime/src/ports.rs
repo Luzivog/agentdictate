@@ -35,6 +35,8 @@ pub enum RuntimeError {
     },
     #[error("external operation failed: {0}")]
     External(#[from] ExternalError),
+    #[error("delivery was blocked before the paste attempt: {0}")]
+    DeliveryBlocked(#[source] DeliveryGateError),
     #[error("settings I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("settings JSON is invalid: {0}")]
@@ -64,6 +66,21 @@ impl ExternalError {
 impl From<RuntimeError> for ExternalError {
     fn from(error: RuntimeError) -> Self {
         Self::new(error.to_string())
+    }
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("{message}")]
+pub struct DeliveryGateError {
+    message: String,
+}
+
+impl DeliveryGateError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -141,6 +158,23 @@ pub enum DeliveryStatus {
 
 pub trait Deliverer {
     fn deliver(&mut self, job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError>;
+}
+
+/// Confirms that transient AgentDictate UI cannot receive the upcoming paste.
+/// Returning success is the prerequisite for persisting `Attempting` and
+/// invoking the delivery adapter.
+pub trait DeliveryGate {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError>;
+}
+
+/// Explicit delivery gate for processes that never launched an overlay.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HeadlessDeliveryGate;
+
+impl DeliveryGate for HeadlessDeliveryGate {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

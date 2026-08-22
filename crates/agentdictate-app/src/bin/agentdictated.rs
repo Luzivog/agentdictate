@@ -39,8 +39,21 @@ fn main() -> anyhow::Result<()> {
     let runtime = paths.runtime.clone();
     let server = IpcServer::bind(&paths.runtime)?;
     let mut process = AgentProcess::open(paths)?;
-    let (overlay_sender, overlay_receiver) = std::sync::mpsc::channel();
-    process.set_overlay_sender(overlay_sender);
+    let overlay_presenter = match std::env::current_exe()
+        .map_err(anyhow::Error::from)
+        .and_then(|executable| {
+            start_overlay_presenter(executable, detect_primary_work_area())
+                .map_err(anyhow::Error::from)
+        }) {
+        Ok((controller, thread)) => {
+            process.set_overlay_controller(controller);
+            Some(thread)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "recording overlay is unavailable; dictation will continue");
+            None
+        }
+    };
     start_hotkey_listener(&mut process, &runtime)?;
     let _maintenance_thread = match process.start_post_listener_maintenance() {
         Ok(thread) => Some(thread),
@@ -68,18 +81,6 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         })?;
-    let overlay_presenter = match std::env::current_exe()
-        .map_err(anyhow::Error::from)
-        .and_then(|executable| {
-            start_overlay_presenter(executable, overlay_receiver, detect_primary_work_area())
-                .map_err(anyhow::Error::from)
-        }) {
-        Ok(thread) => Some(thread),
-        Err(error) => {
-            tracing::warn!(%error, "recording overlay is unavailable; dictation will continue");
-            None
-        }
-    };
     if let Err(error) = start_signal_listener(runtime.clone()) {
         tracing::warn!(%error, "signal listener is unavailable; daemon will continue");
     }
