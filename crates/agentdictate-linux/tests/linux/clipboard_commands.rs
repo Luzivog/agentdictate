@@ -1,9 +1,12 @@
 use crate::support;
 
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 use agentdictate_linux::{
-    clipboard::CommandClipboard,
+    clipboard::{ClipboardSelection, CommandClipboard},
     command::{PlatformExecutable, PlatformTool, SystemCommandRunner},
     paste::{ClipboardProtocol, ClipboardReadinessEvidence},
 };
@@ -42,6 +45,56 @@ fn wayland_clipboard_is_ready_only_after_live_owner_readback_matches() {
     assert_eq!(
         publication.evidence,
         ClipboardReadinessEvidence::ReadbackMatches
+    );
+    assert!(publication.owner.is_alive().expect("owner liveness"));
+}
+
+#[test]
+fn wayland_primary_selection_is_published_and_verified_independently() {
+    let directory = TestDirectory::new();
+    let state = directory.path().join("primary.txt");
+    let owner_arguments = directory.path().join("wl-copy-arguments.txt");
+    let reader_arguments = directory.path().join("wl-paste-arguments.txt");
+    let wl_copy = directory.executable(
+        "wl-copy",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat > '{}'\nexec tail -f /dev/null\n",
+            owner_arguments.display(),
+            state.display(),
+        ),
+    );
+    let wl_paste = directory.executable(
+        "wl-paste",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\ncat '{}'\n",
+            reader_arguments.display(),
+            state.display(),
+        ),
+    );
+    let clipboard = CommandClipboard::new(
+        SystemCommandRunner,
+        PlatformExecutable::at(PlatformTool::WlCopy, wl_copy),
+        PlatformExecutable::at(PlatformTool::WlPaste, wl_paste),
+        PlatformExecutable::missing(PlatformTool::Xsel),
+    );
+
+    let mut publication = clipboard
+        .publish_selection(
+            ClipboardProtocol::Wayland,
+            ClipboardSelection::Primary,
+            b"primary transcript",
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("primary selection owner and readback become ready");
+
+    assert_eq!(fs::read(&state).unwrap(), b"primary transcript");
+    assert_eq!(
+        fs::read_to_string(owner_arguments).unwrap(),
+        "--foreground --primary\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader_arguments).unwrap(),
+        "--no-newline --primary\n"
     );
     assert!(publication.owner.is_alive().expect("owner liveness"));
 }

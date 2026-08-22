@@ -136,6 +136,7 @@ pub enum ShortcutMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteShortcut {
+    Universal,
     Standard,
     Terminal,
 }
@@ -274,6 +275,9 @@ impl PasteDelivery {
 
 fn shortcut_for(mode: ShortcutMode, target: &FocusTarget) -> PasteShortcut {
     match mode {
+        ShortcutMode::Auto if target.protocol() == ClipboardProtocol::Wayland => {
+            PasteShortcut::Universal
+        }
         ShortcutMode::Auto if is_terminal_class(target.window_class()) => PasteShortcut::Terminal,
         ShortcutMode::Auto | ShortcutMode::Standard => PasteShortcut::Standard,
         ShortcutMode::Terminal => PasteShortcut::Terminal,

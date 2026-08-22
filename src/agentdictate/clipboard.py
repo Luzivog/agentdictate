@@ -21,6 +21,11 @@ class ClipboardProtocol(str, Enum):
     X11 = "x11"
 
 
+class ClipboardSelection(str, Enum):
+    CLIPBOARD = "clipboard"
+    PRIMARY = "primary"
+
+
 @dataclass(frozen=True)
 class PasteTarget:
     protocol: ClipboardProtocol
@@ -41,11 +46,15 @@ class PasteResult:
 class _ClipboardSource:
     protocol: ClipboardProtocol
     process: subprocess.Popen[bytes]
+    selection: ClipboardSelection = ClipboardSelection.CLIPBOARD
 
 
 DELIVERY_DEADLINE_SECONDS = 2.0
 PASTE_DELAY_MS = "0"
 PASTE_KEY_DELAY_MS = "0"
+UNIVERSAL_PASTE_DELAY_MS = "50"
+UNIVERSAL_PASTE_KEY_DELAY_MS = "25"
+UNIVERSAL_PASTE_SHORTCUT = "shift+insert"
 STANDARD_PASTE_SHORTCUT = "ctrl+v"
 TERMINAL_PASTE_SHORTCUT = "ctrl+shift+v"
 TERMINAL_WINDOW_CLASS = re.compile(
@@ -60,7 +69,9 @@ class ClipboardPaste:
     """Copy text and send one paste chord to the focus current at delivery time."""
 
     _source_lock = threading.RLock()
-    _active_sources: dict[ClipboardProtocol, _ClipboardSource] = {}
+    _active_sources: dict[
+        tuple[ClipboardProtocol, ClipboardSelection], _ClipboardSource
+    ] = {}
 
     def __init__(
         self,
@@ -75,6 +86,7 @@ class ClipboardPaste:
         previous: bytes | None = None
         previous_protocol: ClipboardProtocol | None = None
         source: _ClipboardSource | None = None
+        primary_source: _ClipboardSource | None = None
         target = self._active_target(deadline)
 
         while True:
@@ -96,6 +108,19 @@ class ClipboardPaste:
                         error=self._clipboard_unavailable_message(target.protocol),
                         target_class=target.window_class,
                     )
+                primary_source = None
+                if self._uses_universal_wayland_paste(target):
+                    primary_source = self._publish_primary(text, deadline)
+                    if primary_source is None:
+                        return PasteResult(
+                            copied=True,
+                            paste_triggered=False,
+                            error=(
+                                "Could not prepare the Wayland primary selection. "
+                                "Transcript remains copied; paste was not sent."
+                            ),
+                            target_class=target.window_class,
+                        )
 
             current = self._active_target(deadline)
             if self._same_target(target, current):
@@ -186,6 +211,8 @@ class ClipboardPaste:
                     )
         else:
             self._remember_source(source)
+            if primary_source is not None:
+                self._remember_source(primary_source)
 
         if self.restore_previous and not restore_after_paste:
             return PasteResult(
@@ -260,14 +287,45 @@ class ClipboardPaste:
     ) -> _ClipboardSource | None:
         return self._publish_regular_bytes(text.encode("utf-8"), protocol, deadline)
 
+    def _publish_primary(
+        self,
+        text: str,
+        deadline: float,
+    ) -> _ClipboardSource | None:
+        return self._publish_bytes(
+            text.encode("utf-8"),
+            ClipboardProtocol.WAYLAND,
+            ClipboardSelection.PRIMARY,
+            deadline,
+        )
+
     def _publish_regular_bytes(
         self,
         data: bytes,
         protocol: ClipboardProtocol,
         deadline: float,
     ) -> _ClipboardSource | None:
-        previous = self._known_source(protocol)
-        source = self._start_source(data, protocol, paste_once=False)
+        return self._publish_bytes(
+            data,
+            protocol,
+            ClipboardSelection.CLIPBOARD,
+            deadline,
+        )
+
+    def _publish_bytes(
+        self,
+        data: bytes,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection,
+        deadline: float,
+    ) -> _ClipboardSource | None:
+        previous = self._known_source(protocol, selection)
+        source = self._start_source(
+            data,
+            protocol,
+            paste_once=False,
+            selection=selection,
+        )
         if source is None:
             return None
         ownership_observed = False
@@ -276,8 +334,8 @@ class ClipboardPaste:
             ownership_observed = (
                 ownership_observed and source.process.poll() is None
             )
-        if not ownership_observed and not self._wait_for_clipboard(
-            data, protocol, deadline
+        if not ownership_observed and not self._wait_for_selection(
+            data, protocol, selection, deadline
         ):
             self._terminate_source(source)
             return None
@@ -291,7 +349,10 @@ class ClipboardPaste:
         deadline: float,
     ) -> _ClipboardSource | None:
         replacement = self._start_source(
-            text.encode("utf-8"), current.protocol, paste_once=True
+            text.encode("utf-8"),
+            current.protocol,
+            paste_once=True,
+            selection=current.selection,
         )
         if replacement is None:
             return None
@@ -305,8 +366,9 @@ class ClipboardPaste:
         data: bytes,
         protocol: ClipboardProtocol,
         paste_once: bool,
+        selection: ClipboardSelection = ClipboardSelection.CLIPBOARD,
     ) -> _ClipboardSource | None:
-        command = self._source_command(protocol, paste_once)
+        command = self._source_command(protocol, paste_once, selection)
         if command is None:
             return None
         try:
@@ -325,13 +387,16 @@ class ClipboardPaste:
             if "process" in locals() and process.poll() is None:
                 process.terminate()
             return None
-        return _ClipboardSource(protocol, process)
+        return _ClipboardSource(protocol, process, selection)
 
     def _source_command(
-        self, protocol: ClipboardProtocol, paste_once: bool
+        self,
+        protocol: ClipboardProtocol,
+        paste_once: bool,
+        selection: ClipboardSelection = ClipboardSelection.CLIPBOARD,
     ) -> list[str] | None:
         if protocol == ClipboardProtocol.X11:
-            if paste_once:
+            if paste_once or selection != ClipboardSelection.CLIPBOARD:
                 return None
             xsel = shutil.which("xsel")
             if not xsel:
@@ -346,6 +411,8 @@ class ClipboardPaste:
         if not wl_copy:
             return None
         command = [wl_copy, "--foreground"]
+        if selection == ClipboardSelection.PRIMARY:
+            command.append("--primary")
         if paste_once:
             command.append("--paste-once")
         return command
@@ -356,8 +423,22 @@ class ClipboardPaste:
         protocol: ClipboardProtocol,
         deadline: float,
     ) -> bool:
+        return self._wait_for_selection(
+            expected,
+            protocol,
+            ClipboardSelection.CLIPBOARD,
+            deadline,
+        )
+
+    def _wait_for_selection(
+        self,
+        expected: bytes,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection,
+        deadline: float,
+    ) -> bool:
         while time.monotonic() < deadline:
-            actual = self._read_clipboard(protocol, deadline)
+            actual = self._read_selection(protocol, selection, deadline)
             if actual == expected:
                 return True
         return False
@@ -365,7 +446,19 @@ class ClipboardPaste:
     def _read_clipboard(
         self, protocol: ClipboardProtocol, deadline: float
     ) -> bytes | None:
-        command = self._read_command(protocol)
+        return self._read_selection(
+            protocol,
+            ClipboardSelection.CLIPBOARD,
+            deadline,
+        )
+
+    def _read_selection(
+        self,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection,
+        deadline: float,
+    ) -> bytes | None:
+        command = self._read_command(protocol, selection)
         if command is None:
             return None
         result = self._run(command, deadline)
@@ -373,8 +466,14 @@ class ClipboardPaste:
             return None
         return result.stdout
 
-    def _read_command(self, protocol: ClipboardProtocol) -> list[str] | None:
+    def _read_command(
+        self,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection = ClipboardSelection.CLIPBOARD,
+    ) -> list[str] | None:
         if protocol == ClipboardProtocol.X11:
+            if selection != ClipboardSelection.CLIPBOARD:
+                return None
             xsel = shutil.which("xsel")
             if not xsel:
                 return None
@@ -382,7 +481,10 @@ class ClipboardPaste:
         wl_paste = shutil.which("wl-paste")
         if not wl_paste:
             return None
-        return [wl_paste, "--no-newline"]
+        command = [wl_paste, "--no-newline"]
+        if selection == ClipboardSelection.PRIMARY:
+            command.append("--primary")
+        return command
 
     def _send_shortcut(
         self,
@@ -391,13 +493,23 @@ class ClipboardPaste:
         deadline: float,
     ) -> bool:
         if os.environ.get("WAYLAND_DISPLAY") and shutil.which("ydotool"):
+            paste_delay = (
+                UNIVERSAL_PASTE_DELAY_MS
+                if shortcut == UNIVERSAL_PASTE_SHORTCUT
+                else PASTE_DELAY_MS
+            )
+            key_delay = (
+                UNIVERSAL_PASTE_KEY_DELAY_MS
+                if shortcut == UNIVERSAL_PASTE_SHORTCUT
+                else PASTE_KEY_DELAY_MS
+            )
             command = [
                 "ydotool",
                 "key",
                 "--delay",
-                PASTE_DELAY_MS,
+                paste_delay,
                 "--key-delay",
-                PASTE_KEY_DELAY_MS,
+                key_delay,
                 shortcut,
             ]
         elif target.protocol == ClipboardProtocol.X11 and shutil.which("xdotool"):
@@ -421,15 +533,20 @@ class ClipboardPaste:
         return False
 
     def _remember_source(self, source: _ClipboardSource) -> None:
+        key = (source.protocol, source.selection)
         with self._source_lock:
-            previous = self._active_sources.get(source.protocol)
-            self._active_sources[source.protocol] = source
+            previous = self._active_sources.get(key)
+            self._active_sources[key] = source
         if previous is not None and previous.process.poll() is not None:
             previous.process.wait()
 
-    def _known_source(self, protocol: ClipboardProtocol) -> _ClipboardSource | None:
+    def _known_source(
+        self,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection,
+    ) -> _ClipboardSource | None:
         with self._source_lock:
-            return self._active_sources.get(protocol)
+            return self._active_sources.get((protocol, selection))
 
     @staticmethod
     def _terminate_source(source: _ClipboardSource) -> None:
@@ -479,9 +596,17 @@ class ClipboardPaste:
             return STANDARD_PASTE_SHORTCUT
         if self.shortcut_mode == PASTE_SHORTCUT_TERMINAL:
             return TERMINAL_PASTE_SHORTCUT
+        if self._uses_universal_wayland_paste(target):
+            return UNIVERSAL_PASTE_SHORTCUT
         if TERMINAL_WINDOW_CLASS.search(target.window_class):
             return TERMINAL_PASTE_SHORTCUT
         return STANDARD_PASTE_SHORTCUT
+
+    def _uses_universal_wayland_paste(self, target: PasteTarget) -> bool:
+        return (
+            self.shortcut_mode == PASTE_SHORTCUT_AUTO
+            and target.protocol == ClipboardProtocol.WAYLAND
+        )
 
     @staticmethod
     def _same_target(first: PasteTarget, second: PasteTarget) -> bool:
@@ -507,6 +632,8 @@ class ClipboardPaste:
 
     @staticmethod
     def _shortcut_label(shortcut: str) -> str:
+        if shortcut == UNIVERSAL_PASTE_SHORTCUT:
+            return "Shift+Insert"
         return "Ctrl+Shift+V" if shortcut == TERMINAL_PASTE_SHORTCUT else "Ctrl+V"
 
     @staticmethod

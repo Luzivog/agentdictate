@@ -7,8 +7,11 @@ use std::time::{Duration, Instant};
 
 use agentdictate_core::{ClientCommand, JobId, ServerMessageKind, Settings};
 use agentdictate_linux::{
-    clipboard::{ClipboardPublication, CommandClipboard},
-    command::{PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner},
+    clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
+    command::{
+        PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool,
+        SystemCommandRunner,
+    },
     focus::X11FocusObserver,
     injection::PasteInjector,
     paste::{
@@ -363,7 +366,7 @@ pub struct SystemDeliverer {
     /// Clipboard protocols are ownership based. Keeping the publisher alive
     /// after injection prevents a target that reads asynchronously from seeing
     /// an empty clipboard.
-    active_publication: Option<ClipboardPublication>,
+    active_publications: Vec<ClipboardPublication>,
 }
 
 impl SystemDeliverer {
@@ -377,7 +380,7 @@ impl SystemDeliverer {
             shortcut_mode: shortcut_mode(paste_shortcut),
             wayland_session: std::env::var("XDG_SESSION_TYPE")
                 .is_ok_and(|session| session.eq_ignore_ascii_case("wayland")),
-            active_publication: None,
+            active_publications: Vec::new(),
         }
     }
 
@@ -409,8 +412,33 @@ impl SystemDeliverer {
             .clipboard
             .publish(protocol, text.as_bytes(), Instant::now() + DELIVERY_TIMEOUT)
             .map_err(|error| ExternalError::new(error.to_string()))?;
-        self.active_publication = Some(publication);
+        self.active_publications = vec![publication];
         Ok(())
+    }
+
+    fn publish_delivery_text(
+        &self,
+        protocol: ClipboardProtocol,
+        contents: &[u8],
+        deadline: Instant,
+    ) -> Result<Vec<ClipboardPublication>, PlatformCommandError> {
+        let selections: &[ClipboardSelection] = match (self.shortcut_mode, protocol) {
+            (ShortcutMode::Auto, ClipboardProtocol::Wayland) => &[
+                // Some terminals bind Shift+Insert to the primary selection,
+                // while regular applications bind it to the clipboard. Publish
+                // primary first so a later failure never claims a new clipboard.
+                ClipboardSelection::Primary,
+                ClipboardSelection::Clipboard,
+            ],
+            _ => &[ClipboardSelection::Clipboard],
+        };
+        selections
+            .iter()
+            .map(|selection| {
+                self.clipboard
+                    .publish_selection(protocol, *selection, contents, deadline)
+            })
+            .collect()
     }
 }
 
@@ -437,12 +465,15 @@ impl Deliverer for SystemDeliverer {
                     }
                 }
                 DeliveryAction::PublishClipboard(protocol) => {
-                    let publication = self
-                        .clipboard
-                        .publish(protocol, job.final_text.as_bytes(), deadline)
+                    let publications = self
+                        .publish_delivery_text(protocol, job.final_text.as_bytes(), deadline)
                         .map_err(|error| ExternalError::new(error.to_string()))?;
-                    debug_assert!(publication.evidence.confirms_ready());
-                    self.active_publication = Some(publication);
+                    debug_assert!(
+                        publications
+                            .iter()
+                            .all(|publication| publication.evidence.confirms_ready())
+                    );
+                    self.active_publications = publications;
                     copied_this_attempt = true;
                     delivery.advance(DeliveryObservation::ClipboardReady(protocol))
                 }
@@ -600,7 +631,7 @@ mod tests {
             ),
             shortcut_mode: ShortcutMode::Standard,
             wayland_session: false,
-            active_publication: None,
+            active_publications: Vec::new(),
         };
         let now = Utc::now();
         let job = RecordingJob {
@@ -629,6 +660,133 @@ mod tests {
                 copied_to_clipboard: true,
                 paste_triggered: true,
             }
+        );
+    }
+
+    #[test]
+    fn automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste() {
+        let directory = tempdir().unwrap();
+        let clipboard_state = directory.path().join("clipboard.txt");
+        let primary_state = directory.path().join("primary.txt");
+        let wl_copy_log = directory.path().join("wl-copy.log");
+        let wl_copy = directory.path().join("wl-copy");
+        fs::write(
+            &wl_copy,
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "printf '%s\\n' \"$*\" >> '{}'\n",
+                    "case \"$*\" in\n",
+                    "  *--primary*) state='{}' ;;\n",
+                    "  *) state='{}' ;;\n",
+                    "esac\n",
+                    "cat > \"$state\"\n",
+                    "exec tail -f /dev/null\n",
+                ),
+                wl_copy_log.display(),
+                primary_state.display(),
+                clipboard_state.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wl_copy, fs::Permissions::from_mode(0o755)).unwrap();
+        let wl_paste_log = directory.path().join("wl-paste.log");
+        let wl_paste = directory.path().join("wl-paste");
+        fs::write(
+            &wl_paste,
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "printf '%s\\n' \"$*\" >> '{}'\n",
+                    "case \"$*\" in\n",
+                    "  *--primary*) cat '{}' ;;\n",
+                    "  *) cat '{}' ;;\n",
+                    "esac\n",
+                ),
+                wl_paste_log.display(),
+                primary_state.display(),
+                clipboard_state.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&wl_paste, fs::Permissions::from_mode(0o755)).unwrap();
+        let ydotool_log = directory.path().join("ydotool.log");
+        let ydotool = directory.path().join("ydotool");
+        fs::write(
+            &ydotool,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                ydotool_log.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&ydotool, fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = SystemCommandRunner;
+        let mut deliverer = SystemDeliverer {
+            clipboard: CommandClipboard::new(
+                runner,
+                PlatformExecutable::at(PlatformTool::WlCopy, wl_copy),
+                PlatformExecutable::at(PlatformTool::WlPaste, wl_paste),
+                PlatformExecutable::missing(PlatformTool::Xsel),
+            ),
+            focus: X11FocusObserver::new(
+                runner,
+                PlatformExecutable::missing(PlatformTool::Xdotool),
+                PlatformExecutable::missing(PlatformTool::Xprop),
+            ),
+            injector: PasteInjector::new(
+                runner,
+                PlatformExecutable::at(PlatformTool::Ydotool, ydotool),
+                PlatformExecutable::missing(PlatformTool::Xdotool),
+            ),
+            shortcut_mode: ShortcutMode::Auto,
+            wayland_session: true,
+            active_publications: Vec::new(),
+        };
+        let now = Utc::now();
+        let job = RecordingJob {
+            id: JobId::new(),
+            legacy_id: 1,
+            started_at: now,
+            updated_at: now,
+            stage: JobStage::ReadyToDeliver,
+            audio_path: directory.path().join("recording.wav"),
+            duration_seconds: 1.0,
+            transcription_model: "test".to_owned(),
+            raw_transcript: "wayland transcript".to_owned(),
+            final_text: "Wayland transcript.".to_owned(),
+            copied_to_clipboard: false,
+            paste_triggered: false,
+            delivery_status: DeliveryStatus::NotAttempted,
+            error_message: None,
+            cleanup_error: None,
+        };
+
+        let disposition = deliverer.deliver(&job).unwrap();
+
+        assert_eq!(
+            disposition,
+            DeliveryDisposition::Submitted {
+                copied_to_clipboard: true,
+                paste_triggered: true,
+            }
+        );
+        assert_eq!(
+            fs::read(&clipboard_state).unwrap(),
+            job.final_text.as_bytes()
+        );
+        assert_eq!(fs::read(&primary_state).unwrap(), job.final_text.as_bytes());
+        assert_eq!(
+            fs::read_to_string(wl_copy_log).unwrap(),
+            "--foreground --primary\n--foreground\n"
+        );
+        assert_eq!(
+            fs::read_to_string(wl_paste_log).unwrap(),
+            "--no-newline --primary\n--no-newline\n"
+        );
+        assert_eq!(
+            fs::read_to_string(ydotool_log).unwrap(),
+            "key --delay 50 --key-delay 25 shift+insert\n"
         );
     }
 

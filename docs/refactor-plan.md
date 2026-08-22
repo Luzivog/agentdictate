@@ -71,12 +71,15 @@ the daemon appear without polling or debounce delays.
 After transcription, the daemon delivers text to the focused application:
 
 1. Observe the focused window.
-2. Publish the transcript to the clipboard using `wl-copy` (Wayland) or a
-   live non-detaching `xsel` owner (X11), then read the clipboard back to
-   verify the content actually landed.
-3. Select the paste chord. Automatic mode uses `Ctrl+Shift+V` for detected
-   terminals and `Ctrl+V` for regular or unknown targets. Standard and
-   Terminal modes bypass target detection and use their named shortcuts.
+2. Publish the transcript. Automatic mode on native Wayland publishes the
+   same text to both the clipboard and the primary selection with live
+   `wl-copy` owners. Other deliveries publish only to the clipboard, using
+   `wl-copy` on Wayland or a live non-detaching `xsel` owner on X11. Read the
+   published selections back to verify that the text landed.
+3. Select the paste chord. On X11 or XWayland, Automatic mode uses
+   `Ctrl+Shift+V` for detected terminals and `Ctrl+V` for regular or unknown
+   targets. On native Wayland, Automatic mode uses `Shift+Insert`. Standard
+   and Terminal modes bypass target detection and use their named shortcuts.
 4. Inject one paced paste chord with `ydotool` via uinput on Wayland or
    `xdotool` on X11.
 

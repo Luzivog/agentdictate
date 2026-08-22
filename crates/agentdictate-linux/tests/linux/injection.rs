@@ -42,6 +42,35 @@ fn wayland_injection_paces_the_chord_for_busy_event_loops() {
 }
 
 #[test]
+fn wayland_universal_injection_sends_one_paced_shift_insert_chord() {
+    let directory = TestDirectory::new();
+    let log = directory.path().join("ydotool.log");
+    let ydotool = directory.executable(
+        "ydotool",
+        &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+    );
+    let injector = PasteInjector::new(
+        SystemCommandRunner,
+        PlatformExecutable::at(PlatformTool::Ydotool, ydotool),
+        PlatformExecutable::missing(PlatformTool::Xdotool),
+    );
+
+    let receipt = injector
+        .inject(
+            ClipboardProtocol::Wayland,
+            PasteShortcut::Universal,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("one universal paste chord is sent");
+
+    assert_eq!(receipt.tool, PlatformTool::Ydotool);
+    assert_eq!(
+        fs::read_to_string(log).expect("invocation log"),
+        "key --delay 50 --key-delay 25 shift+insert\n"
+    );
+}
+
+#[test]
 fn x11_injection_paces_the_chord_for_busy_event_loops() {
     let directory = TestDirectory::new();
     let log = directory.path().join("xdotool.log");

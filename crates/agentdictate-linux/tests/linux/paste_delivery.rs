@@ -61,7 +61,7 @@ fn auto_mode_uses_terminal_paste_for_x11_terminal_targets() {
 }
 
 #[test]
-fn auto_mode_uses_standard_paste_for_unclassified_wayland_targets() {
+fn auto_mode_uses_universal_paste_for_unclassified_wayland_targets() {
     let target = FocusTarget::wayland();
     let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
 
@@ -74,7 +74,7 @@ fn auto_mode_uses_standard_paste_for_unclassified_wayland_targets() {
         delivery.advance(DeliveryObservation::Focus(target.clone())),
         DeliveryAction::InjectPaste {
             target,
-            shortcut: PasteShortcut::Standard,
+            shortcut: PasteShortcut::Universal,
         }
     );
 }

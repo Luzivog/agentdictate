@@ -9,6 +9,7 @@ from unittest.mock import ANY, Mock, call, patch
 from agentdictate.clipboard import (
     ClipboardPaste,
     ClipboardProtocol,
+    ClipboardSelection,
     PasteTarget,
 )
 from agentdictate.settings.constants import (
@@ -37,6 +38,74 @@ class ClipboardTests(unittest.TestCase):
         publish.assert_called_once()
         send.assert_called_once_with("ctrl+v", target, ANY)
 
+    @patch.dict(
+        "agentdictate.clipboard.os.environ",
+        {"WAYLAND_DISPLAY": "wayland-0"},
+        clear=True,
+    )
+    @patch("agentdictate.clipboard.shutil.which")
+    @patch("agentdictate.clipboard.subprocess.Popen")
+    @patch("agentdictate.clipboard.subprocess.run")
+    def test_deliver_uses_both_wayland_selections_for_unclassified_target(
+        self,
+        run: Mock,
+        popen: Mock,
+        which: Mock,
+    ) -> None:
+        paste = ClipboardPaste()
+        target = PasteTarget(ClipboardProtocol.WAYLAND)
+        clipboard_process = Mock(stdin=Mock())
+        clipboard_process.poll.return_value = None
+        primary_process = Mock(stdin=Mock())
+        primary_process.poll.return_value = None
+        popen.side_effect = [clipboard_process, primary_process]
+        which.side_effect = lambda command: f"/usr/bin/{command}"
+
+        def complete(command: list[str], **_kwargs):
+            stdout = b"hello" if command[0] == "/usr/bin/wl-paste" else b""
+            return subprocess.CompletedProcess(command, 0, stdout, b"")
+
+        run.side_effect = complete
+
+        with patch.object(paste, "_active_target", return_value=target):
+            result = paste.deliver("hello")
+
+        self.assertTrue(result.copied)
+        self.assertTrue(result.paste_triggered)
+        self.assertEqual(result.shortcut, "shift+insert")
+        self.assertEqual(
+            [item.args[0] for item in popen.call_args_list],
+            [
+                ["/usr/bin/wl-copy", "--foreground"],
+                ["/usr/bin/wl-copy", "--foreground", "--primary"],
+            ],
+        )
+        clipboard_process.stdin.write.assert_called_once_with(b"hello")
+        primary_process.stdin.write.assert_called_once_with(b"hello")
+        injection_commands = [
+            item.args[0]
+            for item in run.call_args_list
+            if item.args[0][0] == "ydotool"
+        ]
+        self.assertEqual(
+            injection_commands,
+            [
+                [
+                    "ydotool",
+                    "key",
+                    "--delay",
+                    "50",
+                    "--key-delay",
+                    "25",
+                    "shift+insert",
+                ]
+            ],
+        )
+
+        ClipboardPaste.close_sources()
+        clipboard_process.terminate.assert_called_once_with()
+        primary_process.terminate.assert_called_once_with()
+
     def test_deliver_follows_new_focus_without_refocusing_old_window(self) -> None:
         paste = ClipboardPaste()
         chatgpt = PasteTarget(ClipboardProtocol.X11, "42", "chatgpt Chatgpt")
@@ -62,6 +131,10 @@ class ClipboardTests(unittest.TestCase):
         wayland = PasteTarget(ClipboardProtocol.WAYLAND)
         x11_source = self._source(ClipboardProtocol.X11)
         wayland_source = self._source(ClipboardProtocol.WAYLAND)
+        primary_source = self._source(
+            ClipboardProtocol.WAYLAND,
+            ClipboardSelection.PRIMARY,
+        )
 
         with patch.object(
             paste,
@@ -71,7 +144,9 @@ class ClipboardTests(unittest.TestCase):
             paste,
             "_publish_regular",
             side_effect=[x11_source, wayland_source],
-        ) as publish, patch.object(paste, "_send_shortcut", return_value=True):
+        ) as publish, patch.object(
+            paste, "_publish_primary", return_value=primary_source
+        ), patch.object(paste, "_send_shortcut", return_value=True):
             result = paste.deliver("hello")
 
         self.assertTrue(result.paste_triggered)
@@ -102,7 +177,9 @@ class ClipboardTests(unittest.TestCase):
         previous.process.poll.return_value = None
         current = self._source(ClipboardProtocol.WAYLAND)
         current.process.poll.return_value = None
-        ClipboardPaste._active_sources[ClipboardProtocol.WAYLAND] = previous
+        ClipboardPaste._active_sources[
+            (ClipboardProtocol.WAYLAND, ClipboardSelection.CLIPBOARD)
+        ] = previous
 
         with patch.object(
             paste, "_start_source", return_value=current
@@ -124,8 +201,8 @@ class ClipboardTests(unittest.TestCase):
         x11 = self._source(ClipboardProtocol.X11)
         ClipboardPaste._active_sources.update(
             {
-                ClipboardProtocol.WAYLAND: wayland,
-                ClipboardProtocol.X11: x11,
+                (ClipboardProtocol.WAYLAND, ClipboardSelection.CLIPBOARD): wayland,
+                (ClipboardProtocol.X11, ClipboardSelection.CLIPBOARD): x11,
             }
         )
 
@@ -143,9 +220,15 @@ class ClipboardTests(unittest.TestCase):
         paste = ClipboardPaste()
         target = PasteTarget(ClipboardProtocol.WAYLAND)
         source = self._source(ClipboardProtocol.WAYLAND)
+        primary_source = self._source(
+            ClipboardProtocol.WAYLAND,
+            ClipboardSelection.PRIMARY,
+        )
 
         with patch.object(paste, "_active_target", return_value=target), patch.object(
             paste, "_publish_regular", return_value=source
+        ), patch.object(
+            paste, "_publish_primary", return_value=primary_source
         ), patch.object(paste, "_send_shortcut", return_value=True):
             result = paste.deliver("hello")
 
@@ -156,6 +239,10 @@ class ClipboardTests(unittest.TestCase):
         paste = ClipboardPaste(restore_previous=True)
         target = PasteTarget(ClipboardProtocol.WAYLAND)
         regular = self._source(ClipboardProtocol.WAYLAND)
+        primary = self._source(
+            ClipboardProtocol.WAYLAND,
+            ClipboardSelection.PRIMARY,
+        )
         one_paste = self._source(ClipboardProtocol.WAYLAND)
         restored = self._source(ClipboardProtocol.WAYLAND)
 
@@ -163,6 +250,8 @@ class ClipboardTests(unittest.TestCase):
             paste, "_read_clipboard", return_value=b"previous"
         ), patch.object(
             paste, "_publish_regular", return_value=regular
+        ), patch.object(
+            paste, "_publish_primary", return_value=primary
         ), patch.object(
             paste, "_replace_with_one_paste_source", return_value=one_paste
         ), patch.object(
@@ -328,21 +417,41 @@ class ClipboardTests(unittest.TestCase):
 
         self.assertEqual(target, PasteTarget(ClipboardProtocol.WAYLAND))
 
-    def test_shortcut_override_remains_explicit(self) -> None:
-        terminal = PasteTarget(ClipboardProtocol.X11, "42", "kitty kitty")
-        self.assertEqual(
-            ClipboardPaste(shortcut_mode=PASTE_SHORTCUT_STANDARD)._shortcut_for(
-                terminal
-            ),
-            "ctrl+v",
-        )
-        self.assertEqual(
-            ClipboardPaste(shortcut_mode=PASTE_SHORTCUT_TERMINAL)._shortcut_for(
-                terminal
-            ),
-            "ctrl+shift+v",
-        )
+    def test_explicit_shortcut_modes_do_not_publish_the_primary_selection(
+        self,
+    ) -> None:
+        target = PasteTarget(ClipboardProtocol.WAYLAND)
+        cases = [
+            (PASTE_SHORTCUT_STANDARD, "ctrl+v"),
+            (PASTE_SHORTCUT_TERMINAL, "ctrl+shift+v"),
+        ]
+
+        for mode, expected_shortcut in cases:
+            with self.subTest(mode=mode):
+                paste = ClipboardPaste(shortcut_mode=mode)
+                source = self._source(ClipboardProtocol.WAYLAND)
+                with patch.object(
+                    paste, "_active_target", return_value=target
+                ), patch.object(
+                    paste, "_publish_regular", return_value=source
+                ), patch.object(
+                    paste, "_publish_primary"
+                ) as publish_primary, patch.object(
+                    paste, "_send_shortcut", return_value=True
+                ) as send:
+                    result = paste.deliver("hello")
+
+                self.assertEqual(result.shortcut, expected_shortcut)
+                publish_primary.assert_not_called()
+                send.assert_called_once_with(expected_shortcut, target, ANY)
 
     @staticmethod
-    def _source(protocol: ClipboardProtocol):
-        return SimpleNamespace(protocol=protocol, process=Mock())
+    def _source(
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection = ClipboardSelection.CLIPBOARD,
+    ):
+        return SimpleNamespace(
+            protocol=protocol,
+            process=Mock(),
+            selection=selection,
+        )

@@ -8,6 +8,12 @@ use crate::{
     paste::{ClipboardProtocol, ClipboardReadinessEvidence},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardSelection {
+    Clipboard,
+    Primary,
+}
+
 #[derive(Debug)]
 pub struct ClipboardPublication {
     pub evidence: ClipboardReadinessEvidence,
@@ -52,16 +58,34 @@ impl CommandClipboard {
         contents: &[u8],
         deadline: Instant,
     ) -> Result<ClipboardPublication, PlatformCommandError> {
+        self.publish_selection(protocol, ClipboardSelection::Clipboard, contents, deadline)
+    }
+
+    pub fn publish_selection(
+        &self,
+        protocol: ClipboardProtocol,
+        selection: ClipboardSelection,
+        contents: &[u8],
+        deadline: Instant,
+    ) -> Result<ClipboardPublication, PlatformCommandError> {
         let capability = clipboard_capability(protocol);
         let (owner_tool, reader_tool) = match protocol {
             ClipboardProtocol::Wayland => (&self.wl_copy, &self.wl_paste),
             ClipboardProtocol::X11 => (&self.xsel, &self.xsel),
         };
         require_tools(capability, &[owner_tool, reader_tool])?;
-        let owner_arguments = match protocol {
-            ClipboardProtocol::Wayland => vec![OsString::from("--foreground")],
-            ClipboardProtocol::X11 => vec![
-                OsString::from("--clipboard"),
+        let owner_arguments = match (protocol, selection) {
+            (ClipboardProtocol::Wayland, ClipboardSelection::Clipboard) => {
+                vec![OsString::from("--foreground")]
+            }
+            (ClipboardProtocol::Wayland, ClipboardSelection::Primary) => {
+                vec![OsString::from("--foreground"), OsString::from("--primary")]
+            }
+            (ClipboardProtocol::X11, _) => vec![
+                OsString::from(match selection {
+                    ClipboardSelection::Clipboard => "--clipboard",
+                    ClipboardSelection::Primary => "--primary",
+                }),
                 OsString::from("--input"),
                 OsString::from("--nodetach"),
             ],
@@ -78,10 +102,21 @@ impl CommandClipboard {
                     stderr: "clipboard owner exited before readiness was observed".into(),
                 });
             }
-            let read_arguments = match protocol {
-                ClipboardProtocol::Wayland => vec![OsString::from("--no-newline")],
-                ClipboardProtocol::X11 => {
-                    vec![OsString::from("--clipboard"), OsString::from("--output")]
+            let read_arguments = match (protocol, selection) {
+                (ClipboardProtocol::Wayland, ClipboardSelection::Clipboard) => {
+                    vec![OsString::from("--no-newline")]
+                }
+                (ClipboardProtocol::Wayland, ClipboardSelection::Primary) => {
+                    vec![OsString::from("--no-newline"), OsString::from("--primary")]
+                }
+                (ClipboardProtocol::X11, _) => {
+                    vec![
+                        OsString::from(match selection {
+                            ClipboardSelection::Clipboard => "--clipboard",
+                            ClipboardSelection::Primary => "--primary",
+                        }),
+                        OsString::from("--output"),
+                    ]
                 }
             };
             match self
