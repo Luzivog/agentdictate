@@ -4,23 +4,12 @@
 
 <h1 align="center">AgentDictate</h1>
 
-<p align="center"><strong>Native push-to-talk voice dictation for Linux.</strong></p>
-<p align="center">Press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and paste an OpenAI transcript into the focused app on Wayland or X11.</p>
-<p align="center"><code>Ctrl+Space → Speak → Transcribe → Paste</code></p>
-<p align="center"><sub>OpenAI speech-to-text · Rust + GPUI · Local history and recovery</sub></p>
-
-<p align="center">
-  <picture>
-    <source media="(max-width: 640px)" srcset="docs/images/agentdictate-hero-mobile.png">
-    <img src="docs/images/agentdictate-hero.png" alt="AgentDictate recording a voice prompt and pasting its transcript" width="900">
-  </picture>
-</p>
+<p align="center"><strong>STT through your Codex subscription.</strong></p>
+<p align="center">Press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and paste the transcript into the focused app on Wayland or X11. AgentDictate uses your existing Codex sign-in.</p>
+<p align="center"><code>Ctrl+Space → Speak → STT → Paste</code></p>
+<p align="center"><sub>Codex subscription · No API key for STT · Rust + GPUI</sub></p>
 
 <p align="center"><a href="#install"><strong>Install AgentDictate →</strong></a></p>
-
-- **Reliable** — checkpointed recovery protects interrupted recordings.
-- **Custom** — optional prompt cleanup and spoken replacements.
-- **Searchable** — local, typo-tolerant transcript history.
 
 ## Architecture
 
@@ -66,9 +55,9 @@ cd agentdictate
 agentdictate
 ```
 
-Add your OpenAI API key in **Settings**, then press `Ctrl+Space` to start or stop dictation. If native input needs attention, follow the installer’s guide or [configure it manually](packaging/NATIVE_ACCESS.md).
+Open AgentDictate, set **Transcription source** to **ChatGPT subscription**, then press `Ctrl+Space` to start or stop recording. AgentDictate uses your Codex sign-in for STT, so this route does not require an API key. If native input needs attention, follow the installer’s guide or [configure it manually](packaging/NATIVE_ACCESS.md).
 
-AgentDictate requires your own OpenAI API key; API charges apply. Audio is sent to OpenAI for transcription, and optional cleanup sends transcript text. Saved history, recovery data, and settings remain on your machine.
+An OpenAI API key is only needed for optional transcript cleanup or the alternate OpenAI API transcription route. Standard API charges apply to those features. Saved history, recovery data, and settings remain on your machine.
 
 <details>
 <summary>Build, test, and package from source</summary>

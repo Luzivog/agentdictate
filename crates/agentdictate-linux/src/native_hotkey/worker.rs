@@ -7,10 +7,12 @@ use std::{
         Arc,
         mpsc::{self, Receiver},
     },
+    time::Instant,
 };
 
 use super::events::{
-    DeviceOpenFailure, ListenerCommand, NativeHotkeyEvent, ReconfigurationFailure,
+    DeviceOpenFailure, ListenerCommand, NativeHotkeyDevice, NativeHotkeyEvent, NativeHotkeySignal,
+    NativeHotkeySignalTrigger, ReconfigurationFailure,
 };
 use super::input::{InputDirectoryWatcher, evdev_key_input, poll_descriptor};
 use crate::hotkey::{DeviceId, HotkeyListenerStatus, HotkeySession, HotkeySpec};
@@ -126,7 +128,12 @@ impl ListenerWorker {
                 };
                 for input in inputs {
                     if let Some(signal) = session.input(keyboard.id, input) {
-                        let _ = events.send(NativeHotkeyEvent::Signal(signal));
+                        let _ = events.send(NativeHotkeyEvent::Signal(NativeHotkeySignal {
+                            signal,
+                            device: native_hotkey_device(path, keyboard),
+                            trigger: NativeHotkeySignalTrigger::Input(input),
+                            observed_at: Instant::now(),
+                        }));
                     }
                 }
             }
@@ -268,9 +275,27 @@ fn disconnect_path(
     session: &mut HotkeySession,
     events: &mpsc::Sender<NativeHotkeyEvent>,
 ) {
-    if let Some(keyboard) = devices.remove(path)
-        && let Some(signal) = session.disconnect_device(keyboard.id)
-    {
-        let _ = events.send(NativeHotkeyEvent::Signal(signal));
+    if let Some(keyboard) = devices.remove(path) {
+        let device = native_hotkey_device(path, &keyboard);
+        if let Some(signal) = session.disconnect_device(keyboard.id) {
+            let _ = events.send(NativeHotkeyEvent::Signal(NativeHotkeySignal {
+                signal,
+                device,
+                trigger: NativeHotkeySignalTrigger::DeviceDisconnected,
+                observed_at: Instant::now(),
+            }));
+        }
+    }
+}
+
+fn native_hotkey_device(path: &Path, keyboard: &OpenKeyboard) -> NativeHotkeyDevice {
+    NativeHotkeyDevice {
+        id: keyboard.id,
+        path: path.to_owned(),
+        name: keyboard
+            .device
+            .name()
+            .unwrap_or("Unknown keyboard")
+            .to_owned(),
     }
 }

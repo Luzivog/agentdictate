@@ -3,7 +3,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agentdictate_app::{
     AgentProcess, AppPaths, HotkeyReconfigurer, OverlayUpdate, command_for_hotkey,
@@ -19,7 +19,7 @@ use agentdictate_linux::{
     hotkey::{HotkeyListenerStatus, HotkeySignal, HotkeySpec},
     native_hotkey::{
         NativeHotkeyControl, NativeHotkeyEvent, NativeHotkeyListener, NativeHotkeyReadiness,
-        NativeHotkeyRetryWatcher,
+        NativeHotkeyRetryWatcher, NativeHotkeySignal, NativeHotkeySignalTrigger,
     },
 };
 use agentdictate_runtime::{IpcClient, IpcServer};
@@ -59,6 +59,13 @@ fn main() -> anyhow::Result<()> {
         Ok(thread) => Some(thread),
         Err(error) => {
             tracing::warn!(%error, "could not start nonessential maintenance");
+            None
+        }
+    };
+    let _chatgpt_dictation_importer = match process.start_chatgpt_dictation_importer() {
+        Ok(thread) => Some(thread),
+        Err(error) => {
+            tracing::warn!(%error, "could not start ChatGPT dictation usage importer");
             None
         }
     };
@@ -194,6 +201,7 @@ fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyhow::
     let (current_spec, active_listener) = match HotkeySpec::from_str(process.hotkey()) {
         Ok(spec) => match NativeHotkeyListener::start(spec.clone()) {
             Ok(listener) => {
+                log_initial_hotkey_readiness(generation, listener.readiness());
                 process.set_hotkey_readiness(readiness_from_initial(listener.readiness()));
                 let active = activate_listener(listener, generation, events.clone())?;
                 (Some(spec), Some(active))
@@ -305,6 +313,16 @@ fn readiness_from_initial(readiness: &NativeHotkeyReadiness) -> HotkeyReadiness 
     }
 }
 
+fn log_initial_hotkey_readiness(generation: u64, readiness: &NativeHotkeyReadiness) {
+    tracing::info!(
+        listener_generation = generation,
+        status = ?readiness.status,
+        discovered_devices = readiness.discovered_devices,
+        failed_devices = readiness.failed_devices.len(),
+        "hotkey listener initialized"
+    );
+}
+
 fn schedule_environment_retry(generation: u64, events: std::sync::mpsc::Sender<DispatchLoopEvent>) {
     let watcher = match NativeHotkeyRetryWatcher::new() {
         Ok(watcher) => watcher,
@@ -354,19 +372,49 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
         match event {
             DispatchLoopEvent::Native {
                 generation: event_generation,
-                event: NativeHotkeyEvent::Signal(signal),
+                event: NativeHotkeyEvent::Signal(event),
             } if event_generation == generation => {
                 let mode = recording_mode
                     .read()
                     .map_or_else(|_| "toggle".to_owned(), |mode| mode.clone());
-                if let Some(signal) = gate.accept(&mode, signal) {
-                    spawn_hotkey_action(runtime, &mode, signal, events.clone());
+                match gate.accept(&mode, &event) {
+                    Ok(()) => {
+                        log_hotkey_decision(
+                            event_generation,
+                            &mode,
+                            &event,
+                            "dispatch",
+                            "accepted",
+                            None,
+                        );
+                        spawn_hotkey_action(runtime, &mode, event, events.clone());
+                    }
+                    Err(reason) => {
+                        let disposition = if reason == HotkeyIgnoreReason::TerminalQueued {
+                            "queued"
+                        } else {
+                            "ignored"
+                        };
+                        log_hotkey_decision(
+                            event_generation,
+                            &mode,
+                            &event,
+                            disposition,
+                            reason.label(),
+                            reason.guard_remaining(),
+                        );
+                    }
                 }
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,
                 event: NativeHotkeyEvent::Status(status),
             } if event_generation == generation => {
+                tracing::info!(
+                    listener_generation = event_generation,
+                    ?status,
+                    "hotkey listener status changed"
+                );
                 let readiness = match status {
                     HotkeyListenerStatus::Starting => HotkeyReadiness::Starting,
                     HotkeyListenerStatus::Ready { .. } => HotkeyReadiness::Ready,
@@ -417,17 +465,21 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             } if event_generation == generation => {
                 tracing::error!(%error, "hotkey listener control failed");
             }
-            DispatchLoopEvent::ActionFinished => {
-                if let Some(signal) = gate.complete() {
+            DispatchLoopEvent::ActionFinished(completion) => {
+                if let Some(event) = gate.complete(completion) {
                     let mode = recording_mode
                         .read()
                         .map_or_else(|_| "toggle".to_owned(), |mode| mode.clone());
-                    spawn_hotkey_action(runtime, &mode, signal, events.clone());
+                    spawn_hotkey_action(runtime, &mode, event, events.clone());
                 }
             }
             DispatchLoopEvent::ListenerClosed {
                 generation: closed_generation,
             } if closed_generation == generation => {
+                tracing::warn!(
+                    listener_generation = closed_generation,
+                    "hotkey listener closed"
+                );
                 active_listener = None;
                 publish_hotkey_status(&status_updates, listener_closed_readiness());
                 schedule_environment_retry(generation, events.clone());
@@ -442,6 +494,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 generation += 1;
                 match NativeHotkeyListener::start(spec) {
                     Ok(listener) => {
+                        log_initial_hotkey_readiness(generation, listener.readiness());
                         let readiness = readiness_from_initial(listener.readiness());
                         match activate_listener(listener, generation, events.clone()) {
                             Ok(listener) => {
@@ -503,6 +556,37 @@ fn publish_hotkey_status(
     }
 }
 
+fn log_hotkey_decision(
+    listener_generation: u64,
+    mode: &str,
+    event: &NativeHotkeySignal,
+    disposition: &str,
+    reason: &str,
+    guard_remaining: Option<Duration>,
+) {
+    let event_age = Instant::now().saturating_duration_since(event.observed_at);
+    let (trigger, key_code, key_state) = match event.trigger {
+        NativeHotkeySignalTrigger::Input(input) => ("input", Some(input.code), Some(input.state)),
+        NativeHotkeySignalTrigger::DeviceDisconnected => ("device_disconnected", None, None),
+    };
+    tracing::info!(
+        listener_generation,
+        mode,
+        signal = ?event.signal,
+        disposition,
+        reason,
+        device_id = event.device.id,
+        device_path = %event.device.path.display(),
+        device_name = %event.device.name,
+        trigger,
+        ?key_code,
+        ?key_state,
+        event_age_micros = event_age.as_micros(),
+        guard_remaining_millis = guard_remaining.map(|remaining| remaining.as_millis()),
+        "hotkey signal evaluated"
+    );
+}
+
 fn listener_closed_readiness() -> HotkeyReadiness {
     HotkeyReadiness::Unavailable {
         message: "Global shortcut listener stopped; waiting for the input environment to change"
@@ -515,7 +599,7 @@ enum DispatchLoopEvent {
         generation: u64,
         event: NativeHotkeyEvent,
     },
-    ActionFinished,
+    ActionFinished(HotkeyActionCompletion),
     ListenerClosed {
         generation: u64,
     },
@@ -528,34 +612,92 @@ enum DispatchLoopEvent {
     },
 }
 
+const TOGGLE_REARM_DELAY: Duration = Duration::from_millis(150);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyActionOutcome {
+    ToggleRecordingStarted,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HotkeyActionCompletion {
+    outcome: HotkeyActionOutcome,
+    completed_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyIgnoreReason {
+    ToggleRelease,
+    ToggleRearming { remaining: Duration },
+    ActionInFlight,
+    TerminalQueued,
+}
+
+impl HotkeyIgnoreReason {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ToggleRelease => "toggle_release",
+            Self::ToggleRearming { .. } => "toggle_rearming",
+            Self::ActionInFlight => "action_in_flight",
+            Self::TerminalQueued => "terminal_queued",
+        }
+    }
+
+    const fn guard_remaining(self) -> Option<Duration> {
+        match self {
+            Self::ToggleRearming { remaining } => Some(remaining),
+            Self::ToggleRelease | Self::ActionInFlight | Self::TerminalQueued => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct HotkeyDispatchGate {
     in_flight: bool,
-    pending_hold_terminal: Option<HotkeySignal>,
+    pending_terminal: Option<NativeHotkeySignal>,
+    toggle_rearm_at: Option<Instant>,
 }
 
 impl HotkeyDispatchGate {
-    fn accept(&mut self, mode: &str, signal: HotkeySignal) -> Option<HotkeySignal> {
-        if mode != "hold" && signal == HotkeySignal::Released {
-            return None;
+    fn accept(&mut self, mode: &str, event: &NativeHotkeySignal) -> Result<(), HotkeyIgnoreReason> {
+        if mode != "hold" && event.signal == HotkeySignal::Released {
+            return Err(HotkeyIgnoreReason::ToggleRelease);
+        }
+        if mode != "hold"
+            && event.signal == HotkeySignal::Pressed
+            && let Some(rearm_at) = self.toggle_rearm_at
+            && event.observed_at < rearm_at
+        {
+            return Err(HotkeyIgnoreReason::ToggleRearming {
+                remaining: rearm_at.saturating_duration_since(event.observed_at),
+            });
         }
         if !self.in_flight {
             self.in_flight = true;
-            return Some(signal);
+            return Ok(());
         }
-        if mode == "hold"
-            && matches!(signal, HotkeySignal::Released | HotkeySignal::Cancelled)
-            && (signal == HotkeySignal::Cancelled
-                || self.pending_hold_terminal != Some(HotkeySignal::Cancelled))
-        {
-            self.pending_hold_terminal = Some(signal);
+        let should_queue_terminal = match event.signal {
+            HotkeySignal::Cancelled => true,
+            HotkeySignal::Released if mode == "hold" => self
+                .pending_terminal
+                .as_ref()
+                .is_none_or(|pending| pending.signal != HotkeySignal::Cancelled),
+            HotkeySignal::Pressed | HotkeySignal::Released => false,
+        };
+        if should_queue_terminal {
+            self.pending_terminal = Some(event.clone());
+            return Err(HotkeyIgnoreReason::TerminalQueued);
         }
-        None
+        Err(HotkeyIgnoreReason::ActionInFlight)
     }
 
-    fn complete(&mut self) -> Option<HotkeySignal> {
+    fn complete(&mut self, completion: HotkeyActionCompletion) -> Option<NativeHotkeySignal> {
         self.in_flight = false;
-        let pending = self.pending_hold_terminal.take();
+        if completion.outcome == HotkeyActionOutcome::ToggleRecordingStarted {
+            self.toggle_rearm_at = Some(completion.completed_at + TOGGLE_REARM_DELAY);
+        }
+        let pending = self.pending_terminal.take();
         if pending.is_some() {
             self.in_flight = true;
         }
@@ -566,7 +708,7 @@ impl HotkeyDispatchGate {
 fn spawn_hotkey_action(
     runtime: &Path,
     mode: &str,
-    signal: HotkeySignal,
+    event: NativeHotkeySignal,
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
 ) {
     let runtime = runtime.to_owned();
@@ -574,44 +716,103 @@ fn spawn_hotkey_action(
     std::thread::Builder::new()
         .name("agentdictate-hotkey-action".into())
         .spawn(move || {
-            if let Err(error) = dispatch_hotkey(&runtime, &mode, signal) {
-                tracing::error!(%error, "hotkey action failed");
-            }
-            let _ = events.send(DispatchLoopEvent::ActionFinished);
+            let outcome = match dispatch_hotkey(&runtime, &mode, &event) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        signal = ?event.signal,
+                        device_id = event.device.id,
+                        device_path = %event.device.path.display(),
+                        device_name = %event.device.name,
+                        "hotkey action failed"
+                    );
+                    HotkeyActionOutcome::Other
+                }
+            };
+            let _ = events.send(DispatchLoopEvent::ActionFinished(HotkeyActionCompletion {
+                outcome,
+                completed_at: Instant::now(),
+            }));
         })
         .expect("hotkey action worker should start");
 }
 
-fn dispatch_hotkey(runtime: &Path, mode: &str, signal: HotkeySignal) -> anyhow::Result<()> {
+fn dispatch_hotkey(
+    runtime: &Path,
+    mode: &str,
+    event: &NativeHotkeySignal,
+) -> anyhow::Result<HotkeyActionOutcome> {
     let (mut client, initial) = IpcClient::connect(runtime)?;
     let ServerMessageKind::Snapshot { snapshot, .. } = initial.kind else {
         anyhow::bail!("daemon did not provide a hotkey snapshot")
     };
     let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    let Some(command) = command_for_hotkey(mode, signal, snapshot.workflow.phase, request_id)
-    else {
-        return Ok(());
+    let phase = snapshot.workflow.phase;
+    let Some(command) = command_for_hotkey(mode, event.signal, phase, request_id) else {
+        tracing::info!(
+            request_id,
+            mode,
+            signal = ?event.signal,
+            ?phase,
+            device_id = event.device.id,
+            device_path = %event.device.path.display(),
+            "hotkey signal produced no command"
+        );
+        return Ok(HotkeyActionOutcome::Other);
     };
     let starts_recording = matches!(&command.kind, ClientCommandKind::StartRecording { .. });
+    let action = match &command.kind {
+        ClientCommandKind::StartRecording { .. } => "start_recording",
+        ClientCommandKind::StopRecording { .. } => "stop_recording",
+        ClientCommandKind::Cancel { .. } => "cancel",
+        _ => "unexpected",
+    };
+    tracing::info!(
+        request_id,
+        mode,
+        action,
+        signal = ?event.signal,
+        ?phase,
+        device_id = event.device.id,
+        device_path = %event.device.path.display(),
+        device_name = %event.device.name,
+        "dispatching hotkey command"
+    );
     let response = client.send(command)?;
-    match response.kind {
+    let toggle_recording_started = match response.kind {
         ServerMessageKind::CommandRejected { error, .. } => anyhow::bail!(error),
         ServerMessageKind::Snapshot {
             snapshot, settings, ..
-        } if starts_recording && settings.values.max_recording_seconds > 0 => {
-            if let WorkflowPhase::Recording { job_id } = snapshot.workflow.phase {
+        } => {
+            let recording_job = match snapshot.workflow.phase {
+                WorkflowPhase::Recording { job_id } if starts_recording => Some(job_id),
+                _ => None,
+            };
+            tracing::info!(
+                request_id,
+                action,
+                resulting_phase = ?snapshot.workflow.phase,
+                "hotkey command completed"
+            );
+            if settings.values.max_recording_seconds > 0
+                && let Some(job_id) = recording_job
+            {
                 spawn_maximum_duration_stop(
                     runtime.to_owned(),
                     job_id,
                     settings.values.max_recording_seconds,
                 );
             }
+            mode != "hold" && recording_job.is_some()
         }
-        ServerMessageKind::Snapshot { .. }
-        | ServerMessageKind::Workspace { .. }
-        | ServerMessageKind::HistoryPage { .. } => {}
-    }
-    Ok(())
+        ServerMessageKind::Workspace { .. } | ServerMessageKind::HistoryPage { .. } => false,
+    };
+    Ok(if toggle_recording_started {
+        HotkeyActionOutcome::ToggleRecordingStarted
+    } else {
+        HotkeyActionOutcome::Other
+    })
 }
 
 fn spawn_maximum_duration_stop(runtime: std::path::PathBuf, job_id: JobId, seconds: u32) {
@@ -668,30 +869,232 @@ fn update_hotkey_status(runtime: &Path, readiness: HotkeyReadiness) -> anyhow::R
 
 #[cfg(test)]
 mod tests {
+    use agentdictate_linux::{
+        hotkey::{KEY_ESC, KEY_SPACE, KeyInput, KeyState},
+        native_hotkey::{NativeHotkeyDevice, NativeHotkeySignalTrigger},
+    };
+
     use super::*;
+
+    fn hotkey_event(signal: HotkeySignal, observed_at: Instant) -> NativeHotkeySignal {
+        let input = match signal {
+            HotkeySignal::Pressed => KeyInput::new(KEY_SPACE, KeyState::Pressed),
+            HotkeySignal::Released => KeyInput::new(KEY_SPACE, KeyState::Released),
+            HotkeySignal::Cancelled => KeyInput::new(KEY_ESC, KeyState::Pressed),
+        };
+        NativeHotkeySignal {
+            signal,
+            device: NativeHotkeyDevice {
+                id: 20,
+                path: "/dev/input/event20".into(),
+                name: "Test keyboard".into(),
+            },
+            trigger: NativeHotkeySignalTrigger::Input(input),
+            observed_at,
+        }
+    }
+
+    fn completion(outcome: HotkeyActionOutcome, completed_at: Instant) -> HotkeyActionCompletion {
+        HotkeyActionCompletion {
+            outcome,
+            completed_at,
+        }
+    }
 
     #[test]
     fn toggle_press_during_processing_is_discarded_not_replayed() {
+        let started_at = Instant::now();
         let mut gate = HotkeyDispatchGate::default();
-        assert_eq!(
-            gate.accept("toggle", HotkeySignal::Pressed),
-            Some(HotkeySignal::Pressed)
+        assert!(
+            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
         );
-        assert_eq!(gate.accept("toggle", HotkeySignal::Pressed), None);
-        assert_eq!(gate.complete(), None);
+        assert!(matches!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Pressed,
+                    started_at + Duration::from_millis(50)
+                )
+            ),
+            Err(HotkeyIgnoreReason::ActionInFlight)
+        ));
+        assert!(
+            gate.complete(completion(
+                HotkeyActionOutcome::Other,
+                started_at + Duration::from_millis(100)
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn toggle_reactivation_immediately_after_start_is_ignored_until_rearmed() {
+        let started_at = Instant::now();
+        let completed_at = started_at + Duration::from_millis(100);
+        let mut gate = HotkeyDispatchGate::default();
+        assert!(
+            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
+        );
+        assert!(
+            gate.complete(completion(
+                HotkeyActionOutcome::ToggleRecordingStarted,
+                completed_at
+            ))
+            .is_none()
+        );
+        assert!(matches!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Released,
+                    completed_at + Duration::from_millis(10)
+                )
+            ),
+            Err(HotkeyIgnoreReason::ToggleRelease)
+        ));
+        assert!(matches!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Pressed,
+                    completed_at + Duration::from_millis(31)
+                )
+            ),
+            Err(HotkeyIgnoreReason::ToggleRearming { .. })
+        ));
+        assert!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(HotkeySignal::Pressed, completed_at + TOGGLE_REARM_DELAY)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn toggle_cancel_bypasses_rearm_delay() {
+        let started_at = Instant::now();
+        let completed_at = started_at + Duration::from_millis(100);
+        let mut gate = HotkeyDispatchGate::default();
+        assert!(
+            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
+        );
+        gate.complete(completion(
+            HotkeyActionOutcome::ToggleRecordingStarted,
+            completed_at,
+        ));
+
+        assert!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Cancelled,
+                    completed_at + Duration::from_millis(31)
+                )
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn toggle_cancel_during_start_is_queued() {
+        let started_at = Instant::now();
+        let completed_at = started_at + Duration::from_millis(100);
+        let mut gate = HotkeyDispatchGate::default();
+        assert!(
+            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
+        );
+        assert_eq!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Cancelled,
+                    started_at + Duration::from_millis(50)
+                )
+            ),
+            Err(HotkeyIgnoreReason::TerminalQueued)
+        );
+
+        assert_eq!(
+            gate.complete(completion(
+                HotkeyActionOutcome::ToggleRecordingStarted,
+                completed_at
+            ))
+            .map(|event| event.signal),
+            Some(HotkeySignal::Cancelled)
+        );
+    }
+
+    #[test]
+    fn unsuccessful_toggle_start_does_not_arm_reactivation_delay() {
+        let started_at = Instant::now();
+        let completed_at = started_at + Duration::from_millis(100);
+        let mut gate = HotkeyDispatchGate::default();
+        assert!(
+            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
+        );
+        gate.complete(completion(HotkeyActionOutcome::Other, completed_at));
+
+        assert!(
+            gate.accept(
+                "toggle",
+                &hotkey_event(
+                    HotkeySignal::Pressed,
+                    completed_at + Duration::from_millis(31)
+                )
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn hold_release_during_start_is_coalesced_once() {
+        let started_at = Instant::now();
         let mut gate = HotkeyDispatchGate::default();
-        assert_eq!(
-            gate.accept("hold", HotkeySignal::Pressed),
-            Some(HotkeySignal::Pressed)
+        assert!(
+            gate.accept("hold", &hotkey_event(HotkeySignal::Pressed, started_at))
+                .is_ok()
         );
-        assert_eq!(gate.accept("hold", HotkeySignal::Released), None);
-        assert_eq!(gate.accept("hold", HotkeySignal::Released), None);
-        assert_eq!(gate.complete(), Some(HotkeySignal::Released));
-        assert_eq!(gate.complete(), None);
+        assert!(matches!(
+            gate.accept(
+                "hold",
+                &hotkey_event(
+                    HotkeySignal::Released,
+                    started_at + Duration::from_millis(50)
+                )
+            ),
+            Err(HotkeyIgnoreReason::TerminalQueued)
+        ));
+        assert!(matches!(
+            gate.accept(
+                "hold",
+                &hotkey_event(
+                    HotkeySignal::Released,
+                    started_at + Duration::from_millis(60)
+                )
+            ),
+            Err(HotkeyIgnoreReason::TerminalQueued)
+        ));
+        assert_eq!(
+            gate.complete(completion(
+                HotkeyActionOutcome::Other,
+                started_at + Duration::from_millis(100)
+            ))
+            .map(|event| event.signal),
+            Some(HotkeySignal::Released)
+        );
+        assert!(
+            gate.complete(completion(
+                HotkeyActionOutcome::Other,
+                started_at + Duration::from_millis(120)
+            ))
+            .is_none()
+        );
     }
 
     #[test]

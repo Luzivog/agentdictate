@@ -1,5 +1,7 @@
 #[path = "runtime/durable_runtime.rs"]
 mod durable_runtime;
+#[path = "runtime/external_dictation.rs"]
+mod external_dictation;
 #[path = "runtime/history_usage.rs"]
 mod history_usage;
 #[path = "runtime/ipc_round_trip.rs"]

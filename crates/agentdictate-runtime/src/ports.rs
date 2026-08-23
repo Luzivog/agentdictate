@@ -48,6 +48,8 @@ pub enum RuntimeError {
         date: String,
         source: chrono::ParseError,
     },
+    #[error("invalid external dictation receipt: {0}")]
+    InvalidExternalDictation(String),
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

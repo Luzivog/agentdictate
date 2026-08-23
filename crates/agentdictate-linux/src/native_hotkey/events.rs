@@ -6,9 +6,12 @@ use std::{
         Arc,
         mpsc::{self, Sender},
     },
+    time::Instant,
 };
 
-use crate::hotkey::{HotkeyListenerStatus, HotkeyParseError, HotkeySignal, HotkeySpec};
+use crate::hotkey::{
+    DeviceId, HotkeyListenerStatus, HotkeyParseError, HotkeySignal, HotkeySpec, KeyInput,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceOpenFailure {
@@ -30,8 +33,33 @@ impl NativeHotkeyReadiness {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeHotkeyDevice {
+    pub id: DeviceId,
+    pub path: PathBuf,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeHotkeySignalTrigger {
+    Input(KeyInput),
+    DeviceDisconnected,
+}
+
+/// One semantic hotkey edge with the evdev event that caused it.
+///
+/// `observed_at` is captured in the listener worker so dispatch delays cannot
+/// make two events from one physical interaction appear farther apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeHotkeySignal {
+    pub signal: HotkeySignal,
+    pub device: NativeHotkeyDevice,
+    pub trigger: NativeHotkeySignalTrigger,
+    pub observed_at: Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeHotkeyEvent {
-    Signal(HotkeySignal),
+    Signal(NativeHotkeySignal),
     Status(HotkeyListenerStatus),
     DeviceError(DeviceOpenFailure),
     DiscoveryError(String),

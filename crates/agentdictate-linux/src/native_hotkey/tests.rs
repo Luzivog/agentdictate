@@ -1,6 +1,6 @@
 use super::events::{
     ListenerCommand, NativeHotkeyControl, NativeHotkeyControlError, NativeHotkeyEvent,
-    ReconfigurationFailure,
+    NativeHotkeySignalTrigger, ReconfigurationFailure,
 };
 use super::listener::{DiscoverDevices, NativeHotkeyListener};
 use crate::hotkey::{HotkeyListenerStatus, HotkeySignal};
@@ -22,6 +22,7 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
     let Ok((mut keyboard, path)) = virtual_keyboard() else {
         return;
     };
+    let expected_path = path.clone();
     let discovered = Arc::new(Mutex::new(vec![path]));
     let discovery_state = Arc::clone(&discovered);
     let discover: Arc<DiscoverDevices> = Arc::new(move |_| {
@@ -45,12 +46,21 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
         });
     }
     emit_chord(&mut keyboard);
-    assert_eq!(
-        receive_until(&listener, |event| {
-            *event == NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
-        }),
-        NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
+    let pressed = receive_until(
+        &listener,
+        |event| matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed),
     );
+    let NativeHotkeyEvent::Signal(pressed) = pressed else {
+        unreachable!("the predicate accepts only a hotkey press")
+    };
+    assert_eq!(pressed.device.path, expected_path);
+    assert_eq!(pressed.device.name, "AgentDictate listener test");
+    assert!(matches!(
+        pressed.trigger,
+        NativeHotkeySignalTrigger::Input(input)
+            if input.code == crate::hotkey::KEY_SPACE
+                && input.state == crate::hotkey::KeyState::Pressed
+    ));
 
     discovered.lock().expect("discovery paths lock").clear();
     drop(keyboard);
@@ -60,13 +70,15 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
         match receive_until(&listener, |event| {
             matches!(
                 event,
-                NativeHotkeyEvent::Signal(HotkeySignal::Released)
-                    | NativeHotkeyEvent::Status(HotkeyListenerStatus::Unavailable {
-                        active_devices: 0,
-                    })
+                NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Released
+            ) || matches!(
+                event,
+                NativeHotkeyEvent::Status(HotkeyListenerStatus::Unavailable { active_devices: 0 })
             )
         }) {
-            NativeHotkeyEvent::Signal(HotkeySignal::Released) => released = true,
+            NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Released => {
+                released = true
+            }
             NativeHotkeyEvent::Status(HotkeyListenerStatus::Unavailable { active_devices: 0 }) => {
                 unavailable = true
             }
@@ -84,12 +96,12 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
         )
     });
     emit_chord(&mut replacement);
-    assert_eq!(
+    assert!(matches!(
         receive_until(&listener, |event| {
-            *event == NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
+            matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
         }),
-        NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
-    );
+        NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed
+    ));
 }
 
 #[test]
@@ -134,12 +146,12 @@ fn cloneable_control_reconfigures_the_live_listener_without_a_polling_delay() {
     keyboard
         .emit(&[InputEvent::new(EventType::KEY.0, KeyCode::KEY_F9.code(), 1)])
         .expect("new hotkey is emitted");
-    assert_eq!(
+    assert!(matches!(
         receive_until(&listener, |event| {
-            *event == NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
+            matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
         }),
-        NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
-    );
+        NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed
+    ));
 }
 
 #[test]
@@ -185,12 +197,12 @@ fn failed_reconfiguration_keeps_the_ready_hotkey_active() {
     );
 
     emit_chord(&mut keyboard);
-    assert_eq!(
+    assert!(matches!(
         receive_until(&listener, |event| {
-            *event == NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
+            matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
         }),
-        NativeHotkeyEvent::Signal(HotkeySignal::Pressed)
-    );
+        NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed
+    ));
 }
 
 #[test]

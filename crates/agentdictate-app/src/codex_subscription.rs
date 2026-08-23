@@ -109,6 +109,33 @@ enum CodexSubscriptionError {
     EmptyTranscript,
 }
 
+fn reqwest_error_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_redirect() {
+        "redirect"
+    } else if error.is_builder() {
+        "request_builder"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "transport"
+    }
+}
+
+fn subscription_error_kind(error: &CodexSubscriptionError) -> &'static str {
+    match error {
+        CodexSubscriptionError::Transport(error) => reqwest_error_kind(error),
+        _ => "non_transport",
+    }
+}
+
 pub struct CodexSubscriptionTransport {
     client: reqwest::blocking::Client,
     endpoint: String,
@@ -174,24 +201,72 @@ impl CodexSubscriptionTransport {
         request: &TranscriptionRequest<'_>,
     ) -> Result<String, CodexSubscriptionError> {
         let audio = std::fs::read(request.audio_path).map_err(CodexSubscriptionError::AudioRead)?;
+        let request_started_at = Instant::now();
         let boundary = format!("----codex-transcribe-{}", Uuid::new_v4());
         let body = multipart_body(&boundary, &audio, request.language);
 
         let mut auth = self.auth_provider.load(false)?;
-        let mut response = self.send(&auth, body, &boundary)?;
+        let mut response = self.send(&auth, body, &boundary).inspect_err(|error| {
+            tracing::warn!(
+                attempt = "initial",
+                error_kind = subscription_error_kind(error),
+                audio_bytes = audio.len(),
+                recording_duration_seconds = request.duration_seconds,
+                elapsed_millis = request_started_at.elapsed().as_millis(),
+                "ChatGPT transcription request failed before receiving a response"
+            );
+        })?;
+        let initial_status = response.status();
+        let mut auth_refreshed = false;
         if matches!(
-            response.status(),
+            initial_status,
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
         ) {
+            auth_refreshed = true;
             auth = self.auth_provider.load(true)?;
-            response = self.send(
-                &auth,
-                multipart_body(&boundary, &audio, request.language),
-                &boundary,
-            )?;
+            response = self
+                .send(
+                    &auth,
+                    multipart_body(&boundary, &audio, request.language),
+                    &boundary,
+                )
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        attempt = "after_auth_refresh",
+                        error_kind = subscription_error_kind(error),
+                        initial_http_status = initial_status.as_u16(),
+                        audio_bytes = audio.len(),
+                        recording_duration_seconds = request.duration_seconds,
+                        elapsed_millis = request_started_at.elapsed().as_millis(),
+                        "ChatGPT transcription request failed before receiving a response"
+                    );
+                })?;
         }
         let status = response.status();
-        let payload = response.text().map_err(CodexSubscriptionError::Transport)?;
+        let payload = response
+            .text()
+            .inspect_err(|error| {
+                tracing::warn!(
+                    attempt = "response_body",
+                    error_kind = reqwest_error_kind(error),
+                    http_status = status.as_u16(),
+                    audio_bytes = audio.len(),
+                    recording_duration_seconds = request.duration_seconds,
+                    elapsed_millis = request_started_at.elapsed().as_millis(),
+                    "ChatGPT transcription response body could not be read"
+                );
+            })
+            .map_err(CodexSubscriptionError::Transport)?;
+        tracing::info!(
+            initial_http_status = initial_status.as_u16(),
+            final_http_status = status.as_u16(),
+            http_success = status.is_success(),
+            auth_refreshed,
+            audio_bytes = audio.len(),
+            recording_duration_seconds = request.duration_seconds,
+            elapsed_millis = request_started_at.elapsed().as_millis(),
+            "ChatGPT transcription response received"
+        );
         if !status.is_success() {
             return Err(match status {
                 StatusCode::UNAUTHORIZED => CodexSubscriptionError::Unauthorized,

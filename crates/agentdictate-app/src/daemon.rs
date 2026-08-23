@@ -200,6 +200,15 @@ where
                 return Err(error.into());
             }
         };
+        let audio_bytes = std::fs::metadata(&job.audio_path)
+            .ok()
+            .map(|metadata| metadata.len());
+        tracing::info!(
+            job_id = %id,
+            duration_seconds = capture.duration_seconds,
+            ?audio_bytes,
+            "recording finalized"
+        );
         if let Err(error) = self.runtime.capture_recording(id, capture.duration_seconds) {
             tracing::error!(
                 job_id = %id,

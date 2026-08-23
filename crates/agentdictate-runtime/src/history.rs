@@ -553,7 +553,7 @@ pub(super) fn recompute_daily_stats(
     Ok(())
 }
 
-fn word_count(text: &str) -> u64 {
+pub(crate) fn word_count(text: &str) -> u64 {
     static WORD_EXPRESSION: OnceLock<regex::Regex> = OnceLock::new();
     WORD_EXPRESSION
         .get_or_init(|| {

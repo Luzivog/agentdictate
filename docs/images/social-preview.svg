@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
   <title id="title">AgentDictate social preview</title>
-  <desc id="description">AgentDictate native Linux dictation beside an orange activity graph made from demo data.</desc>
+  <desc id="description">AgentDictate Linux dictation through a Codex subscription, separated from an orange activity graph.</desc>
   <defs>
     <linearGradient id="preview-fill" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#f0744f" stop-opacity="0.48"/>
@@ -10,33 +10,35 @@
 
   <rect width="1280" height="640" fill="#080909"/>
   <g font-family="Inter, sans-serif" font-style="normal">
-    <g transform="translate(72 74)">
-      <rect width="58" height="58" rx="15" fill="#171719" stroke="#343438"/>
-      <rect x="23" y="13" width="12" height="22" rx="6" fill="none" stroke="#f5f5f5" stroke-width="3"/>
-      <path d="M17 31c0 9 5 14 12 14s12-5 12-14M29 45v8M22 53h14" fill="none" stroke="#f5f5f5" stroke-width="3" stroke-linecap="round"/>
-      <text x="78" y="40" fill="#f5f5f5" font-size="34" font-weight="600">AgentDictate</text>
-    </g>
-
-    <text x="72" y="244" fill="#f5f5f5" font-size="52" font-weight="600">Native Linux dictation</text>
-    <text x="72" y="296" fill="#9a9a9f" font-size="23">Push to talk. Paste into the focused app.</text>
-
-    <g transform="translate(72 367)">
-      <circle cx="6" cy="-7" r="5" fill="#ef7956"/>
-      <text x="22" y="0" fill="#c8c8cb" font-size="20">Wayland · X11 · Rust</text>
-    </g>
-
-    <g transform="translate(690 112)">
-      <rect width="518" height="416" rx="26" fill="#111112" stroke="#2a2a2d"/>
-      <circle cx="30" cy="34" r="5" fill="#ef7956"/>
-      <text x="47" y="41" fill="#f5f5f5" font-size="18" font-weight="600">Dictation activity</text>
-      <g transform="translate(378 20)">
-        <rect width="106" height="30" rx="15" fill="#1b1b1d" stroke="#303034"/>
-        <text x="53" y="20" text-anchor="middle" fill="#b9b9bd" font-size="12" font-weight="600">Demo data</text>
+    <g transform="translate(0 78)">
+      <g transform="translate(72 74)">
+        <rect width="58" height="58" rx="15" fill="#171719" stroke="#343438"/>
+        <g transform="translate(0 -4)">
+          <rect x="23" y="13" width="12" height="22" rx="6" fill="none" stroke="#f5f5f5" stroke-width="3"/>
+          <path d="M17 31c0 9 5 14 12 14s12-5 12-14M29 45v8M22 53h14" fill="none" stroke="#f5f5f5" stroke-width="3" stroke-linecap="round"/>
+        </g>
+        <text x="78" y="40" fill="#f5f5f5" font-size="34" font-weight="600">AgentDictate</text>
       </g>
 
+      <text x="72" y="222" fill="#f5f5f5" font-size="52" font-weight="600">STT with your</text>
+      <text x="72" y="282" fill="#f5f5f5" font-size="52" font-weight="600">Codex subscription</text>
+      <text x="72" y="334" fill="#9a9a9f" font-size="23">Push to talk. Paste into the focused app.</text>
+
+      <g transform="translate(72 405)">
+        <circle cx="6" cy="-7" r="5" fill="#ef7956"/>
+        <text x="22" y="0" fill="#c8c8cb" font-size="20">No API key · Wayland · X11</text>
+      </g>
+    </g>
+
+    <line x1="650" y1="64" x2="650" y2="576" stroke="#29292c"/>
+
+    <g transform="translate(690 120)">
+      <circle cx="30" cy="34" r="5" fill="#ef7956"/>
+      <text x="47" y="41" fill="#f5f5f5" font-size="18" font-weight="600">Dictation activity</text>
+
       <g transform="translate(30 80)">
-        <text x="0" y="0" fill="#85858a" font-size="12">DICTATIONS</text>
-        <text x="0" y="35" fill="#f5f5f5" font-size="28">384</text>
+        <text x="0" y="0" fill="#85858a" font-size="12">DICTATION TIME</text>
+        <text x="0" y="35" fill="#f5f5f5" font-size="28">6h 24m</text>
         <text x="150" y="0" fill="#85858a" font-size="12">WORDS</text>
         <text x="150" y="35" fill="#f5f5f5" font-size="28">17,842</text>
       </g>

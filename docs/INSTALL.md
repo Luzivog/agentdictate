@@ -35,8 +35,10 @@ without rebuilding:
 ./install.sh --check-native-access
 ```
 
-Run `agentdictate` (or `~/.local/bin/agentdictate`), add your OpenAI API key in
-**Settings**, and press `Ctrl+Space` to start or stop recording.
+Run `agentdictate` or `~/.local/bin/agentdictate`. In **Settings**, set
+**Transcription source** to **ChatGPT subscription**. AgentDictate uses your
+Codex sign-in for STT, so this route does not require an API key. Press
+`Ctrl+Space` to start or stop recording.
 
 ## Run from source
 
@@ -78,9 +80,11 @@ support.
 
 ## Local data and network use
 
-Audio is sent to OpenAI for transcription. When cleanup is enabled, transcript
-text is also sent to OpenAI. Settings, saved history, diagnostics, and recovery
-files are stored locally under:
+With subscription STT, AgentDictate sends audio to ChatGPT using your Codex
+sign-in. If you select the OpenAI API transcription route, AgentDictate sends
+audio to the OpenAI API instead. Optional cleanup sends transcript text to the
+OpenAI API and requires an API key. Settings, saved history, diagnostics, and
+recovery files are stored locally under:
 
 - `~/.config/agentdictate/`
 - `~/.local/share/agentdictate/`

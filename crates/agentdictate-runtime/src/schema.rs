@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS transcript_history (
     cleanup_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS external_dictation_imports (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    session_id INTEGER REFERENCES dictation_sessions(id) ON DELETE SET NULL,
+    PRIMARY KEY (source, source_id)
+);
+
 CREATE TABLE IF NOT EXISTS replacement_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_phrase TEXT NOT NULL,

@@ -14,7 +14,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::{
     AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
     SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
-    sync_autostart,
+    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_autostart,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<
@@ -141,6 +141,12 @@ impl AgentProcess {
                     &history_index_maintenance,
                 );
             })
+    }
+
+    /// Watches the ChatGPT desktop receipt directory and adds completed
+    /// dictations to AgentDictate's usage totals.
+    pub fn start_chatgpt_dictation_importer(&self) -> std::io::Result<std::thread::JoinHandle<()>> {
+        start_chatgpt_dictation_importer(self.database_file.clone())
     }
 
     fn snapshot_message(&self, request_id: u64) -> ServerMessage {
@@ -494,8 +500,8 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
     }
 }
 
-/// Converts one debounced hotkey edge into at most one lifecycle command.
-/// Repeated key events are removed by the Linux tracker before this seam.
+/// Converts one dispatcher-approved hotkey edge into at most one lifecycle command.
+/// The native listener owns repeat suppression; the daemon dispatcher owns toggle rearming.
 #[must_use]
 pub fn command_for_hotkey(
     mode: &str,

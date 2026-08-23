@@ -61,6 +61,19 @@ impl Runtime {
         })
     }
 
+    /// Opens a write connection for a worker owned by an already-running
+    /// daemon. Unlike `open`, this never performs crash reconciliation that
+    /// could reinterpret the live daemon's active recording as abandoned.
+    pub fn open_background_writer(path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
+        let connection = Connection::open(path)?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(Self {
+            connection,
+            subscribers: Vec::new(),
+            history_search_cache: RefCell::new(history_search::SearchCache::default()),
+        })
+    }
+
     /// Completes the deferred full-text backfill after essential listeners are
     /// ready. Search remains available through a literal fallback beforehand.
     /// Live daemon callers must use `HistoryIndexMaintenance` so recording can
