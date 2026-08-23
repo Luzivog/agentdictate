@@ -13,36 +13,17 @@
 
 ## Architecture
 
-AgentDictate is a Rust workspace of five crates:
+AgentDictate runs as two local processes. `agentdictated` owns the hotkey,
+recording, STT, history, and paste workflow. `agentdictate` is the GPUI desktop
+client. They communicate through a private Unix socket.
 
-```
-                 +----------------------+
-                 |   agentdictate-app   |
-                 | agentdictated daemon |
-                 | agentdictate desktop |
-                 +----------+-----------+
-                            |
-        +-------------------+-------------------+
-        |                   |                   |
-        v                   v                   v
-+---------------+ +-----------------+ +---------------+
-|    runtime    | |      linux      | |       ui      |
-+-------+-------+ +--------+--------+ +-------+-------+
-        |                   |                  |
-        +-------------------+------------------+
-                            |
-                            v
-                  +-------------------+
-                  |       core        |
-                  +-------------------+
-```
-
-Platform-independent domain logic lives in `core`; `runtime`, `linux`, and
-`ui` each add one concern (persistence/IPC, desktop integration, presentation)
-and depend only on `core`; `app` composes everything into the two binaries.
-See [docs/refactor-plan.md](docs/refactor-plan.md) for the full architecture
-and [docs/parity-exit-strategy.md](docs/parity-exit-strategy.md) for how the
-legacy Python migration suite will be retired.
+| Crate | Responsibility |
+| --- | --- |
+| `agentdictate-core` | Settings, protocol types, and workflow state |
+| `agentdictate-runtime` | SQLite history, recovery, usage, and IPC |
+| `agentdictate-linux` | Audio capture, hotkeys, focus, clipboard, and paste |
+| `agentdictate-ui` | GPUI windows and view models |
+| `agentdictate-app` | The two binaries and their composition |
 
 ## Install
 
