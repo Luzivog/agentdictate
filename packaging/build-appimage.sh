@@ -2,17 +2,11 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${PROJECT_DIR}/packaging/common.sh"
 source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
 APPDIR="${PROJECT_DIR}/dist/AppDir"
-VERSION="$(awk '/^\[workspace.package\]/{found=1; next} found && /^version = /{gsub(/[\" ]/, "", $3); print $3; exit}' "${PROJECT_DIR}/Cargo.toml")"
-if [[ -z "${VERSION}" ]]; then
-  echo "Could not read the workspace version from Cargo.toml" >&2
-  exit 1
-fi
-DESKTOP_ID="local.agentdictate.AgentDictate"
-# Consume the full rustc output; exiting early can SIGPIPE the rustup shim
-# under pipefail.
-RUST_HOST="$(rustc -vV | awk '/^host: / { host = $2 } END { print host }')"
+VERSION="$(agentdictate_workspace_version)"
+RUST_HOST="$(agentdictate_rust_host)"
 case "${RUST_HOST%%-*}" in
   x86_64) APPIMAGE_ARCH="x86_64" ;;
   aarch64) APPIMAGE_ARCH="aarch64" ;;
@@ -25,8 +19,7 @@ case "${RUST_HOST%%-*}" in
     ;;
 esac
 
-cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
-  --locked --release --features desktop -p agentdictate-app --bins
+agentdictate_build_release_binaries
 
 rm -rf "${APPDIR}"
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/applications" \
@@ -35,15 +28,8 @@ mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/applications" \
   "${APPDIR}/usr/share/doc/agentdictate/native-access"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${APPDIR}/usr/bin/agentdictate"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${APPDIR}/usr/bin/agentdictated"
-install -m 0644 "${PROJECT_DIR}/agentdictate.desktop" \
-  "${APPDIR}/usr/share/applications/${DESKTOP_ID}.desktop"
+agentdictate_install_shared_assets "${APPDIR}"
 install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" "${APPDIR}/agentdictate.svg"
-install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" \
-  "${APPDIR}/usr/share/icons/hicolor/scalable/apps/agentdictate.svg"
-install -m 0644 "${PROJECT_DIR}/packaging/${DESKTOP_ID}.metainfo.xml" \
-  "${APPDIR}/usr/share/metainfo/${DESKTOP_ID}.appdata.xml"
-install -m 0644 "${PROJECT_DIR}/LICENSE" \
-  "${APPDIR}/usr/share/doc/agentdictate/copyright"
 install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${APPDIR}/usr/share/doc/agentdictate/native-access/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \

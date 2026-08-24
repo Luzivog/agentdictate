@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${PROJECT_DIR}/packaging/common.sh"
 source "${PROJECT_DIR}/packaging/native-readiness.sh"
 BIN_DIR="${HOME}/.local/bin"
 DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
@@ -11,7 +12,6 @@ AUTOSTART_DIR="${CONFIG_HOME}/autostart"
 ICON_DIR="${DATA_HOME}/icons/hicolor/scalable/apps"
 SYSTEMD_USER_DIR="${DATA_HOME}/systemd/user"
 NATIVE_ACCESS_DIR="${DATA_HOME}/agentdictate/native-access"
-DESKTOP_ID="local.agentdictate.AgentDictate"
 
 case "${1:-}" in
   --check-native-access)
@@ -26,8 +26,7 @@ case "${1:-}" in
 esac
 
 source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
-cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
-  --locked --release --features desktop -p agentdictate-app --bins
+agentdictate_build_release_binaries
 
 mkdir -p "${BIN_DIR}" "${APP_DIR}" "${AUTOSTART_DIR}" "${ICON_DIR}" \
   "${SYSTEMD_USER_DIR}" "${NATIVE_ACCESS_DIR}"

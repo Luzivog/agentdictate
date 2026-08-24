@@ -4,8 +4,8 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>AgentDictate</name>
-  <summary>Fast native dictation for AI coding prompts</summary>
-  <developer id="io.github.luzivog">
+  <summary>Fast native Linux dictation for AI coding prompts</summary>
+  <developer id="local.agentdictate">
     <name>Luzivog</name>
   </developer>
   <description>
@@ -15,6 +15,9 @@
       application.
     </p>
   </description>
+  <releases>
+    <release version="0.2.0" date="2026-08-24" />
+  </releases>
   <launchable type="desktop-id">local.agentdictate.AgentDictate.desktop</launchable>
   <provides>
     <binary>agentdictate</binary>
