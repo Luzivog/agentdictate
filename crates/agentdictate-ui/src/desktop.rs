@@ -19,8 +19,9 @@ use std::{
 };
 
 use crate::{
-    Color, ModelCatalogViewModel, OverlayPresentation, ReplacementDraft, Route, ShellViewModel,
-    ThemeTokens, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel,
+    Color, ModelCatalogViewModel, OverlayPresentation, ReplacementDraft, Route,
+    SIDEBAR_OVERLAY_BREAKPOINT, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
+    WorkspaceViewModel,
 };
 use crate::{sidebar_motion::SidebarMotion, sidebar_open_for_layout};
 
@@ -41,22 +42,12 @@ use shell_chrome::{shell_title_bar, sidebar_view};
 pub use overlay_view::RecordingOverlay;
 
 const SIDEBAR_WIDTH: f32 = 250.0;
-const SIDEBAR_OVERLAY_BREAKPOINT: f32 = 1_100.0;
 const ROUTE_SCROLLBAR_WIDTH: f32 = 16.0;
 pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 
 /// Starts the native GPUI settings window from a daemon snapshot.
 pub type CommandSink =
     Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), String> + Send + Sync>;
-
-pub fn run_settings_shell(
-    model: ShellViewModel,
-    settings: agentdictate_core::Settings,
-    has_api_key: bool,
-    command_sink: CommandSink,
-) {
-    run_settings_shell_internal(model, settings, has_api_key, command_sink, None, None);
-}
 
 /// Starts the settings window with connected workspace actions.
 pub fn run_settings_shell_with_workspace_actions(
@@ -173,16 +164,6 @@ fn run_settings_shell_internal(
             }
             cx.activate(true);
         });
-}
-
-/// Runs one transient status-overlay session. The headless daemon launches this
-/// in a helper process only after a visible workflow state exists.
-pub fn run_recording_overlay(
-    initial: OverlayPresentation,
-    snapshots: Receiver<OverlayPresentation>,
-    work_area: Option<crate::LogicalRect>,
-) {
-    run_recording_overlay_with_ready(initial, snapshots, work_area, || {});
 }
 
 /// Runs an overlay session and reports when GPUI has created its platform
@@ -586,13 +567,6 @@ impl SettingsShell {
         }
     }
 
-    pub fn with_theme(model: ShellViewModel, theme: ThemeTokens) -> Self {
-        Self {
-            theme,
-            ..Self::new(model)
-        }
-    }
-
     pub fn with_workspace_actions(
         model: ShellViewModel,
         workspace_action_sink: WorkspaceActionSink,
@@ -731,7 +705,7 @@ impl Render for SettingsShell {
             Route::Replacements => 2,
             Route::Settings => 3,
         };
-        let compact = f32::from(window.viewport_size().width) < SIDEBAR_OVERLAY_BREAKPOINT;
+        let compact = f32::from(window.viewport_size().width) < SIDEBAR_OVERLAY_BREAKPOINT as f32;
         let first_layout = self.compact_layout.is_none();
         if self.compact_layout != Some(compact) {
             self.sidebar_open =

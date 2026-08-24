@@ -2,6 +2,8 @@
 
 //! Headless shell interaction contracts.
 
+use super::support::{self, DesktopHarness};
+
 use std::{
     cell::RefCell,
     ops::Deref,
@@ -18,8 +20,8 @@ use agentdictate_core::{
 use agentdictate_ui::{
     AgentDictateWindowFrame, HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel,
     RecoveryStage, ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel, Route,
-    SettingsShell, ShellViewModel, UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel,
-    WorkspaceAction, WorkspaceViewModel, test_support,
+    SIDEBAR_OVERLAY_BREAKPOINT, SettingsShell, ShellViewModel, UsageDayViewModel, UsagePeriod,
+    UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -31,6 +33,12 @@ use gpui_component::{Root, Theme};
 struct Harness {
     shell: Entity<SettingsShell>,
     cx: &'static mut VisualTestContext,
+}
+
+impl DesktopHarness for Harness {
+    fn visual_context(&mut self) -> &mut VisualTestContext {
+        self.cx
+    }
 }
 
 #[gpui::test]
@@ -195,14 +203,12 @@ impl Harness {
         Self { shell, cx }
     }
 
-    fn bounds(&mut self, selector: &'static str) -> Bounds<Pixels> {
-        self.cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("missing rendered selector: {selector}"))
-    }
-
-    fn has(&mut self, selector: &'static str) -> bool {
-        self.cx.debug_bounds(selector).is_some()
+    fn resize(&mut self, viewport: Size<Pixels>) {
+        self.cx.simulate_resize(viewport);
+        self.cx.run_until_parked();
+        self.cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
     }
 
     fn move_to(&mut self, selector: &'static str) {
@@ -217,11 +223,7 @@ impl Harness {
     }
 
     fn click_direct(&mut self, selector: &'static str) {
-        let position = self.bounds(selector).center();
-        self.cx
-            .simulate_mouse_move(position, None::<MouseButton>, Modifiers::none());
-        self.cx.simulate_click(position, Modifiers::none());
-        self.cx.run_until_parked();
+        support::click(self.cx, selector);
     }
 
     fn type_text(&mut self, selector: &'static str, text: &str) {
@@ -1090,6 +1092,38 @@ fn compact_sidebar_opens_and_dismisses_without_changing_routes(cx: &mut TestAppC
     harness.click("sidebar-dismiss");
     assert!(!harness.sidebar_is_open());
     assert_eq!(harness.active_route(), Route::Overview);
+}
+
+#[gpui::test]
+fn resizing_across_the_breakpoint_switches_the_rendered_sidebar_presentation(
+    cx: &mut TestAppContext,
+) {
+    let wide_width = SIDEBAR_OVERLAY_BREAKPOINT as f32 + 1.0;
+    let compact_width = SIDEBAR_OVERLAY_BREAKPOINT as f32 - 1.0;
+    let mut harness = Harness::open_with_size(cx, size(px(wide_width), px(700.)));
+
+    assert!(harness.has("sidebar-rail"));
+    assert!(!harness.has("sidebar-overlay-panel"));
+    let wide_content_width = harness.bounds("route-content").size.width;
+
+    harness.resize(size(px(compact_width), px(700.)));
+    harness.settle_sidebar_motion();
+    assert!(!harness.sidebar_is_open());
+    let compact_content_width = harness.bounds("route-content").size.width;
+    assert!(compact_content_width > wide_content_width);
+
+    harness.click("toggle-sidebar");
+    harness.settle_sidebar_motion();
+    assert!(harness.has("sidebar-overlay-panel"));
+    assert!(harness.has("sidebar-dismiss"));
+
+    harness.resize(size(px(wide_width), px(700.)));
+    harness.settle_sidebar_motion();
+    assert_eq!(harness.sidebar_width(), px(250.));
+    assert_eq!(
+        harness.bounds("route-content").size.width,
+        wide_content_width
+    );
 }
 
 #[gpui::test]

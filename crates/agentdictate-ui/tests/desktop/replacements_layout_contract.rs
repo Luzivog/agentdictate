@@ -2,6 +2,8 @@
 
 //! Headless replacements layout contracts.
 
+use super::support;
+
 use std::{
     ops::Deref,
     sync::{Arc, Mutex},
@@ -13,8 +15,8 @@ use agentdictate_ui::{
     ShellViewModel, WorkspaceAction, WorkspaceViewModel, test_support,
 };
 use gpui::{
-    AppContext, Bounds, Modifiers, MouseButton, TestAppContext, VisualTestContext, WindowBounds,
-    WindowOptions, point, px, size,
+    AppContext, Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point, px,
+    size,
 };
 use gpui_component::Root;
 
@@ -102,21 +104,11 @@ fn replacement_rows_are_dense_and_deletion_requires_confirmation(cx: &mut TestAp
     assert!(title.size.height < px(28.));
     assert!(title_glyphs.size.width > px(120.));
 
-    click(cx, "replacement-delete-7");
+    support::click(cx, "replacement-delete-7");
     assert!(actions.lock().expect("action lock").is_empty());
-    click(cx, "confirm-replacement-delete-7");
+    support::click(cx, "confirm-replacement-delete-7");
     assert_eq!(
         *actions.lock().expect("action lock"),
         vec![WorkspaceAction::DeleteReplacement { id: 7 }]
     );
-}
-
-fn click(cx: &mut VisualTestContext, selector: &'static str) {
-    let position = cx
-        .debug_bounds(selector)
-        .unwrap_or_else(|| panic!("missing rendered selector: {selector}"))
-        .center();
-    cx.simulate_mouse_move(position, None::<MouseButton>, Modifiers::none());
-    cx.simulate_click(position, Modifiers::none());
-    cx.run_until_parked();
 }
