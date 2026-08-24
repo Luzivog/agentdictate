@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-
+# Source this file after PROJECT_DIR is set.
+#
 # Read-only native-input diagnostics shared by install.sh and packaging tests.
 # Every path is overrideable so the checks can be exercised without touching
 # the host's input devices or user service manager.

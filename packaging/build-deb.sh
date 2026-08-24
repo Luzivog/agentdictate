@@ -2,16 +2,11 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${PROJECT_DIR}/packaging/common.sh"
 source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
-VERSION="$(awk '/^\[workspace.package\]/{found=1; next} found && /^version = /{gsub(/[\" ]/, "", $3); print $3; exit}' "${PROJECT_DIR}/Cargo.toml")"
-if [[ -z "${VERSION}" ]]; then
-  echo "Could not read the workspace version from Cargo.toml" >&2
-  exit 1
-fi
+VERSION="$(agentdictate_workspace_version)"
 ARCHITECTURE="$(dpkg --print-architecture)"
-# Consume the full rustc output; exiting early can SIGPIPE the rustup shim
-# under pipefail.
-RUST_HOST="$(rustc -vV | awk '/^host: / { host = $2 } END { print host }')"
+RUST_HOST="$(agentdictate_rust_host)"
 case "${RUST_HOST%%-*}" in
   x86_64) EXPECTED_ARCHITECTURE="amd64" ;;
   aarch64) EXPECTED_ARCHITECTURE="arm64" ;;
@@ -37,23 +32,16 @@ METAINFO_DIR="${BUILD_DIR}/usr/share/metainfo"
 DOC_DIR="${BUILD_DIR}/usr/share/doc/agentdictate"
 UDEV_RULES_DIR="${BUILD_DIR}/usr/lib/udev/rules.d"
 SYSTEMD_USER_DIR="${BUILD_DIR}/usr/lib/systemd/user"
-DESKTOP_ID="local.agentdictate.AgentDictate"
-
-cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
-  --locked --release --features desktop -p agentdictate-app --bins
+agentdictate_build_release_binaries
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${PKG_DIR}" "${BIN_DIR}" "${APP_DIR}" "${AUTOSTART_DIR}" "${ICON_DIR}" \
   "${METAINFO_DIR}" "${DOC_DIR}" "${UDEV_RULES_DIR}" "${SYSTEMD_USER_DIR}"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${BIN_DIR}/agentdictate"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentdictated"
-install -m 0644 "${PROJECT_DIR}/agentdictate.desktop" "${APP_DIR}/${DESKTOP_ID}.desktop"
+agentdictate_install_shared_assets "${BUILD_DIR}"
 install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-autostart.desktop" \
   "${AUTOSTART_DIR}/${DESKTOP_ID}.desktop"
-install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" "${ICON_DIR}/agentdictate.svg"
-install -m 0644 "${PROJECT_DIR}/packaging/${DESKTOP_ID}.metainfo.xml" \
-  "${METAINFO_DIR}/${DESKTOP_ID}.metainfo.xml"
-install -m 0644 "${PROJECT_DIR}/LICENSE" "${DOC_DIR}/copyright"
 install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${DOC_DIR}/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
@@ -102,7 +90,7 @@ Standards-Version: 4.6.2
 
 Package: agentdictate
 Architecture: any
-Description: Fast native Linux dictation
+Description: Fast native Linux dictation for AI coding prompts
 EOF
 SHLIB_DEPENDS="$(
   cd "${SHLIBDEPS_ROOT}"
@@ -121,7 +109,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, ydotool, ydotoold | ydotool (>= 1.0.4), xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
+Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, ydotoold | ydotool (>= 1.0.4), xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
 Maintainer: AgentDictate <local@agentdictate>
 Description: Fast native Linux dictation for AI coding prompts
  AgentDictate records speech, transcribes it with OpenAI, safely checkpoints
