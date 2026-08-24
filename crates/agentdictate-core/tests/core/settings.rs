@@ -50,6 +50,8 @@ fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
     assert!(!settings.cleanup_enabled);
     assert_eq!(settings.max_recording_seconds, 300);
     assert_eq!(settings.audio_ducking_volume_percent, 15);
+    assert_eq!(settings.audio_ducking_fade_out_ms, 600);
+    assert_eq!(settings.audio_ducking_fade_in_ms, 600);
 }
 
 #[test]

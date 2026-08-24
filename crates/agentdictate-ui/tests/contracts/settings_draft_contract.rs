@@ -25,6 +25,8 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     draft.max_recording_seconds = "420".to_owned();
     draft.audio_ducking_enabled = false;
     draft.audio_ducking_volume_percent = "25".to_owned();
+    draft.audio_ducking_fade_out_ms = "450".to_owned();
+    draft.audio_ducking_fade_in_ms = "725".to_owned();
     draft.paste_shortcut = "Ctrl+Shift+V".to_owned();
     draft.start_on_login = false;
     draft.save_history = true;
@@ -49,11 +51,41 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     assert_eq!(updated.max_recording_seconds, 420);
     assert!(!updated.audio_ducking_enabled);
     assert_eq!(updated.audio_ducking_volume_percent, 25);
+    assert_eq!(updated.audio_ducking_fade_out_ms, 450);
+    assert_eq!(updated.audio_ducking_fade_in_ms, 725);
     assert_eq!(updated.paste_shortcut, "Ctrl+Shift+V");
     assert!(!updated.start_on_login);
     assert!(updated.save_history);
     assert!(updated.preserve_temp_audio);
     assert_eq!(updated.openai_api_key, original.openai_api_key);
+}
+
+#[test]
+fn settings_draft_accepts_zero_and_rejects_invalid_ducking_fades() {
+    let original = Settings::default();
+    let mut draft = SettingsDraft::from(&original);
+    draft.audio_ducking_fade_out_ms = "0".to_owned();
+    draft.audio_ducking_fade_in_ms = "0".to_owned();
+
+    let updated = draft.apply_to(&original).unwrap();
+    assert_eq!(updated.audio_ducking_fade_out_ms, 0);
+    assert_eq!(updated.audio_ducking_fade_in_ms, 0);
+
+    for invalid in ["-1", "1.5"] {
+        let mut draft = SettingsDraft::from(&original);
+        draft.audio_ducking_fade_out_ms = invalid.to_owned();
+        assert_eq!(
+            draft.apply_to(&original),
+            Err(SettingsDraftError::InvalidNumber { field: "Fade out" })
+        );
+
+        let mut draft = SettingsDraft::from(&original);
+        draft.audio_ducking_fade_in_ms = invalid.to_owned();
+        assert_eq!(
+            draft.apply_to(&original),
+            Err(SettingsDraftError::InvalidNumber { field: "Fade in" })
+        );
+    }
 }
 
 #[test]
@@ -149,7 +181,6 @@ fn applying_a_draft_preserves_settings_that_the_form_does_not_expose() {
         sound_feedback: true,
         start_sound: true,
         stop_sound: true,
-        audio_ducking_fade_ms: 73,
         show_tray_icon: false,
         minimize_to_tray_on_close: false,
         launch_window_on_startup: true,

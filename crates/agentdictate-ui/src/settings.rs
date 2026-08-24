@@ -104,6 +104,18 @@ macro_rules! settings_fields {
                     placeholder: "15",
                     maximum: 100,
                 },
+                audio_ducking_fade_out_ms: String {
+                    from: stringified,
+                    apply: validate_field(parsed_ducking_fade_out_ms),
+                    placeholder: "600",
+                    maximum: u64::from(u32::MAX),
+                },
+                audio_ducking_fade_in_ms: String {
+                    from: stringified,
+                    apply: validate_field(parsed_ducking_fade_in_ms),
+                    placeholder: "600",
+                    maximum: u64::from(u32::MAX),
+                },
             }
             draft_only {
                 cleanup_enabled: bool {
@@ -362,6 +374,14 @@ fn validated_ducking_volume(value: &str) -> Result<u8, SettingsDraftError> {
     } else {
         Ok(volume)
     }
+}
+
+fn parsed_ducking_fade_out_ms(value: &str) -> Result<u32, SettingsDraftError> {
+    parse_number("Fade out", value)
+}
+
+fn parsed_ducking_fade_in_ms(value: &str) -> Result<u32, SettingsDraftError> {
+    parse_number("Fade in", value)
 }
 
 fn validated_paste_shortcut(value: &str) -> Result<String, SettingsDraftError> {

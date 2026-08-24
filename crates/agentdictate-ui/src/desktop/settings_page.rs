@@ -614,6 +614,26 @@ fn recording_audio_section(
         !settings.audio_ducking_enabled,
         theme,
     ))
+    .child(number_row(
+        "Fade out (ms)",
+        "Time to lower playback volume",
+        &format!("{} ms", settings.audio_ducking_fade_out_ms),
+        "settings-input-ducking-fade-out",
+        editor.map(|editor| editor.audio_ducking_fade_out_ms.clone()),
+        "ms",
+        !settings.audio_ducking_enabled,
+        theme,
+    ))
+    .child(number_row(
+        "Fade in (ms)",
+        "Time to restore playback volume",
+        &format!("{} ms", settings.audio_ducking_fade_in_ms),
+        "settings-input-ducking-fade-in",
+        editor.map(|editor| editor.audio_ducking_fade_in_ms.clone()),
+        "ms",
+        !settings.audio_ducking_enabled,
+        theme,
+    ))
 }
 
 fn delivery_storage_section(

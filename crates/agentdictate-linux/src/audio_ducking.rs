@@ -3,7 +3,7 @@ use std::{
     process::Command,
     sync::{Arc, Mutex, MutexGuard},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use agentdictate_core::Settings;
@@ -29,6 +29,18 @@ struct OriginalVolume {
 struct VolumeRamp {
     id: String,
     steps: Vec<Vec<u32>>,
+}
+
+struct RestoreRamp {
+    id: String,
+    original: OriginalVolume,
+    steps: Vec<Vec<u32>>,
+}
+
+struct RestoreWork {
+    generation: u64,
+    ramps: Vec<RestoreRamp>,
+    step_delay: Duration,
 }
 
 pub trait Pactl {
@@ -75,6 +87,7 @@ struct Inner<P: Pactl> {
     pactl: P,
     originals: Vec<OriginalVolume>,
     generation: u64,
+    fade_in_ms: u32,
 }
 
 impl Default for PlaybackDucker<SystemPactl> {
@@ -90,6 +103,7 @@ impl<P: Pactl + Send + 'static> PlaybackDucker<P> {
                 pactl,
                 originals: Vec::new(),
                 generation: 0,
+                fade_in_ms: 0,
             })),
             worker: None,
         }
@@ -100,18 +114,10 @@ impl<P: Pactl + Send + 'static> PlaybackDucker<P> {
             return;
         }
         // Clear an incomplete previous attempt before taking a new snapshot.
-        self.restore();
+        self.restore_immediately();
 
         let (generation, ramps, step_delay) = {
             let mut inner = lock_unpoisoned(&self.inner);
-            // A failed prior restore still owns the authoritative originals.
-            if !inner.originals.is_empty() {
-                tracing::info!(
-                    pending_streams = inner.originals.len(),
-                    "audio ducking skipped for pending restore"
-                );
-                return;
-            }
             let Ok(output) = inner.pactl.list_sink_inputs() else {
                 return;
             };
@@ -125,24 +131,54 @@ impl<P: Pactl + Send + 'static> PlaybackDucker<P> {
 
             inner.generation = inner.generation.wrapping_add(1);
             let generation = inner.generation;
-            let mut originals = Vec::with_capacity(streams.len());
+            inner.fade_in_ms = settings.audio_ducking_fade_in_ms;
+            let pending_count = inner.originals.len();
+            let mut adopted_pending = vec![false; pending_count];
+            inner.originals.reserve(streams.len());
             let mut ramps = Vec::with_capacity(streams.len());
             for stream in streams {
-                let target =
-                    ducking_target_volumes(&stream.volumes, settings.audio_ducking_volume_percent);
+                let pending_index = (0..pending_count)
+                    .find(|index| {
+                        !adopted_pending[*index] && inner.originals[*index].id == stream.id
+                    })
+                    .or_else(|| {
+                        stream.restore_key.as_ref().and_then(|restore_key| {
+                            (0..pending_count).find(|index| {
+                                !adopted_pending[*index]
+                                    && inner.originals[*index].restore_key.as_ref()
+                                        == Some(restore_key)
+                            })
+                        })
+                    });
+                let target = if let Some(pending_index) = pending_index {
+                    adopted_pending[pending_index] = true;
+                    let original = &mut inner.originals[pending_index];
+                    tracing::info!(
+                        previous_sink_input_id = %original.id,
+                        sink_input_id = %stream.id,
+                        "audio ducking adopted pending restore"
+                    );
+                    original.id.clone_from(&stream.id);
+                    ducking_target_volumes(&original.volumes, settings.audio_ducking_volume_percent)
+                } else {
+                    let target = ducking_target_volumes(
+                        &stream.volumes,
+                        settings.audio_ducking_volume_percent,
+                    );
+                    inner.originals.push(OriginalVolume {
+                        id: stream.id.clone(),
+                        restore_key: stream.restore_key.clone(),
+                        volumes: stream.volumes.clone(),
+                    });
+                    target
+                };
                 ramps.push(VolumeRamp {
                     id: stream.id.clone(),
-                    steps: ramp_plan(&stream.volumes, &target, settings.audio_ducking_fade_ms),
-                });
-                originals.push(OriginalVolume {
-                    id: stream.id,
-                    restore_key: stream.restore_key,
-                    volumes: stream.volumes,
+                    steps: ramp_plan(&stream.volumes, &target, settings.audio_ducking_fade_out_ms),
                 });
             }
-            inner.originals = originals;
 
-            if settings.audio_ducking_fade_ms == 0 {
+            if settings.audio_ducking_fade_out_ms == 0 {
                 for ramp in ramps {
                     let _ = inner.pactl.set_sink_input_volume(&ramp.id, &ramp.steps[0]);
                 }
@@ -151,7 +187,7 @@ impl<P: Pactl + Send + 'static> PlaybackDucker<P> {
 
             let step_count = ramps[0].steps.len() as u32;
             let step_delay = Duration::from_millis(u64::from(
-                settings.audio_ducking_fade_ms.div_ceil(step_count),
+                settings.audio_ducking_fade_out_ms.div_ceil(step_count),
             ));
             (generation, ramps, step_delay)
         };
@@ -166,16 +202,36 @@ impl<P: Pactl + Send + 'static> PlaybackDucker<P> {
     }
 
     pub fn restore(&mut self) {
-        restore_locked(&mut lock_unpoisoned(&self.inner));
-        // Dropping the handle detaches a sleeping worker; generation cancellation
-        // makes it exit before its next write.
+        let work = {
+            let mut inner = lock_unpoisoned(&self.inner);
+            let fade_in_ms = inner.fade_in_ms;
+            prepare_restore(&mut inner, fade_in_ms)
+        };
+        // Dropping the handle detaches a sleeping worker. The generation was
+        // already bumped under the lock, so it exits before its next write.
+        self.worker = None;
+        let Some(work) = work else {
+            return;
+        };
+
+        let inner = Arc::clone(&self.inner);
+        if let Ok(worker) = thread::Builder::new()
+            .name("agentdictate-audio-ducking".into())
+            .spawn(move || run_restore_ramp(inner, work))
+        {
+            self.worker = Some(worker);
+        }
+    }
+
+    fn restore_immediately(&mut self) {
+        prepare_restore(&mut lock_unpoisoned(&self.inner), 0);
         self.worker = None;
     }
 }
 
 impl<P: Pactl + Send + 'static> Drop for PlaybackDucker<P> {
     fn drop(&mut self) {
-        self.restore();
+        self.restore_immediately();
     }
 }
 
@@ -196,7 +252,6 @@ fn ducking_target_volumes(volumes: &[u32], percent: u8) -> Vec<u32> {
 }
 
 fn ramp_plan(start: &[u32], target: &[u32], fade_ms: u32) -> Vec<Vec<u32>> {
-    debug_assert_eq!(start.len(), target.len());
     let step_count = if fade_ms == 0 {
         1
     } else {
@@ -221,14 +276,31 @@ fn ramp_plan(start: &[u32], target: &[u32], fade_ms: u32) -> Vec<Vec<u32>> {
         .collect()
 }
 
+fn remaining_until_ramp_step(
+    started_at: Instant,
+    now: Instant,
+    step_delay: Duration,
+    step_number: u32,
+) -> Duration {
+    (started_at + step_delay * step_number).saturating_duration_since(now)
+}
+
+fn wait_for_ramp_step(started_at: Instant, step_delay: Duration, step_number: u32) {
+    let remaining = remaining_until_ramp_step(started_at, Instant::now(), step_delay, step_number);
+    if !remaining.is_zero() {
+        thread::sleep(remaining);
+    }
+}
+
 fn run_ramp<P: Pactl + Send + 'static>(
     inner: Arc<Mutex<Inner<P>>>,
     generation: u64,
     ramps: Vec<VolumeRamp>,
     step_delay: Duration,
 ) {
+    let started_at = Instant::now();
     for step in 0..ramps[0].steps.len() {
-        thread::sleep(step_delay);
+        wait_for_ramp_step(started_at, step_delay, step as u32 + 1);
         let mut inner = lock_unpoisoned(&inner);
         if inner.generation != generation {
             return;
@@ -241,21 +313,63 @@ fn run_ramp<P: Pactl + Send + 'static>(
     }
 }
 
-fn restore_locked<P: Pactl>(inner: &mut Inner<P>) {
+fn run_restore_ramp<P: Pactl + Send + 'static>(inner: Arc<Mutex<Inner<P>>>, work: RestoreWork) {
+    let started_at = Instant::now();
+    for step in 0..work.ramps[0].steps.len() {
+        wait_for_ramp_step(started_at, work.step_delay, step as u32 + 1);
+        let mut inner = lock_unpoisoned(&inner);
+        if inner.generation != work.generation {
+            return;
+        }
+
+        let final_step = step + 1 == work.ramps[0].steps.len();
+        for ramp in &work.ramps {
+            let result = inner
+                .pactl
+                .set_sink_input_volume(&ramp.id, &ramp.steps[step]);
+            if !final_step {
+                continue;
+            }
+
+            match result {
+                Ok(()) => {
+                    if let Some(index) = inner
+                        .originals
+                        .iter()
+                        .position(|original| original == &ramp.original)
+                    {
+                        inner.originals.remove(index);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        sink_input_id = %ramp.id,
+                        %error,
+                        "audio ducking restore volume write failed"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn prepare_restore<P: Pactl>(inner: &mut Inner<P>, fade_in_ms: u32) -> Option<RestoreWork> {
     inner.generation = inner.generation.wrapping_add(1);
+    let generation = inner.generation;
     if inner.originals.is_empty() {
-        return;
+        return None;
     }
 
     let output = match inner.pactl.list_sink_inputs() {
         Ok(output) => output,
         Err(error) => {
             tracing::warn!(%error, "audio ducking restore listing failed");
-            return;
+            return None;
         }
     };
     let live_streams = parse_sink_inputs(&output);
     let mut retained = Vec::new();
+    let mut ramps = Vec::new();
     for original in std::mem::take(&mut inner.originals) {
         let target = live_streams
             .iter()
@@ -271,6 +385,7 @@ fn restore_locked<P: Pactl>(inner: &mut Inner<P>) {
             });
 
         let Some((target, rematched)) = target else {
+            retained.push(original);
             continue;
         };
         if rematched {
@@ -280,19 +395,38 @@ fn restore_locked<P: Pactl>(inner: &mut Inner<P>) {
                 "audio ducking restore rematched sink input"
             );
         }
-        if let Err(error) = inner
-            .pactl
-            .set_sink_input_volume(&target.id, &original.volumes)
-        {
-            tracing::warn!(
-                sink_input_id = %target.id,
-                %error,
-                "audio ducking restore volume write failed"
-            );
+        if fade_in_ms == 0 {
+            if let Err(error) = inner
+                .pactl
+                .set_sink_input_volume(&target.id, &original.volumes)
+            {
+                tracing::warn!(
+                    sink_input_id = %target.id,
+                    %error,
+                    "audio ducking restore volume write failed"
+                );
+                retained.push(original);
+            }
+        } else {
+            ramps.push(RestoreRamp {
+                id: target.id.clone(),
+                original: original.clone(),
+                steps: ramp_plan(&target.volumes, &original.volumes, fade_in_ms),
+            });
             retained.push(original);
         }
     }
     inner.originals = retained;
+
+    if ramps.is_empty() {
+        return None;
+    }
+    let step_count = ramps[0].steps.len() as u32;
+    Some(RestoreWork {
+        generation,
+        ramps,
+        step_delay: Duration::from_millis(u64::from(fade_in_ms.div_ceil(step_count))),
+    })
 }
 
 fn parse_sink_inputs(output: &str) -> Vec<SinkInput> {
@@ -383,6 +517,7 @@ mod tests {
         changes: Vec<(String, Vec<u32>)>,
         fail_listing: bool,
         fail_sets: bool,
+        fail_volumes: Option<Vec<u32>>,
     }
 
     struct FakePactl {
@@ -404,7 +539,7 @@ mod tests {
             let mut state = lock_unpoisoned(&self.state);
             let change = (id.to_owned(), volumes.to_vec());
             state.attempts.push(change.clone());
-            if state.fail_sets {
+            if state.fail_sets || state.fail_volumes.as_deref() == Some(volumes) {
                 Err(io::Error::other("fake volume failure"))
             } else {
                 state.changes.push(change);
@@ -427,7 +562,17 @@ mod tests {
     fn immediate_settings(percent: u8) -> Settings {
         Settings {
             audio_ducking_volume_percent: percent,
-            audio_ducking_fade_ms: 0,
+            audio_ducking_fade_out_ms: 0,
+            audio_ducking_fade_in_ms: 0,
+            ..Settings::default()
+        }
+    }
+
+    fn settings_with_fades(percent: u8, fade_out_ms: u32, fade_in_ms: u32) -> Settings {
+        Settings {
+            audio_ducking_volume_percent: percent,
+            audio_ducking_fade_out_ms: fade_out_ms,
+            audio_ducking_fade_in_ms: fade_in_ms,
             ..Settings::default()
         }
     }
@@ -446,6 +591,22 @@ mod tests {
         "\tVolume: mono: 34821 / 53%\n",
         "\tProperties:\n",
         "\t\tmodule-stream-restore.id = \"K\"\n",
+    );
+
+    const DUCKED_STREAM_7_WITH_KEY: &str = concat!(
+        "Sink Input #7\n",
+        "\tCorked: no\n",
+        "\tVolume: mono: 34821 / 53%\n",
+        "\tProperties:\n",
+        "\t\tmodule-stream-restore.id = \"K\"\n",
+    );
+
+    const STREAM_11_WITH_OTHER_KEY: &str = concat!(
+        "Sink Input #11\n",
+        "\tCorked: no\n",
+        "\tVolume: mono: 65536 / 100%\n",
+        "\tProperties:\n",
+        "\t\tmodule-stream-restore.id = \"OTHER\"\n",
     );
 
     #[test]
@@ -499,6 +660,138 @@ mod tests {
             ramp_plan(&[100], &[0], RAMP_STEP_MS * (MAX_RAMP_STEPS + 1)).len(),
             MAX_RAMP_STEPS as usize
         );
+
+        let restore_plan = ramp_plan(&[0, 200], &[1_000, 400], 200);
+        assert!(restore_plan.windows(2).all(|steps| {
+            steps[1]
+                .iter()
+                .zip(&steps[0])
+                .all(|(next, previous)| next >= previous)
+        }));
+        assert_eq!(restore_plan.last(), Some(&vec![1_000, 400]));
+        assert_eq!(
+            ramp_plan(&[200], &[1_000, 400], 200).last(),
+            Some(&vec![1_000, 400])
+        );
+    }
+
+    #[test]
+    fn ramp_step_wait_uses_absolute_deadlines_and_skips_sleep_when_behind() {
+        let started_at = Instant::now();
+        let step_delay = Duration::from_millis(50);
+
+        assert_eq!(
+            remaining_until_ramp_step(started_at, started_at, step_delay, 1),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            remaining_until_ramp_step(
+                started_at,
+                started_at + Duration::from_millis(80),
+                step_delay,
+                2,
+            ),
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            remaining_until_ramp_step(
+                started_at,
+                started_at + Duration::from_millis(120),
+                step_delay,
+                2,
+            ),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn zero_fade_in_restores_synchronously() {
+        let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
+        ducker.duck(&immediate_settings(15));
+        lock_unpoisoned(&state).listing = DUCKED_STREAM_7_WITH_KEY.to_owned();
+
+        ducker.restore();
+
+        assert!(ducker.worker.is_none());
+        assert!(lock_unpoisoned(&ducker.inner).originals.is_empty());
+        assert_eq!(
+            lock_unpoisoned(&state).changes.last(),
+            Some(&("7".into(), vec![65_536]))
+        );
+    }
+
+    #[test]
+    fn fade_in_starts_at_the_listed_volume_and_clears_on_exact_final_write() {
+        let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
+        ducker.duck(&settings_with_fades(15, 0, 100));
+        {
+            let mut state = lock_unpoisoned(&state);
+            state.listing = DUCKED_STREAM_7_WITH_KEY.to_owned();
+            state.fail_volumes = Some(vec![50_179]);
+        }
+
+        ducker.restore();
+        ducker.worker.take().unwrap().join().unwrap();
+
+        let state = lock_unpoisoned(&state);
+        assert_eq!(
+            state.attempts,
+            vec![
+                ("7".into(), vec![34_821]),
+                ("7".into(), vec![50_179]),
+                ("7".into(), vec![65_536]),
+            ]
+        );
+        assert_eq!(
+            state.changes,
+            vec![("7".into(), vec![34_821]), ("7".into(), vec![65_536]),]
+        );
+        assert!(lock_unpoisoned(&ducker.inner).originals.is_empty());
+    }
+
+    #[test]
+    fn failed_final_fade_in_write_retains_the_original() {
+        let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
+        ducker.duck(&settings_with_fades(15, 0, 100));
+        {
+            let mut state = lock_unpoisoned(&state);
+            state.listing = DUCKED_STREAM_7_WITH_KEY.to_owned();
+            state.fail_volumes = Some(vec![65_536]);
+        }
+
+        ducker.restore();
+        ducker.worker.take().unwrap().join().unwrap();
+
+        assert_eq!(
+            lock_unpoisoned(&state).attempts,
+            vec![
+                ("7".into(), vec![34_821]),
+                ("7".into(), vec![50_179]),
+                ("7".into(), vec![65_536]),
+            ]
+        );
+        assert_eq!(lock_unpoisoned(&ducker.inner).originals.len(), 1);
+    }
+
+    #[test]
+    fn duck_preamble_restores_immediately_even_with_a_nonzero_fade_in() {
+        let settings = settings_with_fades(15, 0, 600);
+        let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
+        ducker.duck(&settings);
+
+        ducker.duck(&settings);
+
+        let state = lock_unpoisoned(&state);
+        assert_eq!(state.list_calls, 3);
+        assert_eq!(
+            state.attempts,
+            vec![
+                ("7".into(), vec![34_821]),
+                ("7".into(), vec![65_536]),
+                ("7".into(), vec![34_821]),
+            ]
+        );
+        assert!(ducker.worker.is_none());
     }
 
     #[test]
@@ -517,22 +810,34 @@ mod tests {
     }
 
     #[test]
-    fn failed_restore_is_retained_and_a_later_restore_succeeds() {
+    fn failed_live_restore_is_adopted_without_compounding_the_duck_target() {
         let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
         ducker.duck(&immediate_settings(15));
-        lock_unpoisoned(&state).fail_sets = true;
+        {
+            let mut state = lock_unpoisoned(&state);
+            state.listing = STREAM_9_WITH_KEY.to_owned();
+            state.fail_volumes = Some(vec![65_536]);
+        }
 
         ducker.restore();
+        ducker.duck(&immediate_settings(15));
 
-        assert_eq!(lock_unpoisoned(&ducker.inner).originals.len(), 1);
-        lock_unpoisoned(&state).fail_sets = false;
-
-        ducker.restore();
-
-        assert!(lock_unpoisoned(&ducker.inner).originals.is_empty());
         assert_eq!(
-            lock_unpoisoned(&state).changes.last(),
-            Some(&("7".into(), vec![65_536]))
+            lock_unpoisoned(&state).attempts,
+            vec![
+                ("7".into(), vec![34_821]),
+                ("9".into(), vec![65_536]),
+                ("9".into(), vec![65_536]),
+                ("9".into(), vec![34_821]),
+            ]
+        );
+        assert_eq!(
+            lock_unpoisoned(&ducker.inner).originals,
+            vec![OriginalVolume {
+                id: "9".into(),
+                restore_key: Some("K".into()),
+                volumes: vec![65_536],
+            }]
         );
     }
 
@@ -550,6 +855,41 @@ mod tests {
         ducker.restore();
 
         assert!(lock_unpoisoned(&ducker.inner).originals.is_empty());
+    }
+
+    #[test]
+    fn unmatched_pending_restore_does_not_block_ducking_another_stream() {
+        let (mut ducker, state) = fake_ducker(STREAM_7_WITH_KEY);
+        ducker.duck(&immediate_settings(15));
+        lock_unpoisoned(&state).listing.clear();
+
+        ducker.restore();
+
+        assert_eq!(lock_unpoisoned(&ducker.inner).originals.len(), 1);
+        assert_eq!(lock_unpoisoned(&state).attempts.len(), 1);
+        lock_unpoisoned(&state).listing = STREAM_11_WITH_OTHER_KEY.to_owned();
+
+        ducker.duck(&immediate_settings(15));
+
+        assert_eq!(
+            lock_unpoisoned(&state).changes.last(),
+            Some(&("11".into(), vec![34_821]))
+        );
+        assert_eq!(
+            lock_unpoisoned(&ducker.inner).originals,
+            vec![
+                OriginalVolume {
+                    id: "7".into(),
+                    restore_key: Some("K".into()),
+                    volumes: vec![65_536],
+                },
+                OriginalVolume {
+                    id: "11".into(),
+                    restore_key: Some("OTHER".into()),
+                    volumes: vec![65_536],
+                },
+            ]
+        );
     }
 
     #[test]

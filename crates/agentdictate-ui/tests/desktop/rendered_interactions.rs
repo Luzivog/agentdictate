@@ -1534,6 +1534,8 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     harness.bounds("settings-input-recording-mode");
     harness.bounds("settings-input-max-recording");
     harness.bounds("settings-input-ducked-volume");
+    harness.bounds("settings-input-ducking-fade-out");
+    harness.bounds("settings-input-ducking-fade-in");
     harness.bounds("settings-input-paste-shortcut");
     assert!(!harness.has("settings-clipboard"));
     assert!(!harness.has("settings-save-bar"));
@@ -1552,6 +1554,8 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
             if settings.hotkey == "Ctrl+Space"
                 && settings.recording_mode == "toggle"
                 && settings.max_recording_seconds == 300
+                && settings.audio_ducking_fade_out_ms == 600
+                && settings.audio_ducking_fade_in_ms == 600
                 && settings.cleanup_enabled != Settings::default().cleanup_enabled
     ));
 }
