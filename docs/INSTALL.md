@@ -36,7 +36,7 @@ choose **Sign in with ChatGPT**. `codex login status` must report
 ## User-profile install
 
 ```bash
-git clone https://github.com/Luzivog/agentdictate.git
+git clone https://github.com/luzivog/agentdictate.git
 cd agentdictate
 ./install.sh
 ```
@@ -83,6 +83,7 @@ import running. Stop them with **Quit AgentDictate** in the tray or
 ```bash
 ./run.sh                 # desktop app
 ./run.sh --background    # start the background user service
+./run.sh --service       # run the daemon directly as the service process
 ```
 
 ## Focused development
