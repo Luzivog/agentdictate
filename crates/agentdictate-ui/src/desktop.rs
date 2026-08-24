@@ -19,8 +19,9 @@ use std::{
 };
 
 use crate::{
-    Color, ModelCatalogViewModel, OverlayPresentation, ReplacementDraft, Route, ShellViewModel,
-    ThemeTokens, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel,
+    Color, ModelCatalogViewModel, OverlayPresentation, ReplacementDraft, Route,
+    SIDEBAR_OVERLAY_BREAKPOINT, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
+    WorkspaceViewModel,
 };
 use crate::{sidebar_motion::SidebarMotion, sidebar_open_for_layout};
 
@@ -41,7 +42,6 @@ use shell_chrome::{shell_title_bar, sidebar_view};
 pub use overlay_view::RecordingOverlay;
 
 const SIDEBAR_WIDTH: f32 = 250.0;
-const SIDEBAR_OVERLAY_BREAKPOINT: f32 = 1_100.0;
 const ROUTE_SCROLLBAR_WIDTH: f32 = 16.0;
 pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 
@@ -731,7 +731,7 @@ impl Render for SettingsShell {
             Route::Replacements => 2,
             Route::Settings => 3,
         };
-        let compact = f32::from(window.viewport_size().width) < SIDEBAR_OVERLAY_BREAKPOINT;
+        let compact = f32::from(window.viewport_size().width) < SIDEBAR_OVERLAY_BREAKPOINT as f32;
         let first_layout = self.compact_layout.is_none();
         if self.compact_layout != Some(compact) {
             self.sidebar_open =
