@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
-use agentdictate_app::{AppPaths, WorkspaceClient, bootstrap_daemon_service, init_file_logging};
+use agentdictate_app::{
+    AppPaths, WorkspaceClient, WorkspaceError, bootstrap_daemon_service, init_file_logging,
+};
 use agentdictate_core::{ClientCommand, ServerMessageKind};
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
-    Route, ShellViewModel, run_settings_shell_with_workspace_actions,
+    Route, ShellViewModel, UiActionError, run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
 
@@ -29,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     };
     let runtime = paths.runtime.clone();
     let workspace_client = Arc::new(WorkspaceClient::new(runtime.clone(), *workspace));
-    let mut workspace_model = workspace_client.view_model().map_err(anyhow::Error::msg)?;
+    let mut workspace_model = workspace_client.view_model()?;
     let workspace_updates = match workspace_client
         .watch_with_catalog(&paths.database_file, paths.model_catalog_cache_file())
     {
@@ -50,13 +52,22 @@ fn main() -> anyhow::Result<()> {
     };
     let workspace_action_sink = {
         let workspace_client = Arc::clone(&workspace_client);
-        Arc::new(move |action| workspace_client.perform(action))
+        Arc::new(move |action| {
+            workspace_client
+                .perform(action)
+                .map_err(|error| -> UiActionError { Box::new(error) })
+        })
     };
-    let command_sink = Arc::new(move |command| {
-        let (mut client, _) = IpcClient::connect(&runtime).map_err(|error| error.to_string())?;
-        let response = client.send(command).map_err(|error| error.to_string())?;
+    let command_sink = Arc::new(move |command| -> Result<(), UiActionError> {
+        let (mut client, _) = IpcClient::connect(&runtime)
+            .map_err(|error| -> UiActionError { Box::new(WorkspaceError::from(error)) })?;
+        let response = client
+            .send(command)
+            .map_err(|error| -> UiActionError { Box::new(WorkspaceError::from(error)) })?;
         match response.kind {
-            ServerMessageKind::CommandRejected { error, .. } => Err(error),
+            ServerMessageKind::CommandRejected { error, .. } => {
+                Err(Box::new(WorkspaceError::CommandRejected { message: error }))
+            }
             ServerMessageKind::Snapshot { .. }
             | ServerMessageKind::Workspace { .. }
             | ServerMessageKind::HistoryPage { .. } => Ok(()),

@@ -47,8 +47,10 @@ pub struct WorkspaceViewModel {
 
 /// Executes one workspace action and returns the fresh presentation snapshot
 /// that replaces all workspace route data atomically.
+pub type UiActionError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 pub type WorkspaceActionSink =
-    Arc<dyn Fn(WorkspaceAction) -> Result<WorkspaceViewModel, String> + Send + Sync>;
+    Arc<dyn Fn(WorkspaceAction) -> Result<WorkspaceViewModel, UiActionError> + Send + Sync>;
 
 impl WorkspaceViewModel {
     pub fn new(

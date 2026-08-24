@@ -46,7 +46,7 @@ pub use tray::{
     SystemTrayHandle, TrayAction, settings_executable_for_current_process, start_system_tray,
     tray_command_for_phase,
 };
-pub use workspace::{WorkspaceClient, workspace_view_model};
+pub use workspace::{WorkspaceClient, WorkspaceError, workspace_view_model};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppPaths {

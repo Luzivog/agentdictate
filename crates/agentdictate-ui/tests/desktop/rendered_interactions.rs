@@ -1071,7 +1071,7 @@ fn failed_workspace_refresh_preserves_the_previous_usage_snapshot(cx: &mut TestA
         cx,
         size(px(1_100.), px(780.)),
         model,
-        Arc::new(|_| Err("daemon unavailable".to_owned())),
+        Arc::new(|_| Err(Box::new(std::io::Error::other("daemon unavailable")))),
     );
 
     harness.click("usage-period-7-days");
