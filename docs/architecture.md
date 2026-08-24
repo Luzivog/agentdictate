@@ -34,7 +34,7 @@ runtime, linux, and ui do not depend on each other.
 
 ## Crates
 
-- **agentdictate-core**: Platform-independent domain types: protocol v2 wire
+- **agentdictate-core**: Platform-independent domain types: protocol v3 wire
   messages and command enums, settings, the spoken-replacement engine,
   transcription cost estimation, and the dictation workflow state machine.
   Depends on nothing Linux-specific.
@@ -51,6 +51,12 @@ runtime, linux, and ui do not depend on each other.
   binary and the `agentdictate` desktop binary, wires all crates together, and
   implements the OpenAI transcriber.
 
+The app crate also implements the experimental ChatGPT subscription route in
+`crates/agentdictate-app/src/codex_subscription.rs`. It uses the ChatGPT account
+signed into Codex. `crates/agentdictate-app/src/chatgpt_dictation_import.rs`
+imports completed ChatGPT desktop dictation records into local history. The
+undocumented route can stop working without notice.
+
 ## Daemon And Settings App Communication
 
 The settings app (`agentdictate`) talks to the daemon (`agentdictated`) over a
@@ -59,7 +65,7 @@ created with mode 0600 and guarded by a singleton lock file so only one daemon
 listens.
 
 The protocol is newline-delimited JSON, versioned by `protocol_version`
-(currently 2) carried in every message. On connect the daemon pushes a full
+(currently 3) carried in every message. On connect the daemon pushes a full
 snapshot before waiting for commands, so reconnects never depend on replayed
 events; subsequent commands receive per-command responses. While connected,
 the desktop app watches the SQLite database and the model-catalog cache file
@@ -103,6 +109,6 @@ Runtime data lives under XDG directories, each created with mode 0700:
 - `~/.cache/agentdictate/` — model catalog cache (`model-catalog.json`).
 - `$XDG_RUNTIME_DIR/agentdictate/` — IPC socket and singleton lock; not durable.
 
-A legacy Python implementation under `src/agentdictate/` remains only as a
-migration-parity suite; installed binaries are Rust-only. See
-[docs/parity-exit-strategy.md](parity-exit-strategy.md) for its exit strategy.
+The legacy Python implementation and parity suite were removed on 2026-08-24.
+See [the parity exit record](parity-exit-strategy.md) for the removal decision
+and accepted divergences.

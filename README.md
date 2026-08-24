@@ -34,7 +34,7 @@ manager, a running PipeWire session, and Rust 1.95.0 through
 3. Build and install AgentDictate:
 
    ```bash
-   git clone https://github.com/Luzivog/agentdictate.git
+   git clone https://github.com/luzivog/agentdictate.git
    cd agentdictate
    ./install.sh
    ```
@@ -170,6 +170,8 @@ socket. The daemon runs as a user service for the current graphical session.
 | `agentdictate-linux` | Recording, hotkeys, focus, clipboard, and paste |
 | `agentdictate-ui` | GPUI windows and view models |
 | `agentdictate-app` | Process composition and both binaries |
+
+See the [full architecture overview](docs/architecture.md).
 
 ## Uninstall
 
