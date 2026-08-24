@@ -9,7 +9,7 @@ use std::{
 };
 
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, JobId, ServerMessageKind,
+    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyReadiness, JobId, ServerMessageKind,
     WorkflowPhase,
 };
 use agentdictate_linux::{
@@ -616,11 +616,12 @@ fn dispatch_hotkey(
         );
         return Ok(HotkeyActionOutcome::Other);
     };
-    let starts_recording = matches!(&command.kind, ClientCommandKind::StartRecording { .. });
-    let action = match &command.kind {
-        ClientCommandKind::StartRecording { .. } => "start_recording",
-        ClientCommandKind::StopRecording { .. } => "stop_recording",
-        ClientCommandKind::Cancel { .. } => "cancel",
+    let command_tag = command.kind();
+    let starts_recording = command_tag == ClientCommandTag::StartRecording;
+    let action = match command_tag {
+        ClientCommandTag::StartRecording => "start_recording",
+        ClientCommandTag::StopRecording => "stop_recording",
+        ClientCommandTag::Cancel => "cancel",
         _ => "unexpected",
     };
     tracing::info!(

@@ -14,7 +14,7 @@ use std::{
 use agentdictate_core::{
     ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE, HistoryPageCursor,
     JobId, ReplacementRule, ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot,
-    WorkspaceSnapshot,
+    WorkspaceSnapshot, format_duration_clock,
 };
 use agentdictate_runtime::IpcClient;
 
@@ -497,7 +497,7 @@ pub fn workspace_view_model(
                     RecoveryStage::Transcription
                 },
                 entry.updated_at.format("%b %e, %H:%M UTC").to_string(),
-                format_duration(entry.duration_seconds),
+                format_duration_clock(entry.duration_seconds),
                 entry
                     .error_message
                     .clone()
@@ -548,7 +548,7 @@ fn transcript_view_model(entry: &agentdictate_core::HistorySnapshot) -> Transcri
         entry.created_at.format("%b %e, %H:%M UTC").to_string(),
         entry.preview_text.clone(),
         entry.word_count,
-        format_duration(entry.duration_seconds),
+        format_duration_clock(entry.duration_seconds),
     )
 }
 
@@ -592,11 +592,6 @@ fn ui_usage_totals(totals: UsageTotalsSnapshot) -> UsageTotals {
         audio_seconds: totals.audio_seconds.round().max(0.0) as u64,
         estimated_cost_usd: totals.estimated_cost,
     }
-}
-
-fn format_duration(seconds: f64) -> String {
-    let seconds = seconds.round().max(0.0) as u64;
-    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 #[cfg(test)]
