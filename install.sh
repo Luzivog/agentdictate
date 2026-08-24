@@ -38,9 +38,11 @@ install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentd
 # absolute paths for both entry points so launch and autostart are reliable.
 DESKTOP_TARGET="${APP_DIR}/${DESKTOP_ID}.desktop"
 AUTOSTART_TARGET="${AUTOSTART_DIR}/${DESKTOP_ID}.desktop"
+SERVICE_TARGET="${SYSTEMD_USER_DIR}/agentdictated.service"
 DESKTOP_TEMP="$(mktemp "${APP_DIR}/.${DESKTOP_ID}.XXXXXX")"
 AUTOSTART_TEMP="$(mktemp "${AUTOSTART_DIR}/.${DESKTOP_ID}.XXXXXX")"
-trap 'rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}"' EXIT
+SERVICE_TEMP="$(mktemp "${SYSTEMD_USER_DIR}/.agentdictated.service.XXXXXX")"
+trap 'rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}" "${SERVICE_TEMP}"' EXIT
 while IFS= read -r line || [[ -n "${line}" ]]; do
   if [[ "${line}" == "Exec=agentdictate" ]]; then
     printf 'Exec="%s"\n' "${BIN_DIR}/agentdictate"
@@ -49,15 +51,28 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   fi
 done < "${PROJECT_DIR}/agentdictate.desktop" > "${DESKTOP_TEMP}"
 while IFS= read -r line || [[ -n "${line}" ]]; do
-  if [[ "${line}" == "Exec=agentdictated" ]]; then
-    printf 'Exec="%s"\n' "${BIN_DIR}/agentdictated"
+  if [[ "${line}" == "Exec=agentdictated --start-service" ]]; then
+    printf 'Exec="%s" --start-service\n' "${BIN_DIR}/agentdictated"
   else
     printf '%s\n' "${line}"
   fi
 done < "${PROJECT_DIR}/packaging/agentdictate-autostart.desktop" > "${AUTOSTART_TEMP}"
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  if [[ "${line}" == "ExecStart=/usr/bin/agentdictated --service" ]]; then
+    printf 'ExecStart="%s" --service\n' "${BIN_DIR}/agentdictated"
+  else
+    printf '%s\n' "${line}"
+  fi
+done < "${PROJECT_DIR}/packaging/agentdictated.service" > "${SERVICE_TEMP}"
 install -m 0644 "${DESKTOP_TEMP}" "${DESKTOP_TARGET}"
-install -m 0644 "${AUTOSTART_TEMP}" "${AUTOSTART_TARGET}"
-rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}"
+# Hidden=true is the persisted user override for Start on login. An upgrade
+# must not silently replace that choice with the package default.
+if [[ ! -f "${AUTOSTART_TARGET}" ]] || \
+  ! grep -Fxq 'Hidden=true' "${AUTOSTART_TARGET}"; then
+  install -m 0644 "${AUTOSTART_TEMP}" "${AUTOSTART_TARGET}"
+fi
+install -m 0644 "${SERVICE_TEMP}" "${SERVICE_TARGET}"
+rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}" "${SERVICE_TEMP}"
 trap - EXIT
 
 install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" \
@@ -70,6 +85,10 @@ install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${NATIVE_ACCESS_DIR}/NATIVE_ACCESS.md"
 
 rm -f "${APP_DIR}/agentdictate.desktop" "${AUTOSTART_DIR}/agentdictate.desktop"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload >/dev/null 2>&1 || \
+    echo "Warning: could not reload the user service manager" >&2
+fi
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "${APP_DIR}" >/dev/null 2>&1 || true
 fi
@@ -81,6 +100,7 @@ fi
 echo "Installed native AgentDictate:"
 echo "  ${BIN_DIR}/agentdictate"
 echo "  ${BIN_DIR}/agentdictated"
+echo "  ${SERVICE_TARGET}"
 echo "  ${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
 
 if ! agentdictate_check_native_readiness; then

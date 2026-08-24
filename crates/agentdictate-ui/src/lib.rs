@@ -27,7 +27,8 @@ mod workspace;
 pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
-    APPLICATION_ID, RecordingOverlay, SettingsShell, run_recording_overlay, run_settings_shell,
+    APPLICATION_ID, RecordingOverlay, SettingsShell, run_recording_overlay,
+    run_recording_overlay_with_ready, run_settings_shell,
     run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };

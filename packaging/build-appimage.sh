@@ -72,7 +72,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="${HERE}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 if [[ "${1:-}" == "--background" ]]; then
   shift
-  exec "${HERE}/usr/bin/agentdictated" "$@"
+  exec "${HERE}/usr/bin/agentdictated" --start-service "$@"
+fi
+if [[ "${1:-}" == "--service" ]]; then
+  shift
+  exec "${HERE}/usr/bin/agentdictated" --service "$@"
 fi
 exec "${HERE}/usr/bin/agentdictate" "$@"
 EOF

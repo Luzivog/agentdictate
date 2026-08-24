@@ -1,4 +1,3 @@
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,9 +5,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use agentdictate_app::{
-    AgentProcess, AppPaths, HotkeyReconfigurer, OverlayUpdate, command_for_hotkey,
-    detect_primary_work_area, init_file_logging, is_overlay_helper_argument,
-    overlay_work_area_from_environment, settings_executable_for_current_process,
+    AgentProcess, AppPaths, HotkeyReconfigurer, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
+    bootstrap_daemon_service, command_for_hotkey, detect_primary_work_area, init_file_logging,
+    is_overlay_helper_argument, run_overlay_helper, settings_executable_for_current_process,
     start_overlay_presenter, start_system_tray,
 };
 use agentdictate_core::{
@@ -23,18 +22,32 @@ use agentdictate_linux::{
     },
 };
 use agentdictate_runtime::{IpcClient, IpcServer};
-use agentdictate_ui::run_recording_overlay;
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn main() -> anyhow::Result<()> {
-    let overlay_helper = is_overlay_helper_argument(std::env::args().nth(1).as_deref());
+    let argument = std::env::args().nth(1);
     let paths = AppPaths::from_environment()?;
     let _log_guard = init_file_logging(&paths.logs, "agentdictated.log")?;
-    if overlay_helper {
+    if is_overlay_helper_argument(argument.as_deref()) {
         tracing::info!("transient recording overlay starting");
         return run_overlay_helper();
     }
+    if argument.as_deref() != Some(SERVICE_ARGUMENT) {
+        if argument.is_some() && argument.as_deref() != Some(START_SERVICE_ARGUMENT) {
+            anyhow::bail!(
+                "unknown agentdictated argument: {}",
+                argument.as_deref().unwrap_or_default()
+            )
+        }
+        tracing::info!("daemon service bootstrap starting");
+        let executable = std::env::current_exe()?;
+        return bootstrap_daemon_service(&paths.runtime, &paths.daemon_service_file, &executable);
+    }
+    run_daemon(paths)
+}
+
+fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!("native daemon starting");
     let runtime = paths.runtime.clone();
     let server = IpcServer::bind(&paths.runtime)?;
@@ -116,38 +129,6 @@ fn main() -> anyhow::Result<()> {
             .join()
             .map_err(|_| anyhow::anyhow!("overlay presenter thread panicked"))?;
     }
-    Ok(())
-}
-
-fn run_overlay_helper() -> anyhow::Result<()> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("agentdictate-overlay-input".into())
-        .spawn(move || {
-            let input = std::io::stdin();
-            for line in BufReader::new(input).lines() {
-                let update = match line {
-                    Ok(line) => match serde_json::from_str::<OverlayUpdate>(&line) {
-                        Ok(update) => update,
-                        Err(error) => {
-                            tracing::error!(%error, "invalid overlay snapshot");
-                            return;
-                        }
-                    },
-                    Err(error) => {
-                        tracing::error!(%error, "could not read overlay snapshot");
-                        return;
-                    }
-                };
-                if sender.send(update.presentation()).is_err() {
-                    return;
-                }
-            }
-        })?;
-    let initial = receiver
-        .recv()
-        .map_err(|_| anyhow::anyhow!("overlay helper received no initial update"))?;
-    run_recording_overlay(initial, receiver, overlay_work_area_from_environment());
     Ok(())
 }
 

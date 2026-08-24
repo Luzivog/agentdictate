@@ -28,6 +28,10 @@ fn app_paths_preserve_the_existing_xdg_layout() {
     assert_eq!(paths.logs, PathBuf::from("/tmp/state/agentdictate/logs"));
     assert_eq!(paths.cache, PathBuf::from("/tmp/cache/agentdictate"));
     assert_eq!(paths.runtime, PathBuf::from("/tmp/runtime/agentdictate"));
+    assert_eq!(
+        paths.daemon_service_file,
+        PathBuf::from("/tmp/data/systemd/user/agentdictated.service")
+    );
 }
 
 #[test]

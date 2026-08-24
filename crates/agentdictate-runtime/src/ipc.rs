@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -177,6 +178,42 @@ impl IpcClient {
         check_version(command.protocol_version)?;
         write_message(&mut self.stream, &command)?;
         self.read_server_message()
+    }
+
+    /// Returns the kernel-authenticated PID at the other end of this socket.
+    ///
+    /// The bootstrap uses this instead of trusting a PID reported through the
+    /// application protocol. That lets it prove that the daemon answering IPC
+    /// actually belongs to the named systemd service.
+    pub fn peer_pid(&self) -> Result<u32, IpcError> {
+        let mut credentials = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `credentials` and `length` point to initialized, writable
+        // storage of exactly the sizes passed to `getsockopt`. The stream owns
+        // a live Unix socket descriptor for the duration of the call.
+        let result = unsafe {
+            libc::getsockopt(
+                self.stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut credentials).cast(),
+                &raw mut length,
+            )
+        };
+        if result == -1 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        u32::try_from(credentials.pid).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "IPC peer returned an invalid process ID",
+            )
+            .into()
+        })
     }
 
     /// Wakes a server blocked in `accept` without creating a live session.

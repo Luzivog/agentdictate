@@ -120,6 +120,34 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
 }
 
 #[test]
+fn client_reads_the_kernel_authenticated_server_pid() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime_directory = directory.path().join("runtime");
+    let workflow = Workflow::new();
+    let snapshot = Arc::new(Mutex::new(AppSnapshot {
+        sequence: 0,
+        workflow: workflow.snapshot(),
+        hotkey: HotkeyReadiness::Ready,
+        recoverable_count: 0,
+        last_transcript: None,
+    }));
+    let mut handler = TestHandler {
+        snapshot,
+        settings: Settings::default(),
+        workflow,
+    };
+    let server = IpcServer::bind(&runtime_directory).unwrap();
+    let service = std::thread::spawn(move || {
+        server.serve_next(&mut handler).unwrap();
+    });
+
+    let (client, _) = IpcClient::connect(&runtime_directory).unwrap();
+    assert_eq!(client.peer_pid().unwrap(), std::process::id());
+    drop(client);
+    service.join().unwrap();
+}
+
+#[test]
 fn silent_client_does_not_block_a_second_command_session() {
     let directory = TempDir::new().unwrap();
     let runtime_directory = directory.path().join("runtime");

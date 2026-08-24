@@ -1,10 +1,8 @@
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use agentdictate_app::{AppPaths, WorkspaceClient, init_file_logging};
+use agentdictate_app::{AppPaths, WorkspaceClient, bootstrap_daemon_service, init_file_logging};
 use agentdictate_core::{ClientCommand, ServerMessageKind};
-use agentdictate_runtime::{IpcClient, IpcError};
+use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
     Route, ShellViewModel, run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
@@ -89,47 +87,7 @@ fn main() -> anyhow::Result<()> {
 fn connect_or_start_daemon(
     paths: &AppPaths,
 ) -> anyhow::Result<(IpcClient, agentdictate_core::ServerMessage)> {
-    match IpcClient::connect(&paths.runtime) {
-        Ok(connection) => return Ok(connection),
-        Err(IpcError::Io(error))
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) => {}
-        Err(error) => return Err(error.into()),
-    }
     let daemon = std::env::current_exe()?.with_file_name("agentdictated");
-    let child = Command::new(&daemon)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| anyhow::anyhow!("could not launch {}: {error}", daemon.display()))?;
-    wait_for_daemon(child, paths, Instant::now() + Duration::from_secs(10))
-}
-
-fn wait_for_daemon(
-    mut child: Child,
-    paths: &AppPaths,
-    deadline: Instant,
-) -> anyhow::Result<(IpcClient, agentdictate_core::ServerMessage)> {
-    loop {
-        match IpcClient::connect(&paths.runtime) {
-            Ok(connection) => {
-                std::thread::Builder::new()
-                    .name("agentdictate-daemon-reaper".into())
-                    .spawn(move || {
-                        let _ = child.wait();
-                    })?;
-                return Ok(connection);
-            }
-            Err(_) if child.try_wait()?.is_some() => {
-                anyhow::bail!("AgentDictate daemon exited during startup")
-            }
-            Err(_) if Instant::now() >= deadline => {
-                anyhow::bail!("AgentDictate daemon did not become ready")
-            }
-            Err(_) => std::thread::yield_now(),
-        }
-    }
+    bootstrap_daemon_service(&paths.runtime, &paths.daemon_service_file, &daemon)?;
+    IpcClient::connect(&paths.runtime).map_err(Into::into)
 }

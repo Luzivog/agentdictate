@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 agentdictate-core.workspace = true
 chrono.workspace = true
+libc = "0.2"
 regex = "1.12"
 rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
 serde.workspace = true

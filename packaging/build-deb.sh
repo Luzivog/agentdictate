@@ -54,11 +54,12 @@ install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" "${ICON_DIR}/agentdicta
 install -m 0644 "${PROJECT_DIR}/packaging/${DESKTOP_ID}.metainfo.xml" \
   "${METAINFO_DIR}/${DESKTOP_ID}.metainfo.xml"
 install -m 0644 "${PROJECT_DIR}/LICENSE" "${DOC_DIR}/copyright"
-install -m 0644 "${PROJECT_DIR}/README.md" "${DOC_DIR}/README.md"
 install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${DOC_DIR}/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${UDEV_RULES_DIR}/70-agentdictate-input.rules"
+install -m 0644 "${PROJECT_DIR}/packaging/agentdictated.service" \
+  "${SYSTEMD_USER_DIR}/agentdictated.service"
 install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-ydotoold.service" \
   "${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
 printf '%s\n' \
@@ -120,7 +121,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, ydotool, ydotoold, xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
+Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, ydotool, ydotoold | ydotool (>= 1.0.4), xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
 Maintainer: AgentDictate <local@agentdictate>
 Description: Fast native Linux dictation for AI coding prompts
  AgentDictate records speech, transcribes it with OpenAI, safely checkpoints

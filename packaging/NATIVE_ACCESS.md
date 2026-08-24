@@ -1,14 +1,15 @@
 # Native input access
 
-AgentDictate needs two narrowly scoped Linux device capabilities:
+AgentDictate needs Linux device access with significant authority:
 
-- read access to active keyboard event devices for the global shortcut;
-- write access to `/dev/uinput` so `ydotoold` can paste on Wayland.
+- read access to keyboard event devices, which can expose every key press;
+- write access to `/dev/uinput`, which can synthesize arbitrary input.
 
-`70-agentdictate-input.rules` grants those capabilities to the active local
-logind session with `uaccess`. Device nodes remain mode `0660`; do not replace
-the rule with world-readable or world-writable permissions, and do not add a
-desktop user permanently to the broad `input` group.
+AgentDictate uses this access only for its global shortcut and Wayland paste.
+`70-agentdictate-input.rules` grants it to the active local logind session with
+`uaccess`. Device nodes remain mode `0660`. Do not replace the rule with
+world-readable or world-writable permissions. Do not add a desktop user
+permanently to the broad `input` group.
 
 ## Debian package
 
@@ -29,8 +30,9 @@ does not use sudo, change host udev policy, or start a service. Install the rule
 as an administrator, then reload it:
 
 ```bash
+agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 sudo install -Dm0644 \
-  ~/.local/share/agentdictate/native-access/70-agentdictate-input.rules \
+  "$agentdictate_data_home/agentdictate/native-access/70-agentdictate-input.rules" \
   /etc/udev/rules.d/70-agentdictate-input.rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=input --action=change
@@ -39,7 +41,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now agentdictate-ydotoold.service
 ```
 
-Log out and back in if device ACLs remain unchanged. Then run:
+Log out and back in if device ACLs remain unchanged. After signing back in,
+return to the cloned `agentdictate` directory. Then run:
 
 ```bash
 ./install.sh --check-native-access
@@ -55,10 +58,11 @@ user systemd data directory:
 ```bash
 ./AgentDictate-*.AppImage --appimage-extract \
   'usr/share/doc/agentdictate/native-access/*'
-mkdir -p ~/.local/share/systemd/user
+agentdictate_systemd_user_dir="${XDG_DATA_HOME:-$HOME/.local/share}/systemd/user"
+mkdir -p "$agentdictate_systemd_user_dir"
 install -m0644 \
   squashfs-root/usr/share/doc/agentdictate/native-access/agentdictate-ydotoold.service \
-  ~/.local/share/systemd/user/agentdictate-ydotoold.service
+  "$agentdictate_systemd_user_dir/agentdictate-ydotoold.service"
 sudo install -Dm0644 \
   squashfs-root/usr/share/doc/agentdictate/native-access/70-agentdictate-input.rules \
   /etc/udev/rules.d/70-agentdictate-input.rules
@@ -69,5 +73,6 @@ systemctl --user daemon-reload
 systemctl --user enable --now agentdictate-ydotoold.service
 ```
 
-Install `ydotool` and `ydotoold` from the host distribution. AgentDictate never
-starts `ydotoold` with elevated privileges.
+Install the host packages that provide both `ydotool` and `ydotoold`. Debian 13
+provides both binaries in its `ydotool` backport. Ubuntu 24.04 packages them
+separately. AgentDictate never starts `ydotoold` with elevated privileges.

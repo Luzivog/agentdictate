@@ -23,13 +23,21 @@ pub use openai::{
     CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechRouter, SpeechTransport,
     TranscriptionPipeline, TranscriptionRequest,
 };
+#[cfg(feature = "desktop")]
+pub use overlay_process::run_overlay_helper;
 pub use overlay_process::{
     ActiveRecordingUpdate, OverlayController, OverlayProcessAction, OverlayProcessState,
     OverlayTeardownError, OverlayUpdate, is_overlay_helper_argument,
     overlay_work_area_from_environment, start_overlay_presenter,
+    start_overlay_presenter_with_timeout,
 };
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
-pub use startup::{sync_autostart, sync_autostart_command};
+pub use startup::{
+    DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
+    bootstrap_daemon_service_with_systemctl, prepare_daemon_service,
+    prepare_daemon_service_with_systemctl, sync_startup, sync_startup_command,
+    sync_startup_with_systemctl,
+};
 pub use system::{
     SystemDeliverer, SystemRecordingController, detect_primary_work_area, parse_x11_work_area,
 };
@@ -43,6 +51,7 @@ pub use workspace::{WorkspaceClient, workspace_view_model};
 pub struct AppPaths {
     pub config_file: PathBuf,
     pub autostart_file: PathBuf,
+    pub daemon_service_file: PathBuf,
     pub database_file: PathBuf,
     pub recordings: PathBuf,
     pub logs: PathBuf,
@@ -107,13 +116,15 @@ impl AppPaths {
     ) -> Self {
         let config_root = config_root.into();
         let config = config_root.join("agentdictate");
-        let data = data_root.into().join("agentdictate");
+        let data_root = data_root.into();
+        let data = data_root.join("agentdictate");
         let state = state_root.into().join("agentdictate");
         let cache = cache_root.into().join("agentdictate");
         let runtime = runtime_root.into().join("agentdictate");
         Self {
             config_file: config.join("config.json"),
             autostart_file: config_root.join("autostart/local.agentdictate.AgentDictate.desktop"),
+            daemon_service_file: data_root.join("systemd/user/agentdictated.service"),
             database_file: data.join("agentdictate.sqlite"),
             recordings: data.join("recordings"),
             logs: state.join("logs"),

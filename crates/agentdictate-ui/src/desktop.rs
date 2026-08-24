@@ -182,6 +182,18 @@ pub fn run_recording_overlay(
     snapshots: Receiver<OverlayPresentation>,
     work_area: Option<crate::LogicalRect>,
 ) {
+    run_recording_overlay_with_ready(initial, snapshots, work_area, || {});
+}
+
+/// Runs an overlay session and reports when GPUI has created its platform
+/// window. The daemon helper uses this to distinguish spawn from readiness.
+#[doc(hidden)]
+pub fn run_recording_overlay_with_ready(
+    initial: OverlayPresentation,
+    snapshots: Receiver<OverlayPresentation>,
+    work_area: Option<crate::LogicalRect>,
+    on_ready: impl FnOnce() + 'static,
+) {
     Application::new()
         .with_assets(crate::AgentDictateAssets)
         .run(move |cx: &mut App| {
@@ -255,6 +267,7 @@ pub fn run_recording_overlay(
                     cx.new(|_| RecordingOverlay::from_presentation(initial))
                 })
                 .expect("recording overlay should open");
+            on_ready();
 
             cx.spawn(async move |cx| {
                 while let Some(presentation) = receiver.next().await {

@@ -7,7 +7,7 @@ use std::{
 
 use agentdictate_app::{
     ActiveRecordingUpdate, OverlayProcessAction, OverlayProcessState, OverlayUpdate,
-    start_overlay_presenter,
+    start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
 use agentdictate_core::{JobId, Workflow, WorkflowSignal};
 use tempfile::tempdir;
@@ -115,7 +115,7 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nif [ \"$count\" -eq 1 ]; then\n  exit 17\nfi\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\n",
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nprintf '{{\"status\":\"ready\"}}\\n'\nif [ \"$count\" -eq 1 ]; then\n  exit 17\nfi\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\n",
             launches.display(),
             launches.display(),
             received.display(),
@@ -172,6 +172,171 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
     let received = fs::read_to_string(received).unwrap();
     assert!(received.contains("active-recording.wav"));
     assert!(received.contains("1726000000250"));
+}
+
+#[test]
+fn helper_error_before_readiness_is_killed_and_relaunched() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let launches = directory.path().join("launches");
+    let received = directory.path().join("received");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":\"error\",\"message\":\"X11 unavailable\"}}\\n'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            launches.display(),
+            launches.display(),
+            received.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+
+    let job_id = JobId::new();
+    let mut recording = Workflow::new();
+    recording
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    recording
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    let visible = update(&recording);
+    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+
+    overlay.update(visible);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let recovered = loop {
+        let launch_count = fs::read_to_string(&launches)
+            .map(|contents| contents.lines().count())
+            .unwrap_or_default();
+        if launch_count >= 2 && received.exists() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::yield_now();
+    };
+
+    overlay.update(update(&Workflow::new()));
+    drop(overlay);
+    presenter.join().unwrap();
+    assert!(
+        recovered,
+        "the helper that reported a startup error was not replaced"
+    );
+}
+
+#[test]
+fn helper_that_never_reports_readiness_is_killed_and_relaunched() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let launches = directory.path().join("launches");
+    let received = directory.path().join("received");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            launches.display(),
+            launches.display(),
+            received.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+
+    let job_id = JobId::new();
+    let mut recording = Workflow::new();
+    recording
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    recording
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    let (overlay, presenter) =
+        start_overlay_presenter_with_timeout(executable, None, Duration::from_millis(50)).unwrap();
+
+    overlay.update(update(&recording));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let recovered = loop {
+        let launch_count = fs::read_to_string(&launches)
+            .map(|contents| contents.lines().count())
+            .unwrap_or_default();
+        if launch_count >= 2 && received.exists() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::yield_now();
+    };
+
+    overlay.update(update(&Workflow::new()));
+    drop(overlay);
+    presenter.join().unwrap();
+    assert!(
+        recovered,
+        "the helper that missed its readiness deadline was not replaced"
+    );
+}
+
+#[test]
+fn partial_readiness_message_cannot_bypass_the_startup_deadline() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let launches = directory.path().join("launches");
+    let received = directory.path().join("received");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            launches.display(),
+            launches.display(),
+            received.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+
+    let job_id = JobId::new();
+    let mut recording = Workflow::new();
+    recording
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    recording
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    let (overlay, presenter) =
+        start_overlay_presenter_with_timeout(executable, None, Duration::from_millis(50)).unwrap();
+
+    overlay.update(update(&recording));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let recovered = loop {
+        let launch_count = fs::read_to_string(&launches)
+            .map(|contents| contents.lines().count())
+            .unwrap_or_default();
+        if launch_count >= 2 && received.exists() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::yield_now();
+    };
+
+    overlay.update(update(&Workflow::new()));
+    drop(overlay);
+    presenter.join().unwrap();
+    assert!(
+        recovered,
+        "partial helper output bypassed the readiness deadline"
+    );
 }
 
 #[test]
@@ -261,7 +426,7 @@ fn dismissal_acknowledges_only_after_the_helper_exits() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
+            "#!/bin/sh\nIFS= read -r line\nprintf '{{\"status\":\"ready\"}}\\n'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
             exited.display(),
         ),
     )

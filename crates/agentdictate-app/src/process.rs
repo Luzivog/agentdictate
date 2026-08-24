@@ -14,7 +14,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::{
     AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
     SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
-    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_autostart,
+    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_startup_with_systemctl,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<
@@ -34,6 +34,8 @@ pub struct AgentProcess {
     daemon: ProductionDaemon,
     config_file: PathBuf,
     autostart_file: PathBuf,
+    daemon_service_file: PathBuf,
+    systemctl_command: PathBuf,
     database_file: PathBuf,
     runtime_directory: PathBuf,
     model_catalog: ModelCatalog,
@@ -70,6 +72,8 @@ impl AgentProcess {
             ),
             config_file: paths.config_file,
             autostart_file: paths.autostart_file,
+            daemon_service_file: paths.daemon_service_file,
+            systemctl_command: PathBuf::from("systemctl"),
             database_file: paths.database_file,
             runtime_directory: paths.runtime,
             model_catalog,
@@ -129,6 +133,8 @@ impl AgentProcess {
             tracing::warn!(%error, "could not start OpenAI model discovery");
         }
         let autostart_file = self.autostart_file.clone();
+        let daemon_service_file = self.daemon_service_file.clone();
+        let systemctl_command = self.systemctl_command.clone();
         let database_file = self.database_file.clone();
         let history_index_maintenance = self.history_index_maintenance.clone();
         std::thread::Builder::new()
@@ -137,6 +143,8 @@ impl AgentProcess {
                 run_post_listener_maintenance(
                     &settings,
                     &autostart_file,
+                    &daemon_service_file,
+                    &systemctl_command,
                     &database_file,
                     &history_index_maintenance,
                 );
@@ -219,12 +227,14 @@ impl AgentProcess {
             match std::env::current_exe() {
                 Ok(executable) => {
                     let daemon_executable = executable.with_file_name("agentdictated");
-                    if let Err(error) = sync_autostart(
+                    if let Err(error) = sync_startup_with_systemctl(
                         &self.autostart_file,
+                        &self.daemon_service_file,
                         settings.start_on_login,
                         &daemon_executable,
+                        &self.systemctl_command,
                     ) {
-                        tracing::warn!(%error, "settings saved but autostart reconciliation failed");
+                        tracing::warn!(%error, "settings saved but login startup reconciliation failed");
                     }
                 }
                 Err(error) => {
@@ -293,16 +303,22 @@ impl AgentProcess {
 fn run_post_listener_maintenance(
     settings: &Settings,
     autostart_file: &std::path::Path,
+    daemon_service_file: &std::path::Path,
+    systemctl_command: &std::path::Path,
     database_file: &std::path::Path,
     history_index_maintenance: &HistoryIndexMaintenance,
 ) {
     match std::env::current_exe() {
         Ok(executable) => {
             let daemon_executable = executable.with_file_name("agentdictated");
-            if let Err(error) =
-                sync_autostart(autostart_file, settings.start_on_login, &daemon_executable)
-            {
-                tracing::warn!(%error, "could not reconcile autostart entry");
+            if let Err(error) = sync_startup_with_systemctl(
+                autostart_file,
+                daemon_service_file,
+                settings.start_on_login,
+                &daemon_executable,
+                systemctl_command,
+            ) {
+                tracing::warn!(%error, "could not reconcile login startup");
             }
         }
         Err(error) => tracing::warn!(%error, "could not locate daemon for autostart"),
@@ -671,7 +687,8 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
 
-        let process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        process.systemctl_command = PathBuf::from("/bin/true");
 
         assert!(!paths.autostart_file.exists());
         process
@@ -680,6 +697,7 @@ mod tests {
             .join()
             .unwrap();
         assert!(paths.autostart_file.exists());
+        assert!(paths.daemon_service_file.exists());
     }
 
     fn app_paths(root: &Path) -> AppPaths {

@@ -2,7 +2,7 @@
 Type=Application
 Name=AgentDictate background service
 Comment=Keep the AgentDictate global shortcut ready
-Exec=agentdictated
+Exec=agentdictated --start-service
 Icon=agentdictate
 Terminal=false
 NoDisplay=true
