@@ -80,11 +80,6 @@ impl UserServiceManager for SystemctlServiceManager<'_> {
     }
 }
 
-/// Reconciles both login startup and the graphical-session-owned daemon unit.
-pub fn sync_startup(entry: &Path, service: &Path, enabled: bool, daemon: &Path) -> io::Result<()> {
-    sync_startup_with_systemctl(entry, service, enabled, daemon, Path::new("systemctl"))
-}
-
 pub fn sync_startup_with_systemctl(
     entry: &Path,
     service: &Path,
@@ -147,27 +142,6 @@ fn sync_startup_commands_with_manager(
     manager.daemon_reload()
 }
 
-/// Writes and reloads the service unit without changing its login setting.
-/// The short-lived bootstrap uses this before every manual or XDG launch so a
-/// moved AppImage cannot leave systemd pointing at an obsolete mount path.
-pub fn prepare_daemon_service(service: &Path, daemon: &Path) -> io::Result<()> {
-    prepare_daemon_service_with_systemctl(service, daemon, Path::new("systemctl"))
-}
-
-pub fn prepare_daemon_service_with_systemctl(
-    service: &Path,
-    daemon: &Path,
-    systemctl: &Path,
-) -> io::Result<()> {
-    let (daemon, _) = startup_commands(daemon);
-    prepare_daemon_service_command(
-        service,
-        &daemon,
-        &SystemctlServiceManager { command: systemctl },
-    )
-    .map(|_| ())
-}
-
 /// Converges legacy direct launches onto the named user service, then waits
 /// until that service owns the AgentDictate IPC endpoint.
 pub fn bootstrap_daemon_service(
@@ -175,26 +149,17 @@ pub fn bootstrap_daemon_service(
     service: &Path,
     daemon: &Path,
 ) -> anyhow::Result<()> {
-    bootstrap_daemon_service_with_systemctl(
+    let (daemon, _) = startup_commands(daemon);
+    let manager = SystemctlServiceManager {
+        command: Path::new("systemctl"),
+    };
+    let route_identity = prepare_daemon_service_command(service, &daemon, &manager)?;
+    bootstrap_daemon_service_with_manager(
         runtime_directory,
-        service,
-        daemon,
-        Path::new("systemctl"),
+        &manager,
+        &route_identity,
         DAEMON_STARTUP_TIMEOUT,
     )
-}
-
-pub fn bootstrap_daemon_service_with_systemctl(
-    runtime_directory: &Path,
-    service: &Path,
-    daemon: &Path,
-    systemctl: &Path,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let (daemon, _) = startup_commands(daemon);
-    let manager = SystemctlServiceManager { command: systemctl };
-    let route_identity = prepare_daemon_service_command(service, &daemon, &manager)?;
-    bootstrap_daemon_service_with_manager(runtime_directory, &manager, &route_identity, timeout)
 }
 
 fn prepare_daemon_service_command(
@@ -308,7 +273,7 @@ fn startup_commands(daemon: &Path) -> (StartupCommand, StartupCommand) {
 
 fn write_daemon_service(service: &Path, daemon: &StartupCommand) -> io::Result<String> {
     let route_identity = service_route_identity(daemon);
-    let mut command = quote_systemd_exec_path(&daemon.executable);
+    let mut command = quote_systemd_exec_value(&daemon.executable.to_string_lossy());
     for argument in &daemon.arguments {
         command.push(' ');
         command.push_str(&quote_systemd_exec_value(argument));
@@ -338,7 +303,7 @@ fn write_autostart_entry(
     arguments: &[String],
 ) -> io::Result<()> {
     let contents = if enabled {
-        let mut command = quote_desktop_exec_path(executable);
+        let mut command = quote_desktop_exec_value(&executable.to_string_lossy());
         for argument in arguments {
             command.push(' ');
             command.push_str(&quote_desktop_exec_value(argument));
@@ -598,16 +563,8 @@ fn systemctl_error(systemctl: &Path, output: &std::process::Output) -> io::Error
     ))
 }
 
-fn quote_desktop_exec_path(path: &Path) -> String {
-    quote_desktop_exec_value(&path.to_string_lossy())
-}
-
 fn quote_desktop_exec_value(value: &str) -> String {
     quote_exec_value(value, false)
-}
-
-fn quote_systemd_exec_path(path: &Path) -> String {
-    quote_systemd_exec_value(&path.to_string_lossy())
 }
 
 fn quote_systemd_exec_value(value: &str) -> String {

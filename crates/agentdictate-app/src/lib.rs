@@ -37,9 +37,7 @@ pub use overlay_process::{
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
-    bootstrap_daemon_service_with_systemctl, prepare_daemon_service,
-    prepare_daemon_service_with_systemctl, sync_startup, sync_startup_command,
-    sync_startup_with_systemctl,
+    sync_startup_command, sync_startup_with_systemctl,
 };
 pub use system::{
     SystemDeliverer, SystemRecordingController, detect_primary_work_area, parse_x11_work_area,
