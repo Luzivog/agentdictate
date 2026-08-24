@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agentdictate_core::{DEFAULT_CLEANUP_PROMPT, ReasoningEffort, Settings, TranscriptionProvider};
+use agentdictate_core::{
+    DEFAULT_CLEANUP_PROMPT, ReasoningEffort, Settings, TranscriptionProvider,
+    count_words_unicode_alphanumeric,
+};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -17,20 +20,12 @@ fn sentence_count(text: &str) -> usize {
         .count()
 }
 
-fn word_count(text: &str) -> usize {
-    text.split(|character: char| {
-        !character.is_alphanumeric() && character != '\'' && character != '-'
-    })
-    .filter(|word| !word.is_empty())
-    .count()
-}
-
 fn is_better_transcript(candidate: &str, current: &str) -> bool {
     if candidate.trim().is_empty() {
         return false;
     }
-    let candidate_words = word_count(candidate);
-    let current_words = word_count(current);
+    let candidate_words = count_words_unicode_alphanumeric(candidate);
+    let current_words = count_words_unicode_alphanumeric(current);
     candidate_words > current_words
         && (sentence_count(candidate) > sentence_count(current)
             || candidate_words >= (current_words + 5).max((current_words * 135) / 100))
@@ -41,7 +36,7 @@ fn transcript_is_suspiciously_short(text: &str, duration_seconds: f64) -> bool {
         return false;
     }
     let conservative_minimum = (duration_seconds / 5.0).ceil().max(4.0) as usize;
-    word_count(text) < conservative_minimum
+    count_words_unicode_alphanumeric(text) < conservative_minimum
 }
 
 fn cleanup_reasoning_effort(value: &str) -> Option<&str> {

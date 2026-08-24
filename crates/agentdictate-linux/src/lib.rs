@@ -1,5 +1,6 @@
 //! Linux adapters for AgentDictate's runtime seams.
 
+pub mod audio_ducking;
 pub mod clipboard;
 pub mod command;
 pub mod focus;

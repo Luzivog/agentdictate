@@ -1,8 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs::OpenOptions,
-    io::{self, Write},
-    os::unix::fs::OpenOptionsExt,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::Duration,
@@ -12,6 +10,7 @@ use agentdictate_core::{
     ModelCatalogEntry, ModelCatalogFallback, ModelCatalogOrigin, ModelCatalogSnapshot,
     ModelCatalogStatus, ModelCatalogSupport, ReasoningEffort,
 };
+use agentdictate_runtime::write_atomic;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -111,9 +110,7 @@ struct ModelCatalogState {
 #[derive(Clone)]
 pub(crate) struct ModelCatalog {
     state: Arc<RwLock<ModelCatalogState>>,
-    #[allow(dead_code)]
     source: Arc<dyn ModelCatalogSource>,
-    #[allow(dead_code)]
     cache_file: PathBuf,
 }
 
@@ -204,8 +201,9 @@ impl ModelCatalog {
                             model_ids: model_ids.clone(),
                             failure: None,
                         };
-                        if let Err(error) = write_cache_atomically(&cache_file, generation, &cached)
-                        {
+                        let cache_result = cache_bytes(&cached)
+                            .and_then(|bytes| write_atomic(&cache_file, &bytes, 0o600));
+                        if let Err(error) = cache_result {
                             tracing::warn!(%error, "could not persist OpenAI model catalog");
                         }
                         state.model_ids = model_ids;
@@ -235,9 +233,9 @@ impl ModelCatalog {
                                 message: message.clone(),
                             }),
                         };
-                        if let Err(cache_error) =
-                            write_cache_atomically(&cache_file, generation, &cached)
-                        {
+                        let cache_result = cache_bytes(&cached)
+                            .and_then(|bytes| write_atomic(&cache_file, &bytes, 0o600));
+                        if let Err(cache_error) = cache_result {
                             tracing::warn!(%cache_error, "could not persist model discovery failure");
                         }
                         state.status = ModelCatalogStatus::Failed {
@@ -337,37 +335,10 @@ fn credential_fingerprint(api_key: &str) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn write_cache_atomically(
-    cache_file: &Path,
-    generation: u64,
-    catalog: &CachedCatalog,
-) -> io::Result<()> {
-    let parent = cache_file.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let file_name = cache_file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("model-catalog.json");
-    let temporary = parent.join(format!(
-        ".{file_name}.tmp-{}-{generation}",
-        std::process::id()
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        serde_json::to_writer(&mut file, catalog).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, cache_file)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+fn cache_bytes(catalog: &CachedCatalog) -> io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(catalog).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -735,6 +706,7 @@ mod tests {
         let persisted = std::fs::read_to_string(&cache_file).unwrap();
         assert!(!persisted.contains("sk-account-a"));
         assert!(persisted.contains("gpt-6"));
+        assert!(persisted.ends_with('\n'));
         assert_eq!(
             std::fs::metadata(&cache_file).unwrap().permissions().mode() & 0o777,
             0o600

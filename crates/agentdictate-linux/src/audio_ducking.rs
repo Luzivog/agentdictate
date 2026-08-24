@@ -9,13 +9,13 @@ struct SinkInput {
     corked: bool,
 }
 
-pub(crate) trait Pactl {
+pub trait Pactl {
     fn list_sink_inputs(&mut self) -> io::Result<String>;
     fn set_sink_input_volume(&mut self, id: &str, volumes: &[u32]) -> io::Result<()>;
 }
 
 #[derive(Default)]
-pub(crate) struct SystemPactl;
+pub struct SystemPactl;
 
 impl Pactl for SystemPactl {
     fn list_sink_inputs(&mut self) -> io::Result<String> {
@@ -44,7 +44,7 @@ impl Pactl for SystemPactl {
 
 /// Best-effort playback ducking. Recording never depends on this optional
 /// affordance, while every changed stream keeps an exact restoration value.
-pub(crate) struct PlaybackDucker<P: Pactl = SystemPactl> {
+pub struct PlaybackDucker<P: Pactl = SystemPactl> {
     pactl: P,
     originals: BTreeMap<String, Vec<u32>>,
 }

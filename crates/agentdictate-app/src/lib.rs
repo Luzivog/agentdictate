@@ -2,11 +2,11 @@
 
 use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
-mod audio_ducking;
 mod chatgpt_dictation_import;
 mod codex_subscription;
 mod daemon;
 pub mod diagnostics;
+mod hotkey_dispatch;
 mod model_catalog;
 mod openai;
 mod overlay_process;
@@ -19,6 +19,9 @@ mod workspace;
 pub use codex_subscription::CodexSubscriptionTransport;
 pub use daemon::{CapturedRecording, Daemon, DaemonError, RecordingController};
 pub use diagnostics::init_file_logging;
+pub use hotkey_dispatch::{
+    HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
+};
 pub use openai::{
     CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechRouter, SpeechTransport,
     TranscriptionPipeline, TranscriptionRequest,
@@ -34,9 +37,7 @@ pub use overlay_process::{
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
-    bootstrap_daemon_service_with_systemctl, prepare_daemon_service,
-    prepare_daemon_service_with_systemctl, sync_startup, sync_startup_command,
-    sync_startup_with_systemctl,
+    sync_startup_command, sync_startup_with_systemctl,
 };
 pub use system::{
     SystemDeliverer, SystemRecordingController, detect_primary_work_area, parse_x11_work_area,

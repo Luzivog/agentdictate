@@ -275,7 +275,6 @@ fn read_completed_receipt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdictate_runtime::UsageMetric;
     use tempfile::TempDir;
 
     const COMPLETED: &str = r#"{
@@ -358,10 +357,7 @@ mod tests {
 
         assert_eq!(first.imported, 1);
         assert_eq!(unchanged, ScanReport::default());
-        assert_eq!(
-            runtime.usage_series(1, UsageMetric::Words).unwrap()[0].value,
-            4.0
-        );
+        assert_eq!(runtime.usage_summary().unwrap().all_time.total_words, 4);
         let history = runtime.list_history(Default::default()).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].final_text, "Keep the receipt private.");

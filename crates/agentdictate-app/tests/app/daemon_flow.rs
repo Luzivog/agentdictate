@@ -10,41 +10,13 @@ use agentdictate_app::{
 use agentdictate_core::{HistoryPageRequest, HotkeyReadiness, JobStage, Settings, WorkflowPhase};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, ExternalError, HistoryQuery, Recorder, RecordingJob, Runtime,
-    Transcriber, Transcript,
 };
 use rusqlite::params;
 use tempfile::tempdir;
 
-struct InspectingRecorder {
-    database: PathBuf,
-    started_after_checkpoint: bool,
-}
-
-impl Recorder for InspectingRecorder {
-    fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
-        let observer = Runtime::open_observer(&self.database).map_err(ExternalError::from)?;
-        self.started_after_checkpoint = observer
-            .job(job.id)
-            .map_err(ExternalError::from)?
-            .is_some_and(|stored| stored.stage == JobStage::Starting);
-        std::fs::write(&job.audio_path, b"RIFFcaptured audio").unwrap();
-        Ok(())
-    }
-}
-
-impl RecordingController for InspectingRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
-        Ok(CapturedRecording {
-            duration_seconds: 12.5,
-        })
-    }
-}
-
-struct FixedTranscriber;
+use super::support::{FailingStartRecorder, FixedTranscriber, InspectingRecorder};
 
 struct FailingFinishRecorder;
-
-struct FailingStartRecorder;
 
 #[derive(Default)]
 struct PreservingRecorder {
@@ -67,18 +39,6 @@ impl RecordingController for PreservingRecorder {
     }
 }
 
-impl Recorder for FailingStartRecorder {
-    fn start(&mut self, _job: &RecordingJob) -> Result<(), ExternalError> {
-        Err(ExternalError::new("microphone permission denied"))
-    }
-}
-
-impl RecordingController for FailingStartRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
-        unreachable!("a recorder that did not start cannot be finalized")
-    }
-}
-
 impl Recorder for FailingFinishRecorder {
     fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
         std::fs::write(&job.audio_path, b"RIFFpartial audio").unwrap();
@@ -89,17 +49,6 @@ impl Recorder for FailingFinishRecorder {
 impl RecordingController for FailingFinishRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         Err(ExternalError::new("recorder disappeared"))
-    }
-}
-
-impl Transcriber for FixedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        Ok(Transcript {
-            raw: "raw transcript".into(),
-            final_text: "Final transcript.".into(),
-            cleaned_text: Some("Final transcript.".into()),
-            cleanup_error: None,
-        })
     }
 }
 

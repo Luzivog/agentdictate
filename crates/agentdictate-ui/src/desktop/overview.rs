@@ -1,3 +1,4 @@
+use agentdictate_core::format_duration_words;
 use gpui::{App, Context, SharedString, prelude::*, px, relative};
 use gpui_component::{
     ActiveTheme, Selectable, Sizable, StyledExt, chart::AreaChart, h_flex, tooltip::Tooltip, v_flex,
@@ -318,7 +319,7 @@ fn activity_tooltip(point: &UsageDayViewModel, currency: &str, cx: &App) -> gpui
         )
         .child(tooltip_row(
             "Dictation time",
-            format_duration(point.audio_seconds),
+            format_duration_words(point.audio_seconds),
             cx,
         ))
         .child(tooltip_row("Dictations", point.dictations.to_string(), cx))
@@ -501,10 +502,6 @@ fn recent_history(
                 ),
             )
         })
-}
-
-fn format_duration(seconds: u64) -> String {
-    format!("{}m {:02}s", seconds / 60, seconds % 60)
 }
 
 fn activity_scope_label(period: UsagePeriod) -> &'static str {

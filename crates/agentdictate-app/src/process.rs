@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, HotkeyReadiness, ServerMessage, Settings, WorkflowPhase,
+    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
+    WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -351,7 +352,8 @@ impl IpcHandler for AgentProcess {
     }
 
     fn handle(&mut self, command: ClientCommand) -> ServerMessage {
-        if matches!(&command.kind, ClientCommandKind::StartRecording { .. }) {
+        let command_tag = command.kind();
+        if command_tag == ClientCommandTag::StartRecording {
             self.begin_recording_priority();
         }
         let request_id = request_id(&command.kind);
@@ -360,18 +362,18 @@ impl IpcHandler for AgentProcess {
             _ => None,
         };
         let returns_workspace = matches!(
-            &command.kind,
-            ClientCommandKind::GetWorkspace { .. }
-                | ClientCommandKind::RefreshModelCatalog { .. }
-                | ClientCommandKind::RetryTranscription { .. }
-                | ClientCommandKind::RetryDelivery { .. }
-                | ClientCommandKind::DeleteRecovery { .. }
-                | ClientCommandKind::CreateReplacement { .. }
-                | ClientCommandKind::UpdateReplacement { .. }
-                | ClientCommandKind::DeleteReplacement { .. }
-                | ClientCommandKind::DeleteHistory { .. }
-                | ClientCommandKind::ClearHistory { .. }
-                | ClientCommandKind::CopyTranscript { .. }
+            command_tag,
+            ClientCommandTag::GetWorkspace
+                | ClientCommandTag::RefreshModelCatalog
+                | ClientCommandTag::RetryTranscription
+                | ClientCommandTag::RetryDelivery
+                | ClientCommandTag::DeleteRecovery
+                | ClientCommandTag::CreateReplacement
+                | ClientCommandTag::UpdateReplacement
+                | ClientCommandTag::DeleteReplacement
+                | ClientCommandTag::DeleteHistory
+                | ClientCommandTag::ClearHistory
+                | ClientCommandTag::CopyTranscript
         );
         let result: anyhow::Result<()> = match command.kind {
             ClientCommandKind::GetSnapshot { .. } => Ok(()),

@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 use agentdictate_app::sync_startup_command;
 use tempfile::tempdir;
@@ -23,7 +23,7 @@ fn enabling_startup_writes_a_session_owned_service_and_service_bootstrap() {
     )
     .unwrap();
 
-    let service_contents = fs::read_to_string(service).unwrap();
+    let service_contents = fs::read_to_string(&service).unwrap();
     assert!(service_contents.contains("PartOf=graphical-session.target"));
     assert!(service_contents.contains("After=graphical-session.target"));
     assert!(service_contents.contains("Restart=on-failure"));
@@ -31,10 +31,19 @@ fn enabling_startup_writes_a_session_owned_service_and_service_bootstrap() {
     assert!(service_contents.contains("Environment=AGENTDICTATE_SERVICE_ROUTE="));
     assert!(service_contents.contains("ExecStart=\"/opt/Agent Dictate/agentdictated\" --service"));
 
-    let entry_contents = fs::read_to_string(entry).unwrap();
+    assert_eq!(
+        fs::metadata(&service).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let entry_contents = fs::read_to_string(&entry).unwrap();
     assert!(entry_contents.contains("Name=AgentDictate background service"));
     assert!(entry_contents.contains("Exec=\"/opt/Agent Dictate/agentdictated\" --start-service"));
     assert!(!entry_contents.contains("Exec=\"/opt/Agent Dictate/agentdictated\" --service"));
+    assert_eq!(
+        fs::metadata(&entry).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[test]

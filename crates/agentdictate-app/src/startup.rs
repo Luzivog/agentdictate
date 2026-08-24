@@ -3,16 +3,14 @@ use std::{
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 
 use agentdictate_core::{ClientCommand, ServerMessageKind};
-use agentdictate_runtime::{IpcClient, IpcError};
+use agentdictate_runtime::{IpcClient, IpcError, write_atomic};
 use sha2::{Digest, Sha256};
 
-const AUTOSTART_ENTRY: &str = "local.agentdictate.AgentDictate.desktop";
 pub const DAEMON_SERVICE_NAME: &str = "agentdictated.service";
 pub const START_SERVICE_ARGUMENT: &str = "--start-service";
 pub const SERVICE_ARGUMENT: &str = "--service";
@@ -20,7 +18,6 @@ const APPIMAGE_BOOTSTRAP_ARGUMENT: &str = "--background";
 const SERVICE_ROUTE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_ROUTE";
 const SERVICE_IDENTITY_FILE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_IDENTITY_FILE";
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-static STARTUP_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StartupCommand {
@@ -78,11 +75,6 @@ impl UserServiceManager for SystemctlServiceManager<'_> {
     fn process_route_identity(&self, pid: u32) -> io::Result<Option<String>> {
         process_environment_value(pid, SERVICE_ROUTE_ENVIRONMENT)
     }
-}
-
-/// Reconciles both login startup and the graphical-session-owned daemon unit.
-pub fn sync_startup(entry: &Path, service: &Path, enabled: bool, daemon: &Path) -> io::Result<()> {
-    sync_startup_with_systemctl(entry, service, enabled, daemon, Path::new("systemctl"))
 }
 
 pub fn sync_startup_with_systemctl(
@@ -147,27 +139,6 @@ fn sync_startup_commands_with_manager(
     manager.daemon_reload()
 }
 
-/// Writes and reloads the service unit without changing its login setting.
-/// The short-lived bootstrap uses this before every manual or XDG launch so a
-/// moved AppImage cannot leave systemd pointing at an obsolete mount path.
-pub fn prepare_daemon_service(service: &Path, daemon: &Path) -> io::Result<()> {
-    prepare_daemon_service_with_systemctl(service, daemon, Path::new("systemctl"))
-}
-
-pub fn prepare_daemon_service_with_systemctl(
-    service: &Path,
-    daemon: &Path,
-    systemctl: &Path,
-) -> io::Result<()> {
-    let (daemon, _) = startup_commands(daemon);
-    prepare_daemon_service_command(
-        service,
-        &daemon,
-        &SystemctlServiceManager { command: systemctl },
-    )
-    .map(|_| ())
-}
-
 /// Converges legacy direct launches onto the named user service, then waits
 /// until that service owns the AgentDictate IPC endpoint.
 pub fn bootstrap_daemon_service(
@@ -175,26 +146,17 @@ pub fn bootstrap_daemon_service(
     service: &Path,
     daemon: &Path,
 ) -> anyhow::Result<()> {
-    bootstrap_daemon_service_with_systemctl(
+    let (daemon, _) = startup_commands(daemon);
+    let manager = SystemctlServiceManager {
+        command: Path::new("systemctl"),
+    };
+    let route_identity = prepare_daemon_service_command(service, &daemon, &manager)?;
+    bootstrap_daemon_service_with_manager(
         runtime_directory,
-        service,
-        daemon,
-        Path::new("systemctl"),
+        &manager,
+        &route_identity,
         DAEMON_STARTUP_TIMEOUT,
     )
-}
-
-pub fn bootstrap_daemon_service_with_systemctl(
-    runtime_directory: &Path,
-    service: &Path,
-    daemon: &Path,
-    systemctl: &Path,
-    timeout: Duration,
-) -> anyhow::Result<()> {
-    let (daemon, _) = startup_commands(daemon);
-    let manager = SystemctlServiceManager { command: systemctl };
-    let route_identity = prepare_daemon_service_command(service, &daemon, &manager)?;
-    bootstrap_daemon_service_with_manager(runtime_directory, &manager, &route_identity, timeout)
 }
 
 fn prepare_daemon_service_command(
@@ -308,7 +270,7 @@ fn startup_commands(daemon: &Path) -> (StartupCommand, StartupCommand) {
 
 fn write_daemon_service(service: &Path, daemon: &StartupCommand) -> io::Result<String> {
     let route_identity = service_route_identity(daemon);
-    let mut command = quote_systemd_exec_path(&daemon.executable);
+    let mut command = quote_systemd_exec_value(&daemon.executable.to_string_lossy());
     for argument in &daemon.arguments {
         command.push(' ');
         command.push_str(&quote_systemd_exec_value(argument));
@@ -327,7 +289,7 @@ ExecStart={command}\n\
 Restart=on-failure\n\
 RestartSec=1s\n"
     );
-    write_atomic(service, &contents)?;
+    write_atomic(service, contents.as_bytes(), 0o600)?;
     Ok(route_identity)
 }
 
@@ -338,7 +300,7 @@ fn write_autostart_entry(
     arguments: &[String],
 ) -> io::Result<()> {
     let contents = if enabled {
-        let mut command = quote_desktop_exec_path(executable);
+        let mut command = quote_desktop_exec_value(&executable.to_string_lossy());
         for argument in arguments {
             command.push(' ');
             command.push_str(&quote_desktop_exec_value(argument));
@@ -360,28 +322,7 @@ X-GNOME-Autostart-enabled=true\n"
         "[Desktop Entry]\nType=Application\nName=AgentDictate background service\nHidden=true\n"
             .to_owned()
     };
-    write_atomic(entry, &contents)
-}
-
-fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "startup file has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(AUTOSTART_ENTRY);
-    let sequence = STARTUP_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(
-        ".{file_name}.tmp.{}.{sequence}",
-        std::process::id()
-    ));
-    let result = fs::write(&temporary, contents).and_then(|()| fs::rename(&temporary, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    write_atomic(entry, contents.as_bytes(), 0o600)
 }
 
 fn service_is_active(systemctl: &Path) -> io::Result<bool> {
@@ -598,16 +539,8 @@ fn systemctl_error(systemctl: &Path, output: &std::process::Output) -> io::Error
     ))
 }
 
-fn quote_desktop_exec_path(path: &Path) -> String {
-    quote_desktop_exec_value(&path.to_string_lossy())
-}
-
 fn quote_desktop_exec_value(value: &str) -> String {
     quote_exec_value(value, false)
-}
-
-fn quote_systemd_exec_path(path: &Path) -> String {
-    quote_systemd_exec_value(&path.to_string_lossy())
 }
 
 fn quote_systemd_exec_value(value: &str) -> String {
@@ -797,7 +730,7 @@ mod tests {
                 let target = target.clone();
                 thread::spawn(move || {
                     let contents = format!("writer-{index}\n").repeat(128);
-                    write_atomic(&target, &contents).unwrap();
+                    write_atomic(&target, contents.as_bytes(), 0o600).unwrap();
                     contents
                 })
             })

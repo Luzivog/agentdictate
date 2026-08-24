@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use agentdictate_core::TranscriptionProvider;
 use agentdictate_core::{ClientCommand, JobId, ServerMessageKind, Settings};
 use agentdictate_linux::{
+    audio_ducking::PlaybackDucker,
     clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
     command::{
         PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool,
@@ -25,7 +26,7 @@ use agentdictate_linux::{
 use agentdictate_runtime::IpcClient;
 use agentdictate_runtime::{Deliverer, DeliveryDisposition, ExternalError, Recorder, RecordingJob};
 
-use crate::{CapturedRecording, RecordingController, audio_ducking::PlaybackDucker};
+use crate::{CapturedRecording, RecordingController};
 
 const WORK_AREA_DETECTION_TIMEOUT: Duration = Duration::from_millis(250);
 
