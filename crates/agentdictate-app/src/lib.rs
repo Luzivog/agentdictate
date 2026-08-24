@@ -6,6 +6,7 @@ mod chatgpt_dictation_import;
 mod codex_subscription;
 mod daemon;
 pub mod diagnostics;
+mod hotkey_dispatch;
 mod model_catalog;
 mod openai;
 mod overlay_process;
@@ -18,6 +19,9 @@ mod workspace;
 pub use codex_subscription::CodexSubscriptionTransport;
 pub use daemon::{CapturedRecording, Daemon, DaemonError, RecordingController};
 pub use diagnostics::init_file_logging;
+pub use hotkey_dispatch::{
+    HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
+};
 pub use openai::{
     CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechRouter, SpeechTransport,
     TranscriptionPipeline, TranscriptionRequest,

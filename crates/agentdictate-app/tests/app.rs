@@ -6,6 +6,8 @@ mod daemon_flow;
 mod diagnostics;
 #[path = "app/hotkey_dispatch.rs"]
 mod hotkey_dispatch;
+#[path = "app/hotkey_dispatch_state.rs"]
+mod hotkey_dispatch_state;
 #[path = "app/openai_http.rs"]
 mod openai_http;
 #[path = "app/overlay_lifecycle.rs"]
