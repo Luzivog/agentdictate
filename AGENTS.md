@@ -66,10 +66,12 @@ variant, so avoid uncontrolled full rebuilds while an oversized target remains.
 
 ## Final Test Gate
 
-`./run-tests.sh` is the one final comprehensive gate. It runs the locked Rust
-workspace with every target and feature. Run it exactly once after focused
-checks pass and only after the disk-heavy gate coordination above says it is
-safe. Do not use it as an inner loop command.
+`./run-tests.sh` is the one final comprehensive local gate. It runs the locked
+Rust workspace with every target and feature, the native-readiness packaging
+checks, and `cargo deny check` when `cargo-deny` is installed. The gate is
+local-only by design; CI runs tag-gated packaging only. Run it exactly once
+after focused checks pass and only after the disk-heavy gate coordination above
+says it is safe. Do not use it as an inner loop command.
 
 For ordinary changes, add focused Rust tests to the affected crate and mock
 network, subprocess, clipboard, audio, desktop, and external-service
