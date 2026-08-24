@@ -98,8 +98,7 @@ cargo clippy --locked -p agentdictate-ui --lib --features desktop -- -D warnings
 ```
 
 After focused checks pass, `./run-tests.sh` is the one comprehensive gate. It
-tests the Rust workspace and the Python parity suite. The installed application
-does not use Python.
+tests every target and feature in the locked Rust workspace.
 
 ## Build packages
 

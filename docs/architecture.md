@@ -109,6 +109,6 @@ Runtime data lives under XDG directories, each created with mode 0700:
 - `~/.cache/agentdictate/` — model catalog cache (`model-catalog.json`).
 - `$XDG_RUNTIME_DIR/agentdictate/` — IPC socket and singleton lock; not durable.
 
-A legacy Python implementation under `src/agentdictate/` remains only as a
-migration-parity suite; installed binaries are Rust-only. See
-[docs/parity-exit-strategy.md](parity-exit-strategy.md) for its exit strategy.
+The legacy Python implementation and parity suite were removed on 2026-08-24.
+See [the parity exit record](parity-exit-strategy.md) for the removal decision
+and accepted divergences.

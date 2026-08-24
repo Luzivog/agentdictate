@@ -23,11 +23,9 @@ harnesses with module files rather than one linked executable per test topic.
 Keep separate harnesses only when process or global-state isolation is part of
 the behavior being tested.
 
-The Python code under `src/agentdictate/` and tests under `tests/` remain as a
-migration-parity suite. Installed binaries use the Rust implementation. Static
-desktop assets live in `assets/` and `agentdictate.desktop`. Packaging scripts
-are under `packaging/`; `dist/` and `target/` contain generated artifacts and
-must not be edited directly.
+Static desktop assets live in `assets/` and `agentdictate.desktop`. Packaging
+scripts are under `packaging/`; `dist/` and `target/` contain generated
+artifacts and must not be edited directly.
 
 ## Development Commands
 
@@ -69,10 +67,9 @@ variant, so avoid uncontrolled full rebuilds while an oversized target remains.
 ## Final Test Gate
 
 `./run-tests.sh` is the one final comprehensive gate. It runs the locked Rust
-workspace with every target and feature, followed by the legacy Python parity
-suite. Run it exactly once after focused checks pass and only after the
-disk-heavy gate coordination above says it is safe. Do not use it as an inner
-loop command.
+workspace with every target and feature. Run it exactly once after focused
+checks pass and only after the disk-heavy gate coordination above says it is
+safe. Do not use it as an inner loop command.
 
 For ordinary changes, add focused Rust tests to the affected crate and mock
 network, subprocess, clipboard, audio, desktop, and external-service

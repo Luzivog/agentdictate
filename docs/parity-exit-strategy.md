@@ -1,17 +1,23 @@
 # Parity Exit Strategy
 
-The legacy Python implementation under `src/agentdictate/`, its unittest suite
-under `tests/`, and the Python leg of `run-tests.sh` exist solely to pin
-behavioral parity during the migration to Rust. Python is not shipped:
-installed and packaged binaries are built from the Rust workspace only.
+## Executed
 
-## Status
+The legacy Python implementation under `src/agentdictate/`, its root unittest
+suite under `tests/`, and the Python leg of `run-tests.sh` were removed on
+2026-08-24.
 
-- The Rust binaries `agentdictate` and `agentdictated` are the shipped product.
-- The Python suite is a test fixture for migration, not a maintained
-  implementation. It must never gain features.
-- The final gate (`./run-tests.sh`) runs the full locked Rust workspace first,
-  then the Python parity suite.
+Sunset criteria 1 and 2 were met:
+
+1. No installed or packaged artifact referenced `src/agentdictate/`.
+2. The Rust gate covers settings JSON tolerance, SQLite schema shape, and the
+   protocol version 3 wire format through
+   `crates/agentdictate-core/tests/core/settings.rs`,
+   `crates/agentdictate-core/tests/core/costs_golden.rs`,
+   `crates/agentdictate-core/tests/core/protocol.rs`, and
+   `crates/agentdictate-runtime/tests/runtime/migration_parity.rs`.
+
+The owner waived criterion 3, two clean release cycles, because the suite was
+already violating its own freeze policy.
 
 ## Accepted Divergences
 
@@ -46,22 +52,3 @@ produce slightly different token estimates. Estimates only ever feed the
 usage/cost display, never billing, so byte counting is the intended forward
 behavior. The golden fixture uses ASCII inputs to pin the shared arithmetic
 itself.
-
-## Sunset Criteria
-
-The Python source and unittest suite may be deleted once all three hold:
-
-1. No installed or packaged artifact references `src/agentdictate`.
-2. The Rust gate covers schema and wire compatibility previously pinned only
-   by parity tests (settings JSON tolerance, SQLite schema shape, protocol v2
-   wire format).
-3. Two consecutive release cycles ship without a bug report that was caught by
-   the parity suite alone.
-
-Deletion is one commit that removes `src/`, `tests/`, `pyproject.toml`, and
-the Python leg of `run-tests.sh`.
-
-## Interim Rule
-
-While the suite exists, behavior fixes land in Rust first. The Python tree is
-updated only when a parity pin itself needs correcting, never to add features.
