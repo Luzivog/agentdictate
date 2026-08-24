@@ -153,6 +153,91 @@ impl ClientCommand {
             api_key: SecretString(api_key.into()),
         })
     }
+
+    /// Returns the data-less command tag without cloning command payloads.
+    #[must_use]
+    pub const fn kind(&self) -> ClientCommandTag {
+        match &self.kind {
+            ClientCommandKind::GetSnapshot { .. } => ClientCommandTag::GetSnapshot,
+            ClientCommandKind::GetWorkspace { .. } => ClientCommandTag::GetWorkspace,
+            ClientCommandKind::RefreshModelCatalog { .. } => ClientCommandTag::RefreshModelCatalog,
+            ClientCommandKind::GetHistoryPage { .. } => ClientCommandTag::GetHistoryPage,
+            ClientCommandKind::StartRecording { .. } => ClientCommandTag::StartRecording,
+            ClientCommandKind::StopRecording { .. } => ClientCommandTag::StopRecording,
+            ClientCommandKind::Cancel { .. } => ClientCommandTag::Cancel,
+            ClientCommandKind::RecorderExited { .. } => ClientCommandTag::RecorderExited,
+            ClientCommandKind::RetryTranscription { .. } => ClientCommandTag::RetryTranscription,
+            ClientCommandKind::RetryDelivery { .. } => ClientCommandTag::RetryDelivery,
+            ClientCommandKind::DeleteRecovery { .. } => ClientCommandTag::DeleteRecovery,
+            ClientCommandKind::CreateReplacement { .. } => ClientCommandTag::CreateReplacement,
+            ClientCommandKind::UpdateReplacement { .. } => ClientCommandTag::UpdateReplacement,
+            ClientCommandKind::DeleteReplacement { .. } => ClientCommandTag::DeleteReplacement,
+            ClientCommandKind::DeleteHistory { .. } => ClientCommandTag::DeleteHistory,
+            ClientCommandKind::ClearHistory { .. } => ClientCommandTag::ClearHistory,
+            ClientCommandKind::CopyTranscript { .. } => ClientCommandTag::CopyTranscript,
+            ClientCommandKind::UpdateSettings { .. } => ClientCommandTag::UpdateSettings,
+            ClientCommandKind::SetApiKey { .. } => ClientCommandTag::SetApiKey,
+            ClientCommandKind::HotkeyStatusChanged { .. } => ClientCommandTag::HotkeyStatusChanged,
+            ClientCommandKind::Quit { .. } => ClientCommandTag::Quit,
+        }
+    }
+}
+
+/// Data-less discriminator for every command carried by [`ClientCommandKind`].
+///
+/// This is separate from the payload-bearing wire enum so existing command
+/// construction and pattern matching remain unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ClientCommandTag {
+    GetSnapshot,
+    GetWorkspace,
+    RefreshModelCatalog,
+    GetHistoryPage,
+    StartRecording,
+    StopRecording,
+    Cancel,
+    RecorderExited,
+    RetryTranscription,
+    RetryDelivery,
+    DeleteRecovery,
+    CreateReplacement,
+    UpdateReplacement,
+    DeleteReplacement,
+    DeleteHistory,
+    ClearHistory,
+    CopyTranscript,
+    UpdateSettings,
+    SetApiKey,
+    HotkeyStatusChanged,
+    Quit,
+}
+
+impl ClientCommandTag {
+    /// Every command tag in wire-enum declaration order.
+    pub const ALL: &'static [Self] = &[
+        Self::GetSnapshot,
+        Self::GetWorkspace,
+        Self::RefreshModelCatalog,
+        Self::GetHistoryPage,
+        Self::StartRecording,
+        Self::StopRecording,
+        Self::Cancel,
+        Self::RecorderExited,
+        Self::RetryTranscription,
+        Self::RetryDelivery,
+        Self::DeleteRecovery,
+        Self::CreateReplacement,
+        Self::UpdateReplacement,
+        Self::DeleteReplacement,
+        Self::DeleteHistory,
+        Self::ClearHistory,
+        Self::CopyTranscript,
+        Self::UpdateSettings,
+        Self::SetApiKey,
+        Self::HotkeyStatusChanged,
+        Self::Quit,
+    ];
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -234,6 +319,67 @@ pub enum ClientCommandKind {
     Quit {
         request_id: u64,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VARIANT_COUNT: usize = ClientCommandTag::Quit as usize + 1;
+
+    const fn tag_index(tag: ClientCommandTag) -> usize {
+        match tag {
+            ClientCommandTag::GetSnapshot => 0,
+            ClientCommandTag::GetWorkspace => 1,
+            ClientCommandTag::RefreshModelCatalog => 2,
+            ClientCommandTag::GetHistoryPage => 3,
+            ClientCommandTag::StartRecording => 4,
+            ClientCommandTag::StopRecording => 5,
+            ClientCommandTag::Cancel => 6,
+            ClientCommandTag::RecorderExited => 7,
+            ClientCommandTag::RetryTranscription => 8,
+            ClientCommandTag::RetryDelivery => 9,
+            ClientCommandTag::DeleteRecovery => 10,
+            ClientCommandTag::CreateReplacement => 11,
+            ClientCommandTag::UpdateReplacement => 12,
+            ClientCommandTag::DeleteReplacement => 13,
+            ClientCommandTag::DeleteHistory => 14,
+            ClientCommandTag::ClearHistory => 15,
+            ClientCommandTag::CopyTranscript => 16,
+            ClientCommandTag::UpdateSettings => 17,
+            ClientCommandTag::SetApiKey => 18,
+            ClientCommandTag::HotkeyStatusChanged => 19,
+            ClientCommandTag::Quit => 20,
+        }
+    }
+
+    #[test]
+    fn command_tags_list_every_variant_once() {
+        assert_eq!(ClientCommandTag::ALL.len(), VARIANT_COUNT);
+        let mut seen = [false; VARIANT_COUNT];
+        for tag in ClientCommandTag::ALL {
+            let seen = &mut seen[tag_index(*tag)];
+            assert!(!*seen, "duplicate command tag: {tag:?}");
+            *seen = true;
+        }
+        assert!(seen.into_iter().all(|present| present));
+    }
+
+    #[test]
+    fn commands_report_their_data_less_tag() {
+        assert_eq!(
+            ClientCommand::start_recording(7).kind(),
+            ClientCommandTag::StartRecording
+        );
+        assert_eq!(
+            ClientCommand::get_history_page(8, "needle", 20, None).kind(),
+            ClientCommandTag::GetHistoryPage
+        );
+        assert_eq!(
+            ClientCommand::set_api_key(9, "secret").kind(),
+            ClientCommandTag::SetApiKey
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

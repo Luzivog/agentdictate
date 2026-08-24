@@ -1,10 +1,12 @@
 use agentdictate_core::AppliedReplacement;
 use agentdictate_runtime::{
-    ExternalDictationImportOutcome, ExternalDictationReceipt, ExternalDictationSource,
-    ExternalError, JobStage, Recorder, RecordingJob, RecordingRequest, Runtime,
+    ExternalDictationImportOutcome, ExternalDictationReceipt, ExternalDictationSource, JobStage,
+    RecordingRequest, Runtime,
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
+
+use crate::support::ReadyRecorder;
 
 fn receipt(source_id: &str) -> ExternalDictationReceipt {
     ExternalDictationReceipt {
@@ -21,14 +23,6 @@ fn receipt(source_id: &str) -> ExternalDictationReceipt {
             replacement_phrase: "Vercel".to_owned(),
             count: 1,
         }],
-    }
-}
-
-struct ReadyRecorder;
-
-impl Recorder for ReadyRecorder {
-    fn start(&mut self, _job: &RecordingJob) -> Result<(), ExternalError> {
-        Ok(())
     }
 }
 

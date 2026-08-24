@@ -1,13 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use agentdictate_core::{ReplacementRule, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, JobStage, Recorder, RecordingJob, RecordingRequest, Runtime,
-    RuntimeError, Transcriber, Transcript,
+    HeadlessDeliveryGate, JobStage, Recorder, RecordingJob, Runtime, RuntimeError, Transcriber,
+    Transcript,
 };
-use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
+
+use crate::support::{request, request_with_provider};
+
+const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
 struct InspectingRecorder {
     database_path: PathBuf,
@@ -203,22 +206,6 @@ impl Recorder for CompensatingRecorder {
     }
 }
 
-fn request(audio_path: &Path) -> RecordingRequest {
-    request_with_provider(audio_path, TranscriptionProvider::OpenAiApi)
-}
-
-fn request_with_provider(
-    audio_path: &Path,
-    transcription_provider: TranscriptionProvider,
-) -> RecordingRequest {
-    RecordingRequest {
-        audio_path: audio_path.to_owned(),
-        started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
-        transcription_provider,
-        transcription_model: "gpt-transcribe".to_owned(),
-    }
-}
-
 #[test]
 fn recording_job_is_durable_before_the_recorder_starts() {
     let directory = TempDir::new().unwrap();
@@ -231,7 +218,10 @@ fn recording_job_is_durable_before_the_recorder_starts() {
 
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/first.wav")),
+            request(
+                &directory.path().join("recordings/first.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -262,7 +252,7 @@ fn recording_checkpoint_failure_compensates_a_started_recorder() {
     let mut recorder = CompensatingRecorder::default();
 
     let error = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap_err();
 
     assert!(
@@ -310,7 +300,7 @@ fn failed_recovery_checkpoint_does_not_mask_the_recorder_start_error() {
     let mut recorder = FailingStartRecorder;
 
     let error = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap_err();
 
     assert!(error.to_string().contains("microphone start failed"));
@@ -345,7 +335,7 @@ fn failed_start_compensation_does_not_mask_the_checkpoint_error() {
     let mut recorder = FailingCompensationRecorder;
 
     let error = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap_err();
 
     assert!(
@@ -376,7 +366,10 @@ fn dropping_the_ui_subscription_does_not_cancel_the_recording() {
     let ui_events = runtime.subscribe();
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/disconnected.wav")),
+            request(
+                &directory.path().join("recordings/disconnected.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -399,7 +392,10 @@ fn transcript_is_durable_before_delivery_is_attempted() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/durable.wav")),
+            request(
+                &directory.path().join("recordings/durable.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -457,7 +453,10 @@ fn delivery_gate_failure_is_safe_to_retry_and_never_calls_the_deliverer() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/blocked.wav")),
+            request(
+                &directory.path().join("recordings/blocked.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -503,7 +502,10 @@ fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/legacy-committed.wav")),
+            request(
+                &directory.path().join("recordings/legacy-committed.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -557,7 +559,10 @@ fn transcribing_stage_is_durable_before_the_network_adapter_runs() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/network.wav")),
+            request(
+                &directory.path().join("recordings/network.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -591,7 +596,10 @@ fn ambiguous_delivery_is_not_retried_after_restart() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/ambiguous.wav")),
+            request(
+                &directory.path().join("recordings/ambiguous.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -633,7 +641,7 @@ fn interrupted_recording_remains_recoverable_after_restart() {
         saw_durable_starting_job: false,
     };
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
 
     drop(runtime);
@@ -657,7 +665,10 @@ fn duplicate_processing_signal_cannot_transcribe_or_paste_a_delivered_job_again(
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/once.wav")),
+            request(
+                &directory.path().join("recordings/once.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -704,7 +715,10 @@ fn capture_finalization_failure_can_interrupt_the_recording_durably() {
     let events = runtime.subscribe();
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/finalize-failed.wav")),
+            request(
+                &directory.path().join("recordings/finalize-failed.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -746,7 +760,10 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/discarded.wav")),
+            request(
+                &directory.path().join("recordings/discarded.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -778,7 +795,10 @@ fn startup_keeps_historical_canceled_jobs_recoverable() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/historical-canceled.wav")),
+            request(
+                &directory.path().join("recordings/historical-canceled.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -815,6 +835,7 @@ fn captured_checkpoint_can_be_retried_after_restart() {
             request_with_provider(
                 &directory.path().join("recordings/captured-restart.wav"),
                 TranscriptionProvider::ChatGptSubscription,
+                TRANSCRIPTION_MODEL,
             ),
             &mut recorder,
         )
@@ -860,7 +881,10 @@ fn failed_transcription_can_be_retried_explicitly_without_a_duplicate_first_atte
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/retry.wav")),
+            request(
+                &directory.path().join("recordings/retry.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -905,7 +929,10 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/manual-delivery.wav")),
+            request(
+                &directory.path().join("recordings/manual-delivery.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -944,7 +971,10 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/attempting.wav")),
+            request(
+                &directory.path().join("recordings/attempting.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();
@@ -989,7 +1019,7 @@ fn deleting_a_recovery_removes_audio_before_marking_the_job_deleted() {
         saw_durable_starting_job: false,
     };
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
         .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
@@ -1016,7 +1046,7 @@ fn failed_recovery_delete_restores_the_only_audio_copy() {
         saw_durable_starting_job: false,
     };
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
         .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
@@ -1064,7 +1094,7 @@ fn startup_restores_audio_quarantined_before_the_delete_checkpoint() {
         saw_durable_starting_job: false,
     };
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
         .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
@@ -1104,7 +1134,10 @@ fn enabled_replacements_are_applied_after_cleanup_and_before_delivery() {
     };
     let job = runtime
         .start_recording(
-            request(&directory.path().join("recordings/replacements.wav")),
+            request(
+                &directory.path().join("recordings/replacements.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
             &mut recorder,
         )
         .unwrap();

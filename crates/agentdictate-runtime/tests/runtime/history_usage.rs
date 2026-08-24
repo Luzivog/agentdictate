@@ -1,20 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use agentdictate_core::{ReplacementRule, Settings, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, ExternalError, HeadlessDeliveryGate, HistoryQuery, JobStage,
-    Recorder, RecordingJob, RecordingRequest, Runtime, Transcriber, Transcript, UsageMetric,
+    RecordingJob, Runtime, Transcriber, Transcript, UsageMetric,
 };
-use chrono::{Datelike, Days, TimeZone, Utc};
+use chrono::{Datelike, Days, Utc};
 use tempfile::TempDir;
 
-struct ReadyRecorder;
+use crate::support::{ReadyRecorder, request, request_with_provider};
 
-impl Recorder for ReadyRecorder {
-    fn start(&mut self, _job: &RecordingJob) -> Result<(), ExternalError> {
-        Ok(())
-    }
-}
+const TRANSCRIPTION_MODEL: &str = "gpt-4o-transcribe";
 
 struct CleaningTranscriber;
 
@@ -37,22 +33,6 @@ impl Deliverer for SubmittedDeliverer {
             copied_to_clipboard: true,
             paste_triggered: true,
         })
-    }
-}
-
-fn request(audio_path: &Path) -> RecordingRequest {
-    request_with_provider(audio_path, TranscriptionProvider::OpenAiApi)
-}
-
-fn request_with_provider(
-    audio_path: &Path,
-    transcription_provider: TranscriptionProvider,
-) -> RecordingRequest {
-    RecordingRequest {
-        audio_path: audio_path.to_owned(),
-        started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
-        transcription_provider,
-        transcription_model: "gpt-4o-transcribe".to_owned(),
     }
 }
 
@@ -81,6 +61,7 @@ fn delivered_job_with_provider(
             request_with_provider(
                 &directory.path().join("recordings/history.wav"),
                 transcription_provider,
+                TRANSCRIPTION_MODEL,
             ),
             &mut recorder,
         )
@@ -968,7 +949,7 @@ fn recovery_projection_reports_audio_presence_without_hiding_missing_files() {
     let mut runtime = Runtime::open(&database_path).unwrap();
     let mut recorder = ReadyRecorder;
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
         .interrupt_job(job.id, JobStage::Recording, "microphone disappeared")
@@ -997,7 +978,7 @@ fn active_recording_is_not_presented_as_a_recovery() {
     let mut recorder = ReadyRecorder;
 
     let job = runtime
-        .start_recording(request(&audio_path), &mut recorder)
+        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
 
     assert_eq!(job.stage, JobStage::Recording);
