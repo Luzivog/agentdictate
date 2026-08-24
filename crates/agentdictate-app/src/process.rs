@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::{io, path::PathBuf};
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
@@ -7,8 +7,8 @@ use agentdictate_core::{
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
-    HistoryIndexMaintenance, IpcClient, IpcHandler, RecordingPriorityGuard, Runtime, load_settings,
-    save_settings,
+    HistoryIndexMaintenance, IpcClient, IpcHandler, RecordingPriorityGuard, Runtime, RuntimeError,
+    load_settings, save_settings,
 };
 
 use crate::model_catalog::ModelCatalog;
@@ -162,7 +162,7 @@ impl AgentProcess {
         ServerMessage::snapshot(request_id, self.daemon.snapshot(), self.daemon.settings())
     }
 
-    fn workspace_message(&self, request_id: u64) -> anyhow::Result<ServerMessage> {
+    fn workspace_message(&self, request_id: u64) -> Result<ServerMessage, RuntimeError> {
         let mut workspace = self.daemon.workspace_snapshot()?;
         workspace.model_catalog = self.model_catalog.snapshot(
             self.daemon.settings().active_transcription_model(),
@@ -175,7 +175,7 @@ impl AgentProcess {
         &self,
         request_id: u64,
         request: agentdictate_core::HistoryPageRequest,
-    ) -> anyhow::Result<ServerMessage> {
+    ) -> Result<ServerMessage, RuntimeError> {
         Ok(ServerMessage::history_page(
             request_id,
             self.daemon.history_page_snapshot(request)?,
@@ -278,7 +278,7 @@ impl AgentProcess {
         Ok(())
     }
 
-    fn refresh_model_catalog(&self) -> anyhow::Result<()> {
+    fn refresh_model_catalog(&self) -> io::Result<()> {
         self.model_catalog
             .refresh_in_background(&self.daemon.settings().openai_api_key)?;
         Ok(())
@@ -378,7 +378,9 @@ impl IpcHandler for AgentProcess {
         let result: anyhow::Result<()> = match command.kind {
             ClientCommandKind::GetSnapshot { .. } => Ok(()),
             ClientCommandKind::GetWorkspace { .. } => Ok(()),
-            ClientCommandKind::RefreshModelCatalog { .. } => self.refresh_model_catalog(),
+            ClientCommandKind::RefreshModelCatalog { .. } => {
+                self.refresh_model_catalog().map_err(Into::into)
+            }
             ClientCommandKind::GetHistoryPage { .. } => Ok(()),
             ClientCommandKind::StartRecording { .. } => self
                 .daemon

@@ -58,7 +58,7 @@ pub use view_model::{
 };
 #[cfg(feature = "desktop")]
 pub use window_frame::AgentDictateWindowFrame;
-pub use workspace::{WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel};
+pub use workspace::{UiActionError, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel};
 
 #[cfg(feature = "test-support")]
 #[doc(hidden)]

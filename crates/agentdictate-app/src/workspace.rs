@@ -17,6 +17,7 @@ use agentdictate_core::{
     WorkspaceSnapshot, format_duration_clock,
 };
 use agentdictate_runtime::IpcClient;
+use thiserror::Error;
 
 use crate::daemon::OVERVIEW_RECENT_HISTORY_LIMIT;
 use agentdictate_ui::{
@@ -24,6 +25,28 @@ use agentdictate_ui::{
     ReplacementRuleViewModel, ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel,
     UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
+
+#[derive(Debug, Error)]
+pub enum WorkspaceError {
+    #[error("workspace state is unavailable")]
+    StateUnavailable,
+    #[error("workspace request state is unavailable")]
+    RequestStateUnavailable,
+    #[error("invalid recovery id {id}")]
+    InvalidRecoveryId { id: String },
+    #[error("replacement {id} was not found")]
+    ReplacementNotFound { id: i64 },
+    #[error(transparent)]
+    Ipc(#[from] agentdictate_runtime::IpcError),
+    #[error("{message}")]
+    CommandRejected { message: String },
+    #[error("daemon returned unrelated data for a history request")]
+    UnexpectedHistoryResponse,
+    #[error("daemon returned a lifecycle snapshot for a workspace request")]
+    UnexpectedLifecycleSnapshot,
+    #[error("daemon returned history data for a workspace request")]
+    UnexpectedHistoryPage,
+}
 
 pub struct WorkspaceClient {
     runtime_directory: PathBuf,
@@ -55,21 +78,21 @@ impl WorkspaceClient {
         }
     }
 
-    pub fn view_model(&self) -> Result<WorkspaceViewModel, String> {
+    pub fn view_model(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
         let state = self
             .state
             .lock()
-            .map_err(|_| "workspace state is unavailable")?;
+            .map_err(|_| WorkspaceError::StateUnavailable)?;
         Ok(workspace_view_model(&state.snapshot, state.period))
     }
 
-    pub fn perform(&self, action: WorkspaceAction) -> Result<WorkspaceViewModel, String> {
+    pub fn perform(&self, action: WorkspaceAction) -> Result<WorkspaceViewModel, WorkspaceError> {
         if let WorkspaceAction::SearchHistory { query } = action {
             {
                 let mut state = self
                     .state
                     .lock()
-                    .map_err(|_| "workspace state is unavailable")?;
+                    .map_err(|_| WorkspaceError::StateUnavailable)?;
                 state.snapshot.history_search = query;
                 state.history_next_cursor = None;
                 state.history_customized = !state.snapshot.history_search.trim().is_empty();
@@ -81,7 +104,7 @@ impl WorkspaceClient {
                 let mut state = self
                     .state
                     .lock()
-                    .map_err(|_| "workspace state is unavailable")?;
+                    .map_err(|_| WorkspaceError::StateUnavailable)?;
                 state.history_customized = true;
             }
             return self.refresh_history_page(true);
@@ -90,7 +113,7 @@ impl WorkspaceClient {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| "workspace state is unavailable")?;
+                .map_err(|_| WorkspaceError::StateUnavailable)?;
             state.period = period;
             return Ok(workspace_view_model(&state.snapshot, state.period));
         }
@@ -100,7 +123,7 @@ impl WorkspaceClient {
             WorkspaceAction::RetryRecovery { id, stage } => {
                 let job_id = id
                     .parse::<JobId>()
-                    .map_err(|_| format!("invalid recovery id {id}"))?;
+                    .map_err(|_| WorkspaceError::InvalidRecoveryId { id })?;
                 match stage {
                     RecoveryStage::Transcription => {
                         ClientCommand::retry_transcription(request_id, job_id)
@@ -111,7 +134,7 @@ impl WorkspaceClient {
             WorkspaceAction::DeleteRecovery { id } => {
                 let job_id = id
                     .parse::<JobId>()
-                    .map_err(|_| format!("invalid recovery id {id}"))?;
+                    .map_err(|_| WorkspaceError::InvalidRecoveryId { id })?;
                 ClientCommand::delete_recovery(request_id, job_id)
             }
             WorkspaceAction::CopyTranscript { id } => {
@@ -146,14 +169,14 @@ impl WorkspaceClient {
                 let state = self
                     .state
                     .lock()
-                    .map_err(|_| "workspace state is unavailable")?;
+                    .map_err(|_| WorkspaceError::StateUnavailable)?;
                 let mut rule = state
                     .snapshot
                     .replacements
                     .iter()
                     .find(|rule| rule.id == Some(id))
                     .cloned()
-                    .ok_or_else(|| format!("replacement {id} was not found"))?;
+                    .ok_or(WorkspaceError::ReplacementNotFound { id })?;
                 rule.enabled = enabled;
                 ClientCommand::update_replacement(request_id, rule)
             }
@@ -169,12 +192,12 @@ impl WorkspaceClient {
     /// Re-queries the daemon and atomically replaces the cached workspace.
     /// Requests from actions and filesystem refreshes are serialized so an
     /// older response cannot overwrite a newer local snapshot.
-    pub fn refresh(&self) -> Result<WorkspaceViewModel, String> {
+    pub fn refresh(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
         let needs_history_refresh = {
             let state = self
                 .state
                 .lock()
-                .map_err(|_| "workspace state is unavailable")?;
+                .map_err(|_| WorkspaceError::StateUnavailable)?;
             state.history_customized
         };
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
@@ -186,12 +209,12 @@ impl WorkspaceClient {
         }
     }
 
-    fn refresh_history_page(&self, append: bool) -> Result<WorkspaceViewModel, String> {
+    fn refresh_history_page(&self, append: bool) -> Result<WorkspaceViewModel, WorkspaceError> {
         let (search, after) = {
             let state = self
                 .state
                 .lock()
-                .map_err(|_| "workspace state is unavailable")?;
+                .map_err(|_| WorkspaceError::StateUnavailable)?;
             (
                 state.snapshot.history_search.clone(),
                 if append {
@@ -208,32 +231,31 @@ impl WorkspaceClient {
         let _request = self
             .request_gate
             .lock()
-            .map_err(|_| "workspace request state is unavailable")?;
-        let (mut client, _) =
-            IpcClient::connect(&self.runtime_directory).map_err(|error| error.to_string())?;
-        let response = client
-            .send(ClientCommand::get_history_page(
-                request_id,
-                search.clone(),
-                if append {
-                    HISTORY_CONTINUATION_PAGE_SIZE
-                } else {
-                    DEFAULT_HISTORY_PAGE_SIZE
-                },
-                after,
-            ))
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
+        let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
+        let response = client.send(ClientCommand::get_history_page(
+            request_id,
+            search.clone(),
+            if append {
+                HISTORY_CONTINUATION_PAGE_SIZE
+            } else {
+                DEFAULT_HISTORY_PAGE_SIZE
+            },
+            after,
+        ))?;
         let page = match response.kind {
             ServerMessageKind::HistoryPage { page, .. } => *page,
-            ServerMessageKind::CommandRejected { error, .. } => return Err(error),
+            ServerMessageKind::CommandRejected { error, .. } => {
+                return Err(WorkspaceError::CommandRejected { message: error });
+            }
             ServerMessageKind::Snapshot { .. } | ServerMessageKind::Workspace { .. } => {
-                return Err("daemon returned unrelated data for a history request".into());
+                return Err(WorkspaceError::UnexpectedHistoryResponse);
             }
         };
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "workspace state is unavailable")?;
+            .map_err(|_| WorkspaceError::StateUnavailable)?;
         if state.snapshot.history_search != page.search {
             return Ok(workspace_view_model(&state.snapshot, state.period));
         }
@@ -259,28 +281,32 @@ impl WorkspaceClient {
         Ok(workspace_view_model(&state.snapshot, state.period))
     }
 
-    fn send_workspace_command(&self, command: ClientCommand) -> Result<WorkspaceViewModel, String> {
+    fn send_workspace_command(
+        &self,
+        command: ClientCommand,
+    ) -> Result<WorkspaceViewModel, WorkspaceError> {
         let _request = self
             .request_gate
             .lock()
-            .map_err(|_| "workspace request state is unavailable")?;
-        let (mut client, _) =
-            IpcClient::connect(&self.runtime_directory).map_err(|error| error.to_string())?;
-        let response = client.send(command).map_err(|error| error.to_string())?;
+            .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
+        let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
+        let response = client.send(command)?;
         let mut workspace = match response.kind {
             ServerMessageKind::Workspace { workspace, .. } => *workspace,
-            ServerMessageKind::CommandRejected { error, .. } => return Err(error),
+            ServerMessageKind::CommandRejected { error, .. } => {
+                return Err(WorkspaceError::CommandRejected { message: error });
+            }
             ServerMessageKind::Snapshot { .. } => {
-                return Err("daemon returned a lifecycle snapshot for a workspace request".into());
+                return Err(WorkspaceError::UnexpectedLifecycleSnapshot);
             }
             ServerMessageKind::HistoryPage { .. } => {
-                return Err("daemon returned history data for a workspace request".into());
+                return Err(WorkspaceError::UnexpectedHistoryPage);
             }
         };
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "workspace state is unavailable")?;
+            .map_err(|_| WorkspaceError::StateUnavailable)?;
         if state.history_customized {
             workspace.history = state.snapshot.history.clone();
             workspace.history_total = state.snapshot.history_total;
@@ -677,6 +703,129 @@ mod tests {
         assert_eq!(all.usage.activity.len(), 1);
         assert_eq!(all.usage.activity[0].dictations, 9);
         assert_eq!(all.usage.activity[0].label, "Week of Aug 17");
+    }
+
+    #[test]
+    fn invalid_recovery_id_is_typed() {
+        let directory = tempdir().unwrap();
+        let client = WorkspaceClient::new(
+            directory.path().join("runtime"),
+            WorkspaceSnapshot::default(),
+        );
+
+        let error = client
+            .perform(WorkspaceAction::RetryRecovery {
+                id: "not-a-job-id".to_owned(),
+                stage: RecoveryStage::Transcription,
+            })
+            .unwrap_err();
+
+        match error {
+            WorkspaceError::InvalidRecoveryId { id } => assert_eq!(id, "not-a-job-id"),
+            error => panic!("expected InvalidRecoveryId, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_socket_surfaces_ipc_error() {
+        let directory = tempdir().unwrap();
+        let client = WorkspaceClient::new(
+            directory.path().join("missing-runtime"),
+            WorkspaceSnapshot::default(),
+        );
+
+        let error = client.refresh().unwrap_err();
+
+        match error {
+            WorkspaceError::Ipc(agentdictate_runtime::IpcError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            }
+            error => panic!("expected Ipc, got {error:?}"),
+        }
+    }
+
+    enum WorkspaceResponse {
+        Rejected(String),
+        LifecycleSnapshot,
+    }
+
+    struct WorkspaceResponseHandler {
+        response: WorkspaceResponse,
+    }
+
+    impl IpcHandler for WorkspaceResponseHandler {
+        fn snapshot(&self, request_id: u64) -> ServerMessage {
+            lifecycle_snapshot_message(request_id)
+        }
+
+        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+            let ClientCommandKind::GetWorkspace { request_id } = command.kind else {
+                panic!("workspace client sent an unexpected command")
+            };
+            match &self.response {
+                WorkspaceResponse::Rejected(message) => {
+                    ServerMessage::command_rejected(request_id, message.clone())
+                }
+                WorkspaceResponse::LifecycleSnapshot => lifecycle_snapshot_message(request_id),
+            }
+        }
+    }
+
+    fn lifecycle_snapshot_message(request_id: u64) -> ServerMessage {
+        ServerMessage::snapshot(
+            request_id,
+            AppSnapshot {
+                sequence: 0,
+                workflow: agentdictate_core::Workflow::new().snapshot(),
+                hotkey: agentdictate_core::HotkeyReadiness::Ready,
+                recoverable_count: 0,
+                last_transcript: None,
+            },
+            &agentdictate_core::Settings::default(),
+        )
+    }
+
+    #[test]
+    fn command_rejection_message_is_preserved() {
+        let directory = tempdir().unwrap();
+        let runtime_directory = directory.path().join("runtime");
+        let server = IpcServer::bind(&runtime_directory).unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .serve_next(&mut WorkspaceResponseHandler {
+                    response: WorkspaceResponse::Rejected("daemon said no".to_owned()),
+                })
+                .unwrap();
+        });
+        let client = WorkspaceClient::new(runtime_directory, WorkspaceSnapshot::default());
+
+        let error = client.refresh().unwrap_err();
+
+        match error {
+            WorkspaceError::CommandRejected { message } => assert_eq!(message, "daemon said no"),
+            error => panic!("expected CommandRejected, got {error:?}"),
+        }
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn unexpected_workspace_response_is_typed() {
+        let directory = tempdir().unwrap();
+        let runtime_directory = directory.path().join("runtime");
+        let server = IpcServer::bind(&runtime_directory).unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .serve_next(&mut WorkspaceResponseHandler {
+                    response: WorkspaceResponse::LifecycleSnapshot,
+                })
+                .unwrap();
+        });
+        let client = WorkspaceClient::new(runtime_directory, WorkspaceSnapshot::default());
+
+        let error = client.refresh().unwrap_err();
+
+        assert!(matches!(error, WorkspaceError::UnexpectedLifecycleSnapshot));
+        server_thread.join().unwrap();
     }
 
     struct WorkspaceHandler {

@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    Color, OverlayPresentation, ShellViewModel, ThemeTokens, WorkspaceActionSink,
+    Color, OverlayPresentation, ShellViewModel, ThemeTokens, UiActionError, WorkspaceActionSink,
     WorkspaceViewModel,
 };
 
@@ -41,7 +41,7 @@ pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 
 /// Starts the native GPUI settings window from a daemon snapshot.
 pub type CommandSink =
-    Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), String> + Send + Sync>;
+    Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), UiActionError> + Send + Sync>;
 
 /// Starts the settings window with connected workspace actions.
 pub fn run_settings_shell_with_workspace_actions(
