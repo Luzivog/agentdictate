@@ -2,6 +2,8 @@
 
 //! Headless contracts for the window-level pointer focus policy.
 
+use super::support::DesktopHarness;
+
 use std::ops::Deref;
 
 use agentdictate_ui::{AgentDictateWindowFrame, test_support};
@@ -91,6 +93,12 @@ struct Harness {
     cx: &'static mut VisualTestContext,
 }
 
+impl DesktopHarness for Harness {
+    fn visual_context(&mut self) -> &mut VisualTestContext {
+        self.cx
+    }
+}
+
 impl Harness {
     fn open(cx: &mut TestAppContext) -> Self {
         test_support::initialize(cx);
@@ -121,12 +129,6 @@ impl Harness {
         let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
         cx.run_until_parked();
         Self { surface, cx }
-    }
-
-    fn bounds(&mut self, selector: &'static str) -> Bounds<gpui::Pixels> {
-        self.cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("missing rendered selector: {selector}"))
     }
 
     fn mouse_down(&mut self, selector: &'static str, button: MouseButton) {

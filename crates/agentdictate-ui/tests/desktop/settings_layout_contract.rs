@@ -2,6 +2,8 @@
 
 //! Headless settings layout contracts.
 
+use super::support::DesktopHarness;
+
 use std::{
     cell::RefCell,
     ops::Deref,
@@ -23,6 +25,12 @@ use gpui_component::Root;
 
 struct SettingsHarness {
     cx: &'static mut VisualTestContext,
+}
+
+impl DesktopHarness for SettingsHarness {
+    fn visual_context(&mut self) -> &mut VisualTestContext {
+        self.cx
+    }
 }
 
 impl SettingsHarness {
@@ -82,21 +90,6 @@ impl SettingsHarness {
         let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
         cx.run_until_parked();
         Self { cx }
-    }
-
-    fn bounds(&mut self, selector: &'static str) -> Bounds<Pixels> {
-        self.cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("missing rendered selector: {selector}"))
-    }
-
-    fn has(&mut self, selector: &'static str) -> bool {
-        self.cx.debug_bounds(selector).is_some()
-    }
-
-    fn click(&mut self, selector: &'static str) {
-        let position = self.bounds(selector).center();
-        self.click_at(position);
     }
 
     fn click_at(&mut self, position: gpui::Point<Pixels>) {

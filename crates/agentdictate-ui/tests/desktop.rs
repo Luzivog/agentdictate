@@ -12,3 +12,5 @@ mod rendered_interactions;
 mod replacements_layout_contract;
 #[path = "desktop/settings_layout_contract.rs"]
 mod settings_layout_contract;
+#[path = "desktop/support.rs"]
+mod support;

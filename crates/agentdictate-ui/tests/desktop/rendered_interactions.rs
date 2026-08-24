@@ -2,6 +2,8 @@
 
 //! Headless shell interaction contracts.
 
+use super::support::{self, DesktopHarness};
+
 use std::{
     cell::RefCell,
     ops::Deref,
@@ -31,6 +33,12 @@ use gpui_component::{Root, Theme};
 struct Harness {
     shell: Entity<SettingsShell>,
     cx: &'static mut VisualTestContext,
+}
+
+impl DesktopHarness for Harness {
+    fn visual_context(&mut self) -> &mut VisualTestContext {
+        self.cx
+    }
 }
 
 #[gpui::test]
@@ -195,16 +203,6 @@ impl Harness {
         Self { shell, cx }
     }
 
-    fn bounds(&mut self, selector: &'static str) -> Bounds<Pixels> {
-        self.cx
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("missing rendered selector: {selector}"))
-    }
-
-    fn has(&mut self, selector: &'static str) -> bool {
-        self.cx.debug_bounds(selector).is_some()
-    }
-
     fn resize(&mut self, viewport: Size<Pixels>) {
         self.cx.simulate_resize(viewport);
         self.cx.run_until_parked();
@@ -225,11 +223,7 @@ impl Harness {
     }
 
     fn click_direct(&mut self, selector: &'static str) {
-        let position = self.bounds(selector).center();
-        self.cx
-            .simulate_mouse_move(position, None::<MouseButton>, Modifiers::none());
-        self.cx.simulate_click(position, Modifiers::none());
-        self.cx.run_until_parked();
+        support::click(self.cx, selector);
     }
 
     fn type_text(&mut self, selector: &'static str, text: &str) {
