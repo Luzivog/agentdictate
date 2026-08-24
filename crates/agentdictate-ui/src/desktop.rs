@@ -1,16 +1,10 @@
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, Application, Bounds, Context, Entity, Hsla, IntoElement, Render, ScrollHandle,
-    Subscription, Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind,
-    WindowOptions, point, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, Entity, Hsla, IntoElement, Render, Subscription, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions, point,
+    prelude::*, px, rgb, size,
 };
-use gpui_component::{
-    Root, TitleBar,
-    input::{InputEvent, InputState, NumberInputEvent, StepAction},
-    scroll::Scrollbar,
-    select::{SearchableVec, SelectEvent},
-    v_flex,
-};
+use gpui_component::{Root, TitleBar, input::InputState, scroll::Scrollbar, v_flex};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -18,25 +12,31 @@ use std::{
     time::Instant,
 };
 
+use crate::sidebar_open_for_layout;
 use crate::{
-    Color, ModelCatalogViewModel, OverlayPresentation, ReplacementDraft, Route,
-    SIDEBAR_OVERLAY_BREAKPOINT, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
+    Color, ModelCatalogViewModel, OverlayPresentation, Route, SIDEBAR_OVERLAY_BREAKPOINT,
+    SettingsDraft, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
     WorkspaceViewModel,
 };
-use crate::{sidebar_motion::SidebarMotion, sidebar_open_for_layout};
 
 mod history_action_lane;
 mod history_page;
 mod overlay_view;
 mod overview;
 mod replacements_page;
-mod settings_controller;
+mod settings_actions;
+mod settings_form;
 mod settings_page;
+mod settings_shell;
 mod shell_chrome;
 pub(crate) mod single_line;
+mod workspace_actions;
 
-use settings_controller::{SettingOption, SettingsEditorState};
-
+use settings_form::SettingsFormState;
+use settings_shell::{
+    ReplacementEditorState, RouteUiState, SettingsCommandState, SettingsEditState,
+    ShellLayoutState, WorkspaceActionState, route_index,
+};
 use shell_chrome::{shell_title_bar, sidebar_view};
 
 pub use overlay_view::RecordingOverlay;
@@ -276,404 +276,12 @@ pub fn run_recording_overlay_with_ready(
 pub struct SettingsShell {
     model: ShellViewModel,
     theme: ThemeTokens,
-    settings: agentdictate_core::Settings,
-    settings_baseline: agentdictate_core::Settings,
-    has_api_key: bool,
-    api_key_input: Option<Entity<InputState>>,
-    history_search_input: Option<Entity<InputState>>,
-    api_key_feedback: Option<String>,
-    command_sink: Option<CommandSink>,
-    workspace_action_sink: Option<WorkspaceActionSink>,
-    next_request_id: u64,
-    route_feedbacks: RouteFeedbacks,
-    settings_editor: Option<SettingsEditorState>,
-    applied_model_catalog: ModelCatalogViewModel,
-    settings_dirty: bool,
-    shortcut_capture_active: bool,
-    shortcut_capture_error: Option<String>,
-    _settings_input_subscriptions: Vec<Subscription>,
-    replacement_editor: Option<ReplacementEditorState>,
-    pending_destructive_action: Option<WorkspaceAction>,
-    workspace_action_in_flight: bool,
-    history_action_lane: history_action_lane::HistoryActionLane,
-    overview_recent_expanded: bool,
-    sidebar_open: bool,
-    compact_layout: Option<bool>,
-    sidebar_motion: SidebarMotion,
-    route_scroll_handles: RouteScrollHandles,
-}
-
-#[derive(Clone, Debug, Default)]
-struct RouteScrollHandles {
-    overview: ScrollHandle,
-    history: ScrollHandle,
-    replacements: ScrollHandle,
-    settings: ScrollHandle,
-}
-
-#[derive(Clone, Debug, Default)]
-struct RouteFeedbacks {
-    overview: Option<String>,
-    history: Option<String>,
-    replacements: Option<String>,
-    settings: Option<String>,
-}
-
-impl RouteFeedbacks {
-    fn for_route(&self, route: Route) -> &Option<String> {
-        match route {
-            Route::Overview => &self.overview,
-            Route::History => &self.history,
-            Route::Replacements => &self.replacements,
-            Route::Settings => &self.settings,
-        }
-    }
-
-    fn for_route_mut(&mut self, route: Route) -> &mut Option<String> {
-        match route {
-            Route::Overview => &mut self.overview,
-            Route::History => &mut self.history,
-            Route::Replacements => &mut self.replacements,
-            Route::Settings => &mut self.settings,
-        }
-    }
-}
-
-impl RouteScrollHandles {
-    fn for_route(&self, route: Route) -> ScrollHandle {
-        match route {
-            Route::Overview => self.overview.clone(),
-            Route::History => self.history.clone(),
-            Route::Replacements => self.replacements.clone(),
-            Route::Settings => self.settings.clone(),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct ReplacementEditorState {
-    id: Option<i64>,
-    source: Entity<InputState>,
-    replacement: Entity<InputState>,
-    enabled: bool,
-    case_sensitive: bool,
-    whole_word_only: bool,
-}
-
-impl SettingsShell {
-    pub fn new(model: ShellViewModel) -> Self {
-        let applied_model_catalog = model.workspace.model_catalog.clone();
-        Self {
-            model,
-            theme: ThemeTokens::default(),
-            settings: agentdictate_core::Settings::default(),
-            settings_baseline: agentdictate_core::Settings::default(),
-            has_api_key: false,
-            api_key_input: None,
-            history_search_input: None,
-            api_key_feedback: None,
-            command_sink: None,
-            workspace_action_sink: None,
-            next_request_id: 1,
-            route_feedbacks: RouteFeedbacks::default(),
-            settings_editor: None,
-            applied_model_catalog,
-            settings_dirty: false,
-            shortcut_capture_active: false,
-            shortcut_capture_error: None,
-            _settings_input_subscriptions: Vec::new(),
-            replacement_editor: None,
-            pending_destructive_action: None,
-            workspace_action_in_flight: false,
-            history_action_lane: Default::default(),
-            overview_recent_expanded: false,
-            sidebar_open: true,
-            compact_layout: None,
-            sidebar_motion: SidebarMotion::new(),
-            route_scroll_handles: RouteScrollHandles::default(),
-        }
-    }
-
-    pub fn connected(
-        model: ShellViewModel,
-        settings: agentdictate_core::Settings,
-        has_api_key: bool,
-        command_sink: CommandSink,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::connected_internal(model, settings, has_api_key, command_sink, None, window, cx)
-    }
-
-    pub fn connected_with_workspace_actions(
-        model: ShellViewModel,
-        settings: agentdictate_core::Settings,
-        has_api_key: bool,
-        command_sink: CommandSink,
-        workspace_action_sink: WorkspaceActionSink,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::connected_internal(
-            model,
-            settings,
-            has_api_key,
-            command_sink,
-            Some(workspace_action_sink),
-            window,
-            cx,
-        )
-    }
-
-    fn connected_internal(
-        mut model: ShellViewModel,
-        settings: agentdictate_core::Settings,
-        has_api_key: bool,
-        command_sink: CommandSink,
-        workspace_action_sink: Option<WorkspaceActionSink>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        model.workspace = workspace_with_currency(model.workspace, &settings.currency);
-        let api_key_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("sk-…").masked(true));
-        let initial_history_search = model.workspace.history.search.clone();
-        let history_search_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Search every transcript")
-                .default_value(initial_history_search)
-        });
-        let applied_model_catalog = model.workspace.model_catalog.clone();
-        let settings_editor =
-            SettingsEditorState::new(&settings, &applied_model_catalog, window, cx);
-        let mut settings_input_subscriptions: Vec<Subscription> = settings_editor
-            .inputs()
-            .into_iter()
-            .map(|input| {
-                cx.subscribe(&input, |shell, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        shell.recompute_settings_dirty(cx);
-                        cx.notify();
-                    }
-                })
-            })
-            .collect();
-        settings_input_subscriptions.extend(settings_editor.selects().into_iter().map(|select| {
-            cx.subscribe(
-                &select,
-                |shell, _, event: &SelectEvent<SearchableVec<SettingOption>>, cx| {
-                    if matches!(event, SelectEvent::Confirm(Some(_))) {
-                        shell.recompute_settings_dirty(cx);
-                        shell.clear_route_feedback();
-                        cx.notify();
-                    }
-                },
-            )
-        }));
-        settings_input_subscriptions.push(cx.subscribe_in(
-            &settings_editor.cleanup_model,
-            window,
-            |shell, _, event: &SelectEvent<SearchableVec<SettingOption>>, window, cx| {
-                if matches!(event, SelectEvent::Confirm(Some(_))) {
-                    shell.cleanup_model_selection_changed(window, cx);
-                }
-            },
-        ));
-        for (input, maximum) in [
-            (
-                settings_editor.max_recording_seconds.clone(),
-                u64::from(u32::MAX),
-            ),
-            (settings_editor.audio_ducking_volume_percent.clone(), 100),
-        ] {
-            settings_input_subscriptions.push(cx.subscribe_in(
-                &input,
-                window,
-                move |_, input, event: &NumberInputEvent, window, cx| {
-                    let NumberInputEvent::Step(step) = event;
-                    input.update(cx, |input, cx| {
-                        let current = input.value().parse::<u64>().unwrap_or_default();
-                        let next = match step {
-                            StepAction::Increment => current.saturating_add(1).min(maximum),
-                            StepAction::Decrement => current.saturating_sub(1),
-                        };
-                        input.set_value(next.to_string(), window, cx);
-                    });
-                },
-            ));
-        }
-        settings_input_subscriptions.push(cx.subscribe(
-            &api_key_input,
-            |shell, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    shell.api_key_feedback = None;
-                    cx.notify();
-                }
-            },
-        ));
-        settings_input_subscriptions.push(cx.subscribe(
-            &history_search_input,
-            |shell, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let query = input.read(cx).value().to_string();
-                    shell.submit_history_search(query, cx);
-                }
-            },
-        ));
-        settings_input_subscriptions.push(cx.observe_keystrokes(|shell, event, _window, cx| {
-            if shell.shortcut_capture_active {
-                shell.capture_shortcut(&event.keystroke, cx);
-                cx.stop_propagation();
-            }
-        }));
-        let mut next_request_id = 1;
-        let mut route_feedbacks = RouteFeedbacks::default();
-        if has_api_key && model.active_route == Route::Settings {
-            if let Err(error) = command_sink(
-                agentdictate_core::ClientCommand::refresh_model_catalog(next_request_id),
-            ) {
-                route_feedbacks.settings = Some(format!("Could not refresh models: {error}"));
-            }
-            next_request_id += 1;
-        }
-        Self {
-            model,
-            theme: ThemeTokens::default(),
-            settings: settings.clone(),
-            settings_baseline: settings,
-            has_api_key,
-            api_key_input: Some(api_key_input),
-            history_search_input: Some(history_search_input),
-            api_key_feedback: None,
-            command_sink: Some(command_sink),
-            workspace_action_sink,
-            next_request_id,
-            route_feedbacks,
-            settings_editor: Some(settings_editor),
-            applied_model_catalog,
-            settings_dirty: false,
-            shortcut_capture_active: false,
-            shortcut_capture_error: None,
-            _settings_input_subscriptions: settings_input_subscriptions,
-            replacement_editor: None,
-            pending_destructive_action: None,
-            workspace_action_in_flight: false,
-            history_action_lane: Default::default(),
-            overview_recent_expanded: false,
-            sidebar_open: true,
-            compact_layout: None,
-            sidebar_motion: SidebarMotion::new(),
-            route_scroll_handles: RouteScrollHandles::default(),
-        }
-    }
-
-    pub fn with_workspace_actions(
-        model: ShellViewModel,
-        workspace_action_sink: WorkspaceActionSink,
-    ) -> Self {
-        Self {
-            workspace_action_sink: Some(workspace_action_sink),
-            ..Self::new(model)
-        }
-    }
-
-    pub const fn active_route(&self) -> Route {
-        self.model.active_route
-    }
-
-    pub const fn view_model(&self) -> &ShellViewModel {
-        &self.model
-    }
-
-    pub const fn sidebar_is_open(&self) -> bool {
-        self.sidebar_open
-    }
-
-    fn open_replacement_editor(
-        &mut self,
-        id: Option<i64>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let draft = id
-            .and_then(|id| {
-                self.model
-                    .workspace
-                    .replacements
-                    .rules
-                    .iter()
-                    .find(|rule| rule.id == id)
-            })
-            .map(crate::ReplacementRuleViewModel::draft)
-            .unwrap_or_else(|| ReplacementDraft::new("", ""));
-        let source_value = draft.source.clone();
-        let replacement_value = draft.replacement.clone();
-        let source = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Spoken phrase")
-                .default_value(source_value)
-        });
-        let replacement = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Replacement text")
-                .default_value(replacement_value)
-        });
-        self.replacement_editor = Some(ReplacementEditorState {
-            id,
-            source,
-            replacement,
-            enabled: draft.enabled,
-            case_sensitive: draft.case_sensitive,
-            whole_word_only: draft.whole_word_only,
-        });
-        self.clear_route_feedback();
-    }
-
-    fn save_replacement(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = &self.replacement_editor else {
-            return;
-        };
-        let draft = ReplacementDraft {
-            source: editor.source.read(cx).value().trim().to_owned(),
-            replacement: editor.replacement.read(cx).value().trim().to_owned(),
-            enabled: editor.enabled,
-            case_sensitive: editor.case_sensitive,
-            whole_word_only: editor.whole_word_only,
-        };
-        if !draft.is_valid() {
-            self.set_route_feedback("Both phrases are required");
-            return;
-        }
-        let action = match editor.id {
-            Some(id) => WorkspaceAction::UpdateReplacement { id, draft },
-            None => WorkspaceAction::CreateReplacement { draft },
-        };
-        self.emit_workspace_action(action, cx);
-    }
-
-    fn set_route_feedback(&mut self, message: impl Into<String>) {
-        self.set_route_feedback_for(self.model.active_route, message);
-    }
-
-    fn set_route_feedback_for(&mut self, route: Route, message: impl Into<String>) {
-        *self.route_feedbacks.for_route_mut(route) = Some(message.into());
-    }
-
-    fn clear_route_feedback(&mut self) {
-        self.clear_route_feedback_for(self.model.active_route);
-    }
-
-    fn clear_route_feedback_for(&mut self, route: Route) {
-        *self.route_feedbacks.for_route_mut(route) = None;
-    }
-}
-
-fn workspace_with_currency(
-    mut workspace: WorkspaceViewModel,
-    currency: &str,
-) -> WorkspaceViewModel {
-    workspace.usage = workspace.usage.with_currency(currency);
-    workspace
+    settings: SettingsEditState,
+    settings_commands: SettingsCommandState,
+    workspace_actions: WorkspaceActionState,
+    routes: RouteUiState,
+    layout: ShellLayoutState,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Render for SettingsShell {
@@ -683,38 +291,42 @@ impl Render for SettingsShell {
         let active_route = self.model.active_route;
         let navigation = self.model.navigation;
         let workspace = self.model.workspace.clone();
-        let settings = self.settings.clone();
+        let settings = self.settings.form.as_ref().map_or_else(
+            || SettingsDraft::from(&self.settings.current),
+            |form| form.snapshot(cx),
+        );
         let settings_dirty = self.settings_is_dirty();
-        let has_api_key = self.has_api_key;
-        let api_key_input = self.api_key_input.clone();
-        let history_search_input = self.history_search_input.clone();
-        let api_key_feedback = self.api_key_feedback.clone();
-        let route_feedback = self.route_feedbacks.for_route(active_route).clone();
-        let settings_editor = self.settings_editor.clone();
-        let shortcut_capture_active = self.shortcut_capture_active;
-        let shortcut_capture_error = self.shortcut_capture_error.clone();
-        let replacement_editor = self.replacement_editor.clone();
+        let has_api_key = self.settings_commands.has_api_key;
+        let api_key_input = self.settings_commands.api_key_input.clone();
+        let history_search_input = self.routes.history_search_input.clone();
+        let api_key_feedback = self.settings_commands.api_key_feedback.clone();
+        let route_feedback = self.routes.entry(active_route).feedback.clone();
+        let settings_form = self.settings.form.clone();
+        let shortcut_capture_active = self.settings.shortcut_capture_active;
+        let shortcut_capture_error = self.settings.shortcut_capture_error.clone();
+        let replacement_editor = self.routes.replacement_editor.clone();
         let replacement_editor_open = replacement_editor.is_some();
-        let pending_destructive_action = self.pending_destructive_action.clone();
-        let overview_recent_expanded = self.overview_recent_expanded;
-        let route_scroll_handle = self.route_scroll_handles.for_route(active_route);
+        let pending_destructive_action = self.routes.pending_destructive_action.clone();
+        let overview_recent_expanded = self.routes.overview_recent_expanded;
+        let route_scroll_handle = self.routes.entry(active_route).scroll.clone();
         let route_scroll_selector = format!("route-scroll-{}", active_route.slug());
-        let route_scroll_id = match active_route {
-            Route::Overview => 0_usize,
-            Route::History => 1,
-            Route::Replacements => 2,
-            Route::Settings => 3,
-        };
+        let route_scroll_id = route_index(active_route);
         let compact = f32::from(window.viewport_size().width) < SIDEBAR_OVERLAY_BREAKPOINT as f32;
-        let first_layout = self.compact_layout.is_none();
-        if self.compact_layout != Some(compact) {
-            self.sidebar_open =
-                sidebar_open_for_layout(self.sidebar_open, self.compact_layout, compact);
-            self.compact_layout = Some(compact);
+        let first_layout = self.layout.compact_layout.is_none();
+        if self.layout.compact_layout != Some(compact) {
+            self.layout.sidebar_open = sidebar_open_for_layout(
+                self.layout.sidebar_open,
+                self.layout.compact_layout,
+                compact,
+            );
+            self.layout.compact_layout = Some(compact);
         }
-        let frame =
-            self.sidebar_motion
-                .update(self.sidebar_open, compact, first_layout, Instant::now());
+        let frame = self.layout.sidebar_motion.update(
+            self.layout.sidebar_open,
+            compact,
+            first_layout,
+            Instant::now(),
+        );
         if frame.active {
             window.request_animation_frame();
         }
@@ -755,7 +367,7 @@ impl Render for SettingsShell {
                     .flex_1()
                     .child(shell_title_bar(
                         active_route,
-                        self.sidebar_open,
+                        self.layout.sidebar_open,
                         window,
                         theme,
                         cx,
@@ -785,7 +397,7 @@ impl Render for SettingsShell {
                                             history_search_input,
                                             api_key_feedback,
                                             feedback: route_feedback.clone(),
-                                            settings_editor,
+                                            settings_form,
                                             shortcut_capture_active,
                                             shortcut_capture_error,
                                             replacement_editor,
@@ -843,7 +455,7 @@ impl Render for SettingsShell {
                     ),
             )
             .when(
-                compact && (self.sidebar_open || frame.panel > 0.0 || frame.scrim > 0.0),
+                compact && (self.layout.sidebar_open || frame.panel > 0.0 || frame.scrim > 0.0),
                 |root| {
                     root.child(
                         gpui::div()
@@ -857,9 +469,9 @@ impl Render for SettingsShell {
                             .cursor_pointer()
                             .occlude()
                             .bg(gpui::hsla(0.0, 0.0, 0.0, 0.45 * frame.scrim))
-                            .when(self.sidebar_open, |dismiss| {
+                            .when(self.layout.sidebar_open, |dismiss| {
                                 dismiss.on_click(cx.listener(|shell, _, _, cx| {
-                                    shell.sidebar_open = false;
+                                    shell.layout.sidebar_open = false;
                                     cx.notify();
                                 }))
                             }),
@@ -884,14 +496,14 @@ impl Render for SettingsShell {
 struct RouteSurfaceModel {
     active_route: Route,
     workspace: WorkspaceViewModel,
-    settings: agentdictate_core::Settings,
+    settings: SettingsDraft,
     settings_dirty: bool,
     has_api_key: bool,
     api_key_input: Option<Entity<InputState>>,
     history_search_input: Option<Entity<InputState>>,
     api_key_feedback: Option<String>,
     feedback: Option<String>,
-    settings_editor: Option<SettingsEditorState>,
+    settings_form: Option<SettingsFormState>,
     shortcut_capture_active: bool,
     shortcut_capture_error: Option<String>,
     replacement_editor: Option<ReplacementEditorState>,
@@ -900,14 +512,14 @@ struct RouteSurfaceModel {
 }
 
 struct SettingsSurfaceModel {
-    settings: agentdictate_core::Settings,
+    settings: SettingsDraft,
     model_catalog: ModelCatalogViewModel,
     settings_dirty: bool,
     has_api_key: bool,
     api_key_input: Option<Entity<InputState>>,
     api_key_feedback: Option<String>,
     feedback: Option<String>,
-    settings_editor: Option<SettingsEditorState>,
+    settings_form: Option<SettingsFormState>,
     shortcut_capture_active: bool,
     shortcut_capture_error: Option<String>,
 }
@@ -942,7 +554,7 @@ fn route_surface(
                 api_key_input: model.api_key_input,
                 api_key_feedback: model.api_key_feedback,
                 feedback: model.feedback,
-                settings_editor: model.settings_editor,
+                settings_form: model.settings_form,
                 shortcut_capture_active: model.shortcut_capture_active,
                 shortcut_capture_error: model.shortcut_capture_error,
             },

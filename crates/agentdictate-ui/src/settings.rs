@@ -137,7 +137,7 @@ macro_rules! settings_fields {
     };
 }
 
-#[allow(unused_imports)]
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub(crate) use settings_fields;
 
 macro_rules! from_settings_field {

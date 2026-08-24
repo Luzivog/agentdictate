@@ -338,7 +338,7 @@ fn editor_surface(
                                 .small()
                                 .label("Cancel")
                                 .on_click(cx.listener(|shell, _, _, cx| {
-                                    shell.replacement_editor = None;
+                                    shell.routes.replacement_editor = None;
                                     shell.clear_route_feedback();
                                     cx.notify();
                                 })),
@@ -378,7 +378,7 @@ fn editor_toggle(
         .selected(selected)
         .label(label)
         .on_click(cx.listener(move |shell, _, _, cx| {
-            if let Some(editor) = &mut shell.replacement_editor {
+            if let Some(editor) = &mut shell.routes.replacement_editor {
                 toggle(editor);
             }
             cx.notify();
