@@ -12,6 +12,8 @@ mod external_dictation;
 pub use external_dictation::{
     ExternalDictationImportOutcome, ExternalDictationReceipt, ExternalDictationSource,
 };
+mod fs;
+pub use fs::write_atomic;
 mod history;
 pub use history::{HistoryCursor, HistoryEntry, HistoryMatch, HistoryPage, HistoryQuery};
 mod history_search;
