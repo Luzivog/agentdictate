@@ -13,11 +13,24 @@ use crate::action::action_button;
 use crate::{ModelCatalogViewModel, SettingsDraft, ThemeTokens};
 
 use super::{
-    SettingsShell, SettingsSurfaceModel, gpui_color,
+    SettingsShell, gpui_color,
     settings_form::{
         SettingSelectState, SettingsFormState, selected_setting, selected_transcription_provider,
     },
 };
+
+pub(super) struct SettingsPageModel {
+    pub(super) draft: SettingsDraft,
+    pub(super) model_catalog: ModelCatalogViewModel,
+    pub(super) settings_dirty: bool,
+    pub(super) has_api_key: bool,
+    pub(super) api_key_input: Option<Entity<InputState>>,
+    pub(super) api_key_feedback: Option<String>,
+    pub(super) feedback: Option<String>,
+    pub(super) settings_form: Option<SettingsFormState>,
+    pub(super) shortcut_capture_active: bool,
+    pub(super) shortcut_capture_error: Option<String>,
+}
 
 /// Keeps short controls compact while allowing long-form prompts to use the
 /// page width. This is the single sizing policy for Settings controls.
@@ -55,12 +68,12 @@ fn prompt_control_slot(selector: &'static str) -> gpui::Div {
 }
 
 pub(super) fn surface(
-    model: SettingsSurfaceModel,
+    model: SettingsPageModel,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
-    let SettingsSurfaceModel {
-        settings,
+    let SettingsPageModel {
+        draft: settings,
         model_catalog,
         settings_dirty,
         has_api_key,

@@ -227,7 +227,7 @@ macro_rules! define_settings_form {
                 }
             }
 
-            pub(super) fn snapshot(&self, cx: &Context<SettingsShell>) -> SettingsDraft {
+            pub(super) fn snapshot(&self, cx: &gpui::App) -> SettingsDraft {
                 let mut draft = self.draft.clone();
                 $(
                     draft.$select_field = read_select!(
@@ -528,7 +528,7 @@ fn replace_select_options(
 pub(super) fn selected_setting(
     state: &Entity<SettingSelectState>,
     fallback: &str,
-    cx: &Context<SettingsShell>,
+    cx: &gpui::App,
 ) -> String {
     state
         .read(cx)
@@ -540,7 +540,7 @@ pub(super) fn selected_setting(
 pub(super) fn selected_transcription_provider(
     state: &Entity<SettingSelectState>,
     fallback: TranscriptionProvider,
-    cx: &Context<SettingsShell>,
+    cx: &gpui::App,
 ) -> TranscriptionProvider {
     selected_setting(state, fallback.as_str(), cx)
         .parse()

@@ -6,7 +6,8 @@ use crate::action::action_button;
 use crate::{ReplacementRuleViewModel, ReplacementsViewModel, ThemeTokens, WorkspaceAction};
 
 use super::{
-    ReplacementEditorState, SettingsShell, enabled_label, gpui_color, single_line::single_line_clip,
+    SettingsShell, enabled_label, gpui_color, settings_shell::ReplacementEditorState,
+    single_line::single_line_clip,
 };
 
 const REPLACEMENT_ROW_HEIGHT: f32 = 50.0;

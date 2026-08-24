@@ -135,6 +135,15 @@ impl SettingsShell {
         )
     }
 
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn settings_draft_for_test(&self, cx: &gpui::App) -> SettingsDraft {
+        self.settings.form.as_ref().map_or_else(
+            || SettingsDraft::from(&self.settings.current),
+            |form| form.snapshot(cx),
+        )
+    }
+
     pub(super) fn request_model_catalog_refresh(&mut self) {
         if !self.settings_commands.has_api_key {
             return;
@@ -191,10 +200,6 @@ impl SettingsShell {
         self.settings.current = settings.clone();
         self.settings.baseline = settings;
         self.settings.dirty = false;
-    }
-
-    pub(super) const fn settings_is_dirty(&self) -> bool {
-        self.settings.dirty
     }
 
     pub(super) fn recompute_settings_dirty(&mut self, cx: &Context<Self>) {

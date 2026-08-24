@@ -10,6 +10,8 @@ mod overlay_rendered;
 mod rendered_interactions;
 #[path = "desktop/replacements_layout_contract.rs"]
 mod replacements_layout_contract;
+#[path = "desktop/settings_discard_regression.rs"]
+mod settings_discard_regression;
 #[path = "desktop/settings_layout_contract.rs"]
 mod settings_layout_contract;
 #[path = "desktop/support.rs"]
