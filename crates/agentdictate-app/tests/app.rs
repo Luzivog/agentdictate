@@ -16,6 +16,8 @@ mod overlay_lifecycle;
 mod paths;
 #[path = "app/startup.rs"]
 mod startup;
+#[path = "app/support.rs"]
+mod support;
 #[path = "app/transcription.rs"]
 mod transcription;
 #[path = "app/tray.rs"]
