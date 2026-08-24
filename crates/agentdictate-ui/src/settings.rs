@@ -1,131 +1,279 @@
+use std::fmt::Display;
+
 use agentdictate_core::{Settings, TranscriptionProvider};
 use thiserror::Error;
 
-/// Values edited in the settings form before validation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SettingsDraft {
-    pub transcription_provider: TranscriptionProvider,
-    pub transcription_model: String,
-    pub custom_transcription_model: String,
-    pub language: String,
-    pub transcription_prompt: String,
-    pub cleanup_enabled: bool,
-    pub cleanup_model: String,
-    pub custom_cleanup_model: String,
-    pub cleanup_reasoning_effort: String,
-    pub cleanup_style: String,
-    pub cleanup_prompt: String,
-    pub hotkey: String,
-    pub recording_mode: String,
-    pub max_recording_seconds: String,
-    pub audio_ducking_enabled: bool,
-    pub audio_ducking_volume_percent: String,
-    pub paste_shortcut: String,
-    pub start_on_login: bool,
-    pub save_history: bool,
-    pub preserve_temp_audio: bool,
+macro_rules! settings_fields {
+    ($callback:ident) => {
+        $callback! {
+            select {
+                transcription_provider: TranscriptionProvider {
+                    from: copied,
+                    apply: value(copied),
+                    options: plain(transcription_provider_options),
+                    searchable: false,
+                    read: provider,
+                },
+                transcription_model: String {
+                    from: cloned,
+                    apply: validate_draft(validated_transcription_model),
+                    options: catalog(transcription_model_options),
+                    searchable: true,
+                    read: string,
+                },
+                language: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    options: plain(language_options),
+                    searchable: true,
+                    read: string,
+                },
+                cleanup_model: String {
+                    from: cloned,
+                    apply: validate_field(validated_cleanup_model),
+                    options: catalog(cleanup_model_options),
+                    searchable: true,
+                    read: string,
+                },
+                cleanup_style: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    options: plain(cleanup_style_options),
+                    searchable: false,
+                    read: string,
+                },
+                recording_mode: String {
+                    from: cloned,
+                    apply: validate_field(validated_recording_mode),
+                    options: plain(recording_mode_options),
+                    searchable: false,
+                    read: string,
+                },
+                paste_shortcut: String {
+                    from: cloned,
+                    apply: validate_field(validated_paste_shortcut),
+                    options: plain(paste_shortcut_options),
+                    searchable: false,
+                    read: string,
+                },
+            }
+            dependent_select {
+                cleanup_reasoning_effort: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    depends_on: cleanup_model,
+                    options: reasoning_effort_options,
+                },
+            }
+            input {
+                custom_transcription_model: String {
+                    from: cloned,
+                    apply: validate_draft(validated_custom_transcription_model),
+                    placeholder: "Custom OpenAI model",
+                },
+                custom_cleanup_model: String {
+                    from: cloned,
+                    apply: validate_draft(validated_custom_cleanup_model),
+                    placeholder: "Custom cleanup model",
+                },
+            }
+            text_area {
+                transcription_prompt: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    placeholder: "Names and technical context",
+                    rows: 2..=5,
+                },
+                cleanup_prompt: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    placeholder: "Cleanup instructions",
+                    rows: 3..=6,
+                },
+            }
+            number {
+                max_recording_seconds: String {
+                    from: stringified,
+                    apply: validate_field(parsed_max_recording_seconds),
+                    placeholder: "300",
+                    maximum: u64::from(u32::MAX),
+                },
+                audio_ducking_volume_percent: String {
+                    from: stringified,
+                    apply: validate_field(validated_ducking_volume),
+                    placeholder: "15",
+                    maximum: 100,
+                },
+            }
+            draft_only {
+                cleanup_enabled: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
+                audio_ducking_enabled: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
+                start_on_login: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
+                save_history: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
+                preserve_temp_audio: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
+            }
+            shortcut {
+                hotkey: String {
+                    from: cloned,
+                    apply: validate_field(validated_hotkey),
+                },
+            }
+        }
+    };
 }
 
-impl SettingsDraft {
-    #[must_use]
-    pub fn is_dirty_against(&self, persisted: &Settings) -> bool {
-        self != &Self::from(persisted)
-    }
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub(crate) use settings_fields;
 
-    pub fn discard_changes(&mut self, persisted: &Settings) {
-        *self = Self::from(persisted);
-    }
-
-    pub fn apply_to(&self, current: &Settings) -> Result<Settings, SettingsDraftError> {
-        let transcription_model = if self.transcription_provider == TranscriptionProvider::OpenAiApi
-        {
-            required("Transcription model", &self.transcription_model)?
-        } else {
-            self.transcription_model.trim().to_owned()
-        };
-        let cleanup_model = required("Cleanup model", &self.cleanup_model)?;
-        let custom_transcription_model = if self.transcription_provider
-            == TranscriptionProvider::OpenAiApi
-            && transcription_model == "Custom"
-        {
-            required(
-                "Custom transcription model",
-                &self.custom_transcription_model,
-            )?
-        } else {
-            self.custom_transcription_model.trim().to_owned()
-        };
-        let custom_cleanup_model = if cleanup_model == "Custom" {
-            required("Custom cleanup model", &self.custom_cleanup_model)?
-        } else {
-            self.custom_cleanup_model.trim().to_owned()
-        };
-        let hotkey = required("Global shortcut", &self.hotkey)?;
-        let paste_shortcut = required("Paste shortcut", &self.paste_shortcut)?;
-        let recording_mode = self.recording_mode.trim().to_ascii_lowercase();
-        if !matches!(recording_mode.as_str(), "toggle" | "hold") {
-            return Err(SettingsDraftError::InvalidRecordingMode);
-        }
-        let max_recording_seconds =
-            parse_number::<u32>("Maximum recording seconds", &self.max_recording_seconds)?;
-        let audio_ducking_volume_percent =
-            parse_number::<u8>("Ducked volume", &self.audio_ducking_volume_percent)?;
-        if audio_ducking_volume_percent > 100 {
-            return Err(SettingsDraftError::DuckedVolumeOutOfRange);
-        }
-
-        Ok(Settings {
-            transcription_provider: self.transcription_provider,
-            transcription_model,
-            custom_transcription_model,
-            language: self.language.trim().to_owned(),
-            transcription_prompt: self.transcription_prompt.trim().to_owned(),
-            cleanup_enabled: self.cleanup_enabled,
-            cleanup_model,
-            custom_cleanup_model,
-            cleanup_reasoning_effort: self.cleanup_reasoning_effort.trim().to_owned(),
-            cleanup_style: self.cleanup_style.trim().to_owned(),
-            cleanup_prompt: self.cleanup_prompt.trim().to_owned(),
-            hotkey,
-            recording_mode,
-            max_recording_seconds,
-            audio_ducking_enabled: self.audio_ducking_enabled,
-            audio_ducking_volume_percent,
-            paste_shortcut,
-            start_on_login: self.start_on_login,
-            save_history: self.save_history,
-            preserve_temp_audio: self.preserve_temp_audio,
-            ..current.clone()
-        })
-    }
+macro_rules! from_settings_field {
+    ($settings:ident, $field:ident, $converter:ident) => {
+        $converter(&$settings.$field)
+    };
 }
 
-impl From<&Settings> for SettingsDraft {
-    fn from(settings: &Settings) -> Self {
-        Self {
-            transcription_provider: settings.transcription_provider,
-            transcription_model: settings.transcription_model.clone(),
-            custom_transcription_model: settings.custom_transcription_model.clone(),
-            language: settings.language.clone(),
-            transcription_prompt: settings.transcription_prompt.clone(),
-            cleanup_enabled: settings.cleanup_enabled,
-            cleanup_model: settings.cleanup_model.clone(),
-            custom_cleanup_model: settings.custom_cleanup_model.clone(),
-            cleanup_reasoning_effort: settings.cleanup_reasoning_effort.clone(),
-            cleanup_style: settings.cleanup_style.clone(),
-            cleanup_prompt: settings.cleanup_prompt.clone(),
-            hotkey: settings.hotkey.clone(),
-            recording_mode: settings.recording_mode.clone(),
-            max_recording_seconds: settings.max_recording_seconds.to_string(),
-            audio_ducking_enabled: settings.audio_ducking_enabled,
-            audio_ducking_volume_percent: settings.audio_ducking_volume_percent.to_string(),
-            paste_shortcut: settings.paste_shortcut.clone(),
-            start_on_login: settings.start_on_login,
-            save_history: settings.save_history,
-            preserve_temp_audio: settings.preserve_temp_audio,
-        }
-    }
+macro_rules! apply_settings_field {
+    ($draft:ident, $field:ident, value($converter:ident)) => {
+        $converter(&$draft.$field)
+    };
+    ($draft:ident, $field:ident, validate_field($validator:ident)) => {
+        $validator(&$draft.$field)?
+    };
+    ($draft:ident, $field:ident, validate_draft($validator:ident)) => {
+        $validator($draft)?
+    };
 }
+
+macro_rules! define_settings_draft {
+    (
+        select {
+            $(
+                $select_field:ident: $select_type:ty {
+                    from: $select_from:ident,
+                    apply: $select_apply_kind:ident($select_apply:ident),
+                    $($select_control:tt)*
+                },
+            )*
+        }
+        dependent_select {
+            $(
+                $dependent_field:ident: $dependent_type:ty {
+                    from: $dependent_from:ident,
+                    apply: $dependent_apply_kind:ident($dependent_apply:ident),
+                    $($dependent_control:tt)*
+                },
+            )*
+        }
+        input {
+            $(
+                $input_field:ident: $input_type:ty {
+                    from: $input_from:ident,
+                    apply: $input_apply_kind:ident($input_apply:ident),
+                    $($input_control:tt)*
+                },
+            )*
+        }
+        text_area {
+            $(
+                $text_area_field:ident: $text_area_type:ty {
+                    from: $text_area_from:ident,
+                    apply: $text_area_apply_kind:ident($text_area_apply:ident),
+                    $($text_area_control:tt)*
+                },
+            )*
+        }
+        number {
+            $(
+                $number_field:ident: $number_type:ty {
+                    from: $number_from:ident,
+                    apply: $number_apply_kind:ident($number_apply:ident),
+                    $($number_control:tt)*
+                },
+            )*
+        }
+        draft_only {
+            $(
+                $draft_only_field:ident: $draft_only_type:ty {
+                    from: $draft_only_from:ident,
+                    apply: $draft_only_apply_kind:ident($draft_only_apply:ident),
+                },
+            )*
+        }
+        shortcut {
+            $(
+                $shortcut_field:ident: $shortcut_type:ty {
+                    from: $shortcut_from:ident,
+                    apply: $shortcut_apply_kind:ident($shortcut_apply:ident),
+                },
+            )*
+        }
+    ) => {
+        /// Values edited in the settings form before validation.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub struct SettingsDraft {
+            $(pub $select_field: $select_type,)*
+            $(pub $dependent_field: $dependent_type,)*
+            $(pub $input_field: $input_type,)*
+            $(pub $text_area_field: $text_area_type,)*
+            $(pub $number_field: $number_type,)*
+            $(pub $draft_only_field: $draft_only_type,)*
+            $(pub $shortcut_field: $shortcut_type,)*
+        }
+
+        impl SettingsDraft {
+            #[must_use]
+            pub fn is_dirty_against(&self, persisted: &Settings) -> bool {
+                self != &Self::from(persisted)
+            }
+
+            pub fn discard_changes(&mut self, persisted: &Settings) {
+                *self = Self::from(persisted);
+            }
+
+            pub fn apply_to(&self, current: &Settings) -> Result<Settings, SettingsDraftError> {
+                let mut updated = current.clone();
+                $(updated.$select_field = apply_settings_field!(self, $select_field, $select_apply_kind($select_apply));)*
+                $(updated.$dependent_field = apply_settings_field!(self, $dependent_field, $dependent_apply_kind($dependent_apply));)*
+                $(updated.$input_field = apply_settings_field!(self, $input_field, $input_apply_kind($input_apply));)*
+                $(updated.$text_area_field = apply_settings_field!(self, $text_area_field, $text_area_apply_kind($text_area_apply));)*
+                $(updated.$number_field = apply_settings_field!(self, $number_field, $number_apply_kind($number_apply));)*
+                $(updated.$draft_only_field = apply_settings_field!(self, $draft_only_field, $draft_only_apply_kind($draft_only_apply));)*
+                $(updated.$shortcut_field = apply_settings_field!(self, $shortcut_field, $shortcut_apply_kind($shortcut_apply));)*
+                Ok(updated)
+            }
+        }
+
+        impl From<&Settings> for SettingsDraft {
+            fn from(settings: &Settings) -> Self {
+                Self {
+                    $($select_field: from_settings_field!(settings, $select_field, $select_from),)*
+                    $($dependent_field: from_settings_field!(settings, $dependent_field, $dependent_from),)*
+                    $($input_field: from_settings_field!(settings, $input_field, $input_from),)*
+                    $($text_area_field: from_settings_field!(settings, $text_area_field, $text_area_from),)*
+                    $($number_field: from_settings_field!(settings, $number_field, $number_from),)*
+                    $($draft_only_field: from_settings_field!(settings, $draft_only_field, $draft_only_from),)*
+                    $($shortcut_field: from_settings_field!(settings, $shortcut_field, $shortcut_from),)*
+                }
+            }
+        }
+    };
+}
+
+settings_fields!(define_settings_draft);
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SettingsDraftError {
@@ -137,6 +285,87 @@ pub enum SettingsDraftError {
     InvalidNumber { field: &'static str },
     #[error("Ducked volume must be between 0 and 100")]
     DuckedVolumeOutOfRange,
+}
+
+fn copied<T: Copy>(value: &T) -> T {
+    *value
+}
+
+fn cloned<T: Clone>(value: &T) -> T {
+    value.clone()
+}
+
+fn stringified(value: &impl Display) -> String {
+    value.to_string()
+}
+
+fn trimmed(value: &str) -> String {
+    value.trim().to_owned()
+}
+
+fn validated_transcription_model(draft: &SettingsDraft) -> Result<String, SettingsDraftError> {
+    if draft.transcription_provider == TranscriptionProvider::OpenAiApi {
+        required("Transcription model", &draft.transcription_model)
+    } else {
+        Ok(trimmed(&draft.transcription_model))
+    }
+}
+
+fn validated_custom_transcription_model(
+    draft: &SettingsDraft,
+) -> Result<String, SettingsDraftError> {
+    if draft.transcription_provider == TranscriptionProvider::OpenAiApi
+        && draft.transcription_model.trim() == "Custom"
+    {
+        required(
+            "Custom transcription model",
+            &draft.custom_transcription_model,
+        )
+    } else {
+        Ok(trimmed(&draft.custom_transcription_model))
+    }
+}
+
+fn validated_cleanup_model(value: &str) -> Result<String, SettingsDraftError> {
+    required("Cleanup model", value)
+}
+
+fn validated_custom_cleanup_model(draft: &SettingsDraft) -> Result<String, SettingsDraftError> {
+    if draft.cleanup_model.trim() == "Custom" {
+        required("Custom cleanup model", &draft.custom_cleanup_model)
+    } else {
+        Ok(trimmed(&draft.custom_cleanup_model))
+    }
+}
+
+fn validated_hotkey(value: &str) -> Result<String, SettingsDraftError> {
+    required("Global shortcut", value)
+}
+
+fn validated_recording_mode(value: &str) -> Result<String, SettingsDraftError> {
+    let recording_mode = value.trim().to_ascii_lowercase();
+    if matches!(recording_mode.as_str(), "toggle" | "hold") {
+        Ok(recording_mode)
+    } else {
+        Err(SettingsDraftError::InvalidRecordingMode)
+    }
+}
+
+fn parsed_max_recording_seconds(value: &str) -> Result<u32, SettingsDraftError> {
+    parse_number("Maximum recording seconds", value)
+}
+
+fn validated_ducking_volume(value: &str) -> Result<u8, SettingsDraftError> {
+    let volume = parse_number("Ducked volume", value)?;
+    if volume > 100 {
+        Err(SettingsDraftError::DuckedVolumeOutOfRange)
+    } else {
+        Ok(volume)
+    }
+}
+
+fn validated_paste_shortcut(value: &str) -> Result<String, SettingsDraftError> {
+    required("Paste shortcut", value)
 }
 
 fn required(field: &'static str, value: &str) -> Result<String, SettingsDraftError> {

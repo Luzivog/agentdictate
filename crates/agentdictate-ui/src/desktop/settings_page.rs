@@ -13,12 +13,24 @@ use crate::action::action_button;
 use crate::{ModelCatalogViewModel, SettingsDraft, ThemeTokens};
 
 use super::{
-    SettingsShell, SettingsSurfaceModel, gpui_color,
-    settings_controller::{
-        SettingOption, SettingSelectState, SettingsEditorState, selected_setting,
-        selected_transcription_provider,
+    SettingsShell, gpui_color,
+    settings_form::{
+        SettingSelectState, SettingsFormState, selected_setting, selected_transcription_provider,
     },
 };
+
+pub(super) struct SettingsPageModel {
+    pub(super) draft: SettingsDraft,
+    pub(super) model_catalog: ModelCatalogViewModel,
+    pub(super) settings_dirty: bool,
+    pub(super) has_api_key: bool,
+    pub(super) api_key_input: Option<Entity<InputState>>,
+    pub(super) api_key_feedback: Option<String>,
+    pub(super) feedback: Option<String>,
+    pub(super) settings_form: Option<SettingsFormState>,
+    pub(super) shortcut_capture_active: bool,
+    pub(super) shortcut_capture_error: Option<String>,
+}
 
 /// Keeps short controls compact while allowing long-form prompts to use the
 /// page width. This is the single sizing policy for Settings controls.
@@ -56,24 +68,24 @@ fn prompt_control_slot(selector: &'static str) -> gpui::Div {
 }
 
 pub(super) fn surface(
-    model: SettingsSurfaceModel,
+    model: SettingsPageModel,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
-    let SettingsSurfaceModel {
-        settings,
+    let SettingsPageModel {
+        draft: settings,
         model_catalog,
         settings_dirty,
         has_api_key,
         api_key_input,
         api_key_feedback,
         feedback,
-        settings_editor,
+        settings_form,
         shortcut_capture_active,
         shortcut_capture_error,
     } = model;
     let transcription_provider =
-        settings_editor
+        settings_form
             .as_ref()
             .map_or(settings.transcription_provider, |editor| {
                 selected_transcription_provider(
@@ -124,19 +136,19 @@ pub(super) fn surface(
             .child(dictation_section(
                 &settings,
                 &model_catalog,
-                settings_editor.as_ref(),
+                settings_form.as_ref(),
                 theme,
                 cx,
             ))
             .child(cleanup_section(
                 &settings,
-                settings_editor.as_ref(),
+                settings_form.as_ref(),
                 theme,
                 cx,
             ))
             .child(recording_audio_section(
                 &settings,
-                settings_editor.as_ref(),
+                settings_form.as_ref(),
                 shortcut_capture_active,
                 shortcut_capture_error,
                 theme,
@@ -144,7 +156,7 @@ pub(super) fn surface(
             ))
             .child(delivery_storage_section(
                 &settings,
-                settings_editor.as_ref(),
+                settings_form.as_ref(),
                 theme,
                 cx,
             ))
@@ -300,9 +312,9 @@ fn account_section(
 }
 
 fn dictation_section(
-    settings: &agentdictate_core::Settings,
+    settings: &SettingsDraft,
     model_catalog: &ModelCatalogViewModel,
-    editor: Option<&SettingsEditorState>,
+    editor: Option<&SettingsFormState>,
     theme: ThemeTokens,
     cx: &Context<SettingsShell>,
 ) -> gpui::Div {
@@ -350,7 +362,7 @@ fn dictation_section(
             .child(select_row(
                 "Speech model",
                 "OpenAI transcription model",
-                settings.active_transcription_model(),
+                active_transcription_model(settings),
                 "settings-input-transcription-model",
                 editor.map(|editor| editor.transcription_model.clone()),
                 false,
@@ -414,6 +426,22 @@ const fn transcription_provider_label(provider: TranscriptionProvider) -> &'stat
     }
 }
 
+fn active_transcription_model(settings: &SettingsDraft) -> &str {
+    if settings.transcription_model == "Custom" {
+        settings.custom_transcription_model.trim()
+    } else {
+        &settings.transcription_model
+    }
+}
+
+fn active_cleanup_model(settings: &SettingsDraft) -> &str {
+    if settings.cleanup_model == "Custom" {
+        settings.custom_cleanup_model.trim()
+    } else {
+        &settings.cleanup_model
+    }
+}
+
 fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeTokens) -> gpui::Div {
     let status = &model_catalog.status;
     let selector = status.selector();
@@ -450,8 +478,8 @@ fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeToken
 }
 
 fn cleanup_section(
-    settings: &agentdictate_core::Settings,
-    editor: Option<&SettingsEditorState>,
+    settings: &SettingsDraft,
+    editor: Option<&SettingsFormState>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -475,7 +503,7 @@ fn cleanup_section(
     .child(select_row(
         "Cleanup model",
         "Model used to polish the transcript",
-        settings.active_cleanup_model(),
+        active_cleanup_model(settings),
         "settings-input-cleanup-model",
         editor.map(|editor| editor.cleanup_model.clone()),
         disabled,
@@ -527,8 +555,8 @@ fn cleanup_section(
 }
 
 fn recording_audio_section(
-    settings: &agentdictate_core::Settings,
-    editor: Option<&SettingsEditorState>,
+    settings: &SettingsDraft,
+    editor: Option<&SettingsFormState>,
     shortcut_capture_active: bool,
     shortcut_capture_error: Option<String>,
     theme: ThemeTokens,
@@ -589,8 +617,8 @@ fn recording_audio_section(
 }
 
 fn delivery_storage_section(
-    settings: &agentdictate_core::Settings,
-    editor: Option<&SettingsEditorState>,
+    settings: &SettingsDraft,
+    editor: Option<&SettingsFormState>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -1025,49 +1053,4 @@ fn stacked_setting_label(
 
 const fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "On" } else { "Off" }
-}
-
-fn setting_options(options: &[(&str, &str)]) -> Vec<SettingOption> {
-    options
-        .iter()
-        .map(|(label, value)| SettingOption::new((*label).to_owned(), (*value).to_owned()))
-        .collect()
-}
-
-pub(super) fn language_options() -> Vec<SettingOption> {
-    setting_options(&[
-        ("Auto-detect", ""),
-        ("English (en)", "en"),
-        ("French (fr)", "fr"),
-        ("Spanish (es)", "es"),
-        ("German (de)", "de"),
-        ("Portuguese (pt)", "pt"),
-        ("Italian (it)", "it"),
-        ("Dutch (nl)", "nl"),
-        ("Polish (pl)", "pl"),
-        ("Arabic (ar)", "ar"),
-        ("Chinese (zh)", "zh"),
-        ("Japanese (ja)", "ja"),
-        ("Korean (ko)", "ko"),
-        ("Hindi (hi)", "hi"),
-    ])
-}
-
-pub(super) fn cleanup_style_options() -> Vec<SettingOption> {
-    setting_options(&[
-        ("Light cleanup", "Light cleanup"),
-        ("Structured coding prompt", "Structured coding prompt"),
-    ])
-}
-
-pub(super) fn recording_mode_options() -> Vec<SettingOption> {
-    setting_options(&[("Toggle", "toggle"), ("Hold", "hold")])
-}
-
-pub(super) fn paste_shortcut_options() -> Vec<SettingOption> {
-    setting_options(&[
-        ("Automatic", "Automatic"),
-        ("Standard (Ctrl+V)", "Standard (Ctrl+V)"),
-        ("Terminal (Ctrl+Shift+V)", "Terminal (Ctrl+Shift+V)"),
-    ])
 }

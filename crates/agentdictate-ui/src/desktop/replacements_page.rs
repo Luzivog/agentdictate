@@ -6,7 +6,8 @@ use crate::action::action_button;
 use crate::{ReplacementRuleViewModel, ReplacementsViewModel, ThemeTokens, WorkspaceAction};
 
 use super::{
-    ReplacementEditorState, SettingsShell, enabled_label, gpui_color, single_line::single_line_clip,
+    SettingsShell, enabled_label, gpui_color, settings_shell::ReplacementEditorState,
+    single_line::single_line_clip,
 };
 
 const REPLACEMENT_ROW_HEIGHT: f32 = 50.0;
@@ -338,7 +339,7 @@ fn editor_surface(
                                 .small()
                                 .label("Cancel")
                                 .on_click(cx.listener(|shell, _, _, cx| {
-                                    shell.replacement_editor = None;
+                                    shell.routes.replacement_editor = None;
                                     shell.clear_route_feedback();
                                     cx.notify();
                                 })),
@@ -378,7 +379,7 @@ fn editor_toggle(
         .selected(selected)
         .label(label)
         .on_click(cx.listener(move |shell, _, _, cx| {
-            if let Some(editor) = &mut shell.replacement_editor {
+            if let Some(editor) = &mut shell.routes.replacement_editor {
                 toggle(editor);
             }
             cx.notify();

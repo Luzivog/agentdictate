@@ -74,18 +74,7 @@ pub(super) fn sidebar_view(
                 )
                 .child(item.label)
                 .on_click(cx.listener(move |shell, _, _, cx| {
-                    let previous_route = shell.model.active_route;
-                    shell.model.select_route(route);
-                    if route == Route::Settings && previous_route != Route::Settings {
-                        shell.request_model_catalog_refresh();
-                    }
-                    shell.pending_destructive_action = None;
-                    shell.clear_route_feedback_for(previous_route);
-                    shell.api_key_feedback = None;
-                    if overlay {
-                        shell.sidebar_open = false;
-                    }
-                    cx.notify();
+                    shell.select_route(route, overlay, cx);
                 }))
         }))
 }
@@ -122,7 +111,7 @@ pub(super) fn shell_title_bar(
                     })
                     .child(panel_icon(sidebar_open, theme))
                     .on_click(cx.listener(|shell, _, _, cx| {
-                        shell.sidebar_open = !shell.sidebar_open;
+                        shell.layout.sidebar_open = !shell.layout.sidebar_open;
                         cx.notify();
                     })),
             ),
