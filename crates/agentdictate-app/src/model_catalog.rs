@@ -110,9 +110,7 @@ struct ModelCatalogState {
 #[derive(Clone)]
 pub(crate) struct ModelCatalog {
     state: Arc<RwLock<ModelCatalogState>>,
-    #[allow(dead_code)]
     source: Arc<dyn ModelCatalogSource>,
-    #[allow(dead_code)]
     cache_file: PathBuf,
 }
 
