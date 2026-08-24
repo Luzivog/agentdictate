@@ -49,15 +49,6 @@ pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 pub type CommandSink =
     Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), String> + Send + Sync>;
 
-pub fn run_settings_shell(
-    model: ShellViewModel,
-    settings: agentdictate_core::Settings,
-    has_api_key: bool,
-    command_sink: CommandSink,
-) {
-    run_settings_shell_internal(model, settings, has_api_key, command_sink, None, None);
-}
-
 /// Starts the settings window with connected workspace actions.
 pub fn run_settings_shell_with_workspace_actions(
     model: ShellViewModel,
@@ -173,16 +164,6 @@ fn run_settings_shell_internal(
             }
             cx.activate(true);
         });
-}
-
-/// Runs one transient status-overlay session. The headless daemon launches this
-/// in a helper process only after a visible workflow state exists.
-pub fn run_recording_overlay(
-    initial: OverlayPresentation,
-    snapshots: Receiver<OverlayPresentation>,
-    work_area: Option<crate::LogicalRect>,
-) {
-    run_recording_overlay_with_ready(initial, snapshots, work_area, || {});
 }
 
 /// Runs an overlay session and reports when GPUI has created its platform
@@ -583,13 +564,6 @@ impl SettingsShell {
             compact_layout: None,
             sidebar_motion: SidebarMotion::new(),
             route_scroll_handles: RouteScrollHandles::default(),
-        }
-    }
-
-    pub fn with_theme(model: ShellViewModel, theme: ThemeTokens) -> Self {
-        Self {
-            theme,
-            ..Self::new(model)
         }
     }
 
