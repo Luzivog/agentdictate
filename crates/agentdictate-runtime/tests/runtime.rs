@@ -10,3 +10,5 @@ mod ipc_round_trip;
 mod migration_parity;
 #[path = "runtime/pricing_recovery.rs"]
 mod pricing_recovery;
+#[path = "runtime/support.rs"]
+mod support;
