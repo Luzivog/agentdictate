@@ -145,3 +145,20 @@ fn now_unix_millis() -> i64 {
         .as_millis()
         .min(i64::MAX as u128) as i64
 }
+
+#[gpui::test]
+fn dismissal_preserves_the_rendered_card_while_it_fades(cx: &mut TestAppContext) {
+    let (audio_path, cx) = open_recording_overlay(cx, 0);
+
+    cx.update(|_, _| {});
+    let overlay = cx
+        .debug_bounds("recording-overlay-recording")
+        .expect("overlay root renders before dismissal");
+    assert!(overlay.size.width > px(0.));
+
+    // The fade only lowers opacity; the card and its content keep rendering
+    // so nothing pops out of existence next to the taskbar.
+    cx.run_until_parked();
+
+    fs::remove_file(audio_path).expect("waveform fixture removes");
+}

@@ -17,7 +17,12 @@ use super::{
 
 const AUTOMATIC_RESTART_LIMIT_PER_UPDATE: u8 = 1;
 const OVERLAY_READY_TIMEOUT: Duration = Duration::from_secs(5);
-const OVERLAY_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound the daemon waits for the helper to exit after dismissal. The
+/// dismissal ack now includes the helper's fade-out, so this must comfortably
+/// exceed the UI crate's `OVERLAY_FADE_HOLD` plus process teardown; the
+/// relation is asserted by the overlay lifecycle tests.
+#[doc(hidden)]
+pub const OVERLAY_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayProcessAction {

@@ -7,7 +7,10 @@ use agentdictate_ui::{
     StatusTone, WaveformArea, WaveformFrame, fit_waveform, format_elapsed, intersect_logical_rects,
     recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
-use std::{fs, path::PathBuf};
+use agentdictate_ui::{
+    OVERLAY_FADE_HOLD, OVERLAY_FADE_IN, OVERLAY_FADE_OUT, overlay_fade_active, overlay_opacity,
+};
+use std::{fs, path::PathBuf, time::Duration};
 
 #[test]
 fn hidden_workflow_does_not_require_an_overlay_window() {
@@ -312,4 +315,51 @@ fn temporary_wav(label: &str) -> PathBuf {
         std::process::id(),
         std::thread::current().name().unwrap_or("test")
     ))
+}
+
+#[test]
+fn overlay_fades_in_from_transparent_to_opaque() {
+    assert_eq!(overlay_opacity(Duration::ZERO, None), 0.0);
+    let mid = overlay_opacity(OVERLAY_FADE_IN / 2, None);
+    assert!(mid > 0.0 && mid < 1.0);
+    assert_eq!(overlay_opacity(OVERLAY_FADE_IN, None), 1.0);
+    assert_eq!(overlay_opacity(Duration::from_secs(60), None), 1.0);
+}
+
+#[test]
+fn dismissal_fades_out_monotonically_to_exactly_zero() {
+    let shown = Duration::from_secs(5);
+    let mut previous = overlay_opacity(shown, Some(Duration::ZERO));
+    assert_eq!(previous, 1.0);
+    for step in 1..=12 {
+        let elapsed = OVERLAY_FADE_OUT * step / 12;
+        let opacity = overlay_opacity(shown + elapsed, Some(elapsed));
+        assert!(opacity <= previous, "fade-out must never brighten");
+        previous = opacity;
+    }
+    assert_eq!(overlay_opacity(shown, Some(OVERLAY_FADE_OUT)), 0.0);
+    assert_eq!(overlay_opacity(shown, Some(Duration::from_secs(9))), 0.0);
+}
+
+#[test]
+fn dismissal_during_fade_in_never_increases_opacity() {
+    let at_dismissal = overlay_opacity(OVERLAY_FADE_IN / 4, None);
+    for step in 0..=8 {
+        let elapsed = OVERLAY_FADE_OUT * step / 8;
+        let opacity = overlay_opacity(OVERLAY_FADE_IN / 4 + elapsed, Some(elapsed));
+        assert!(opacity <= at_dismissal);
+    }
+}
+
+#[test]
+fn fade_is_active_only_while_a_ramp_is_progressing() {
+    assert!(overlay_fade_active(Duration::ZERO, None));
+    assert!(!overlay_fade_active(OVERLAY_FADE_IN, None));
+    assert!(overlay_fade_active(Duration::from_secs(5), Some(Duration::ZERO)));
+    assert!(!overlay_fade_active(Duration::from_secs(5), Some(OVERLAY_FADE_OUT)));
+}
+
+#[test]
+fn destruction_hold_outlasts_the_fade_out() {
+    assert!(OVERLAY_FADE_HOLD > OVERLAY_FADE_OUT);
 }

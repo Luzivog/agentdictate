@@ -39,11 +39,13 @@ pub use model_catalog::{
     ModelCatalogViewModel, ReasoningOptionViewModel,
 };
 pub use overlay::{
-    ActiveRecordingPresentation, LogicalRect, LogicalSize, OVERLAY_BOTTOM_GAP, OVERLAY_HEIGHT,
-    OVERLAY_WIDTH, OverlayPlacement, OverlayPresentation, OverlayState, OverlayWindowPolicy,
+    ActiveRecordingPresentation, LogicalRect, LogicalSize, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD,
+    OVERLAY_FADE_IN, OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPlacement,
+    OverlayPresentation, OverlayState, OverlayWindowPolicy,
     RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT, WaveformArea,
     WaveformBar, WaveformFrame, elapsed_seconds, fit_waveform, format_elapsed,
-    intersect_logical_rects, recording_overlay_layout, sample_recent_wav, waveform_bars,
+    intersect_logical_rects, overlay_fade_active, overlay_opacity, recording_overlay_layout,
+    sample_recent_wav, waveform_bars,
 };
 pub use replacements::{ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel};
 pub use route::{Route, RouteParseError};

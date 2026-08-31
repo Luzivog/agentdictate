@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use agentdictate_core::{ProcessingStage, WorkflowPhase, WorkflowSnapshot};
@@ -13,6 +14,14 @@ pub const OVERLAY_HEIGHT: u32 = 56;
 pub const OVERLAY_BOTTOM_GAP: u32 = 72;
 pub const WAVEFORM_SOURCE_BIN_COUNT: usize = 44;
 pub const WAVEFORM_BAR_COUNT: usize = 20;
+/// Fade timings for the transient overlay window. Destroying the dark card
+/// abruptly beside the taskbar reads as a flash at paste time, so the helper
+/// fades the card in and out and only destroys a fully transparent surface.
+pub const OVERLAY_FADE_IN: Duration = Duration::from_millis(100);
+pub const OVERLAY_FADE_OUT: Duration = Duration::from_millis(120);
+/// Hold between dismissal and window destruction: the fade-out plus two
+/// 60 Hz frames of margin so the destroyed frame is fully transparent.
+pub const OVERLAY_FADE_HOLD: Duration = Duration::from_millis(150);
 const WAV_HEADER_BYTES: u64 = 44;
 const RECENT_SAMPLE_COUNT: usize = 2_816;
 
@@ -401,11 +410,39 @@ fn add_logical_offset(origin: i32, offset: u32) -> i32 {
     origin.saturating_add(i32::try_from(offset).unwrap_or(i32::MAX))
 }
 
+/// Card opacity for the time since the window was shown and, once dismissal
+/// began, the time since dismissal. The fade-in level is frozen at the
+/// dismissal instant and then multiplied by the fade-out ramp, so a dismissal
+/// that lands mid-fade-in can only ever lower the opacity.
+#[must_use]
+pub fn overlay_opacity(since_shown: Duration, since_dismissal: Option<Duration>) -> f32 {
+    let shown_before_dismissal =
+        since_dismissal.map_or(since_shown, |elapsed| since_shown.saturating_sub(elapsed));
+    let fade_in = fade_progress(shown_before_dismissal, OVERLAY_FADE_IN);
+    let fade_out = since_dismissal.map_or(0.0, |elapsed| fade_progress(elapsed, OVERLAY_FADE_OUT));
+    (fade_in * (1.0 - fade_out)).clamp(0.0, 1.0)
+}
+
+/// Whether a fade ramp is still progressing; the helper keeps requesting
+/// animation frames while this is true.
+#[must_use]
+pub fn overlay_fade_active(since_shown: Duration, since_dismissal: Option<Duration>) -> bool {
+    match since_dismissal {
+        Some(elapsed) => elapsed < OVERLAY_FADE_OUT,
+        None => since_shown < OVERLAY_FADE_IN,
+    }
+}
+
+fn fade_progress(elapsed: Duration, span: Duration) -> f32 {
+    (elapsed.as_secs_f32() / span.as_secs_f32()).clamp(0.0, 1.0)
+}
+
 /// Presentation state derived from the workflow.
 ///
 /// The transient window intentionally mirrors the previous overlay and opens
-/// only while recording, transcribing, or cleaning. Recovery remains durable
-/// in History rather than turning the overlay into a second action surface.
+/// only while recording, transcribing, or cleaning, then lingers up to
+/// `OVERLAY_FADE_HOLD` while it fades out. Recovery remains durable in
+/// History rather than turning the overlay into a second action surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OverlayState {
     Hidden,

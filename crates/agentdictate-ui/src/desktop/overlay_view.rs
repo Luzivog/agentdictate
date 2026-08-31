@@ -1,7 +1,10 @@
 use gpui::{Context, Hsla, IntoElement, Render, Window, prelude::*, px};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{OverlayPresentation, OverlayState, ThemeTokens, WaveformFrame};
+use crate::{
+    OverlayPresentation, OverlayState, ThemeTokens, WaveformFrame, overlay_fade_active,
+    overlay_opacity,
+};
 
 /// Per-dot opacities for the processing ellipsis: a soft sequential pulse
 /// derived from wall-clock time so every frame is deterministic to render.
@@ -23,6 +26,8 @@ pub struct RecordingOverlay {
     active_recording: Option<crate::ActiveRecordingPresentation>,
     waveform: WaveformFrame,
     last_sample_at: Option<Instant>,
+    shown_at: Instant,
+    dismissed_at: Option<Instant>,
 }
 
 impl RecordingOverlay {
@@ -32,6 +37,8 @@ impl RecordingOverlay {
             active_recording: None,
             waveform: WaveformFrame::default(),
             last_sample_at: None,
+            shown_at: Instant::now(),
+            dismissed_at: None,
         }
     }
 
@@ -41,6 +48,8 @@ impl RecordingOverlay {
             active_recording: presentation.active_recording,
             waveform: WaveformFrame::default(),
             last_sample_at: None,
+            shown_at: Instant::now(),
+            dismissed_at: None,
         }
     }
 
@@ -59,6 +68,14 @@ impl RecordingOverlay {
         }
         self.state = state;
         self.active_recording = None;
+    }
+
+    /// Starts the fade-out while keeping the last visible content untouched.
+    /// Idempotent: repeated dismissals keep the first timestamp.
+    pub fn begin_dismissal(&mut self) {
+        if self.dismissed_at.is_none() {
+            self.dismissed_at = Some(Instant::now());
+        }
     }
 
     pub fn set_presentation(&mut self, presentation: OverlayPresentation) {
@@ -88,7 +105,10 @@ impl Render for RecordingOverlay {
         // Processing states (transcribing, cleaning) animate a small pulsing
         // ellipsis so the helper visibly shows work in progress.
         let busy = self.state.is_visible() && !recording;
-        if recording || busy {
+        let since_shown = self.shown_at.elapsed();
+        let since_dismissal = self.dismissed_at.map(|dismissed| dismissed.elapsed());
+        let opacity = overlay_opacity(since_shown, since_dismissal);
+        if recording || busy || overlay_fade_active(since_shown, since_dismissal) {
             window.request_animation_frame();
         }
         let busy_label = label
@@ -143,6 +163,7 @@ impl Render for RecordingOverlay {
             .debug_selector(move || stable_id)
             .relative()
             .size_full()
+            .opacity(opacity)
             .when(self.state.is_visible(), |root| {
                 root.child(
                     gpui::div()

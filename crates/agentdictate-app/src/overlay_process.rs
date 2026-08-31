@@ -8,6 +8,7 @@ pub use helper::run_overlay_helper;
 pub use helper::{is_overlay_helper_argument, overlay_work_area_from_environment};
 pub use protocol::{ActiveRecordingUpdate, OverlayUpdate};
 pub use supervisor::{
-    OverlayController, OverlayProcessAction, OverlayProcessState, OverlayTeardownError,
+    OVERLAY_TEARDOWN_TIMEOUT, OverlayController, OverlayProcessAction, OverlayProcessState,
+    OverlayTeardownError,
     start_overlay_presenter, start_overlay_presenter_with_timeout,
 };

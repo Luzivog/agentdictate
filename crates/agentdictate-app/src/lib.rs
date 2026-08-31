@@ -29,7 +29,8 @@ pub use openai::{
 #[cfg(feature = "desktop")]
 pub use overlay_process::run_overlay_helper;
 pub use overlay_process::{
-    ActiveRecordingUpdate, OverlayController, OverlayProcessAction, OverlayProcessState,
+    ActiveRecordingUpdate, OVERLAY_TEARDOWN_TIMEOUT, OverlayController, OverlayProcessAction,
+    OverlayProcessState,
     OverlayTeardownError, OverlayUpdate, is_overlay_helper_argument,
     overlay_work_area_from_environment, start_overlay_presenter,
     start_overlay_presenter_with_timeout,

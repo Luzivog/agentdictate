@@ -246,16 +246,24 @@ pub fn run_recording_overlay_with_ready(
 
             cx.spawn(async move |cx| {
                 while let Some(presentation) = receiver.next().await {
-                    let state = presentation.state();
-                    if !state.is_visible() {
-                        let _ = overlay_window.update(cx, |_, window, _| window.remove_window());
-                        return cx.update(|cx| cx.quit());
+                    if !presentation.state().is_visible() {
+                        break;
                     }
                     let _ = overlay_window.update(cx, |overlay, _, cx| {
                         overlay.set_presentation(presentation);
                         cx.notify();
                     });
                 }
+                // Fade before destroying: an instant destroy of the dark card
+                // beside the taskbar reads as a flash at paste time. A
+                // dictation restarted within the hold spawns a fresh helper
+                // while this one finishes fading — a sub-150ms overlap of a
+                // mostly transparent card.
+                let _ = overlay_window.update(cx, |overlay, _, cx| {
+                    overlay.begin_dismissal();
+                    cx.notify();
+                });
+                cx.background_executor().timer(crate::OVERLAY_FADE_HOLD).await;
                 let _ = overlay_window.update(cx, |_, window, _| window.remove_window());
                 cx.update(|cx| cx.quit())
             })

@@ -464,3 +464,9 @@ fn dismissal_without_a_helper_is_immediately_acknowledged() {
     drop(overlay);
     presenter.join().unwrap();
 }
+
+#[test]
+fn dismissal_timeout_comfortably_covers_the_helper_fade() {
+    // The dismissal ack includes the helper's fade-out before process exit.
+    assert!(agentdictate_app::OVERLAY_TEARDOWN_TIMEOUT >= 4 * agentdictate_ui::OVERLAY_FADE_HOLD);
+}
