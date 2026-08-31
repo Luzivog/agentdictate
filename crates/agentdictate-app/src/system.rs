@@ -406,14 +406,9 @@ impl SystemDeliverer {
     }
 
     pub fn copy_text(&mut self, text: &str) -> Result<(), ExternalError> {
-        let protocol = if self.wayland_session {
-            ClipboardProtocol::Wayland
-        } else {
-            ClipboardProtocol::X11
-        };
         let publication = self
             .clipboard
-            .publish(protocol, text.as_bytes(), Instant::now() + DELIVERY_TIMEOUT)
+            .publish(text.as_bytes(), Instant::now() + DELIVERY_TIMEOUT)
             .map_err(|error| ExternalError::new(error.to_string()))?;
         self.active_publications = vec![publication];
         Ok(())
@@ -439,7 +434,7 @@ impl SystemDeliverer {
             .iter()
             .map(|selection| {
                 self.clipboard
-                    .publish_selection(protocol, *selection, contents, deadline)
+                    .publish_selection(*selection, contents, deadline)
             })
             .collect()
     }
@@ -673,8 +668,6 @@ mod tests {
         let mut deliverer = SystemDeliverer {
             clipboard: CommandClipboard::new(
                 runner,
-                PlatformExecutable::missing(PlatformTool::WlCopy),
-                PlatformExecutable::missing(PlatformTool::WlPaste),
                 PlatformExecutable::at(PlatformTool::Xsel, xsel),
             ),
             focus: X11FocusObserver::new(
@@ -737,10 +730,10 @@ mod tests {
         let directory = tempdir().unwrap();
         let clipboard_state = directory.path().join("clipboard.txt");
         let primary_state = directory.path().join("primary.txt");
-        let wl_copy_log = directory.path().join("wl-copy.log");
-        let wl_copy = directory.path().join("wl-copy");
+        let xsel_log = directory.path().join("xsel.log");
+        let xsel = directory.path().join("xsel");
         fs::write(
-            &wl_copy,
+            &xsel,
             format!(
                 concat!(
                     "#!/bin/sh\n",
@@ -749,43 +742,23 @@ mod tests {
                     "  *--primary*) state='{}' ;;\n",
                     "  *) state='{}' ;;\n",
                     "esac\n",
-                    "cat > \"$state\"\n",
-                    "exec tail -f /dev/null\n",
-                ),
-                wl_copy_log.display(),
-                primary_state.display(),
-                clipboard_state.display(),
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&wl_copy, fs::Permissions::from_mode(0o755)).unwrap();
-        let wl_paste_log = directory.path().join("wl-paste.log");
-        let wl_paste = directory.path().join("wl-paste");
-        fs::write(
-            &wl_paste,
-            format!(
-                concat!(
-                    "#!/bin/sh\n",
-                    "printf '%s\\n' \"$*\" >> '{}'\n",
                     "case \"$*\" in\n",
-                    "  *--primary*) cat '{}' ;;\n",
-                    "  *) cat '{}' ;;\n",
+                    "  *--output*) cat \"$state\" ;;\n",
+                    "  *) cat > \"$state\"; exec tail -f /dev/null ;;\n",
                     "esac\n",
                 ),
-                wl_paste_log.display(),
+                xsel_log.display(),
                 primary_state.display(),
                 clipboard_state.display(),
             ),
         )
         .unwrap();
-        fs::set_permissions(&wl_paste, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&xsel, fs::Permissions::from_mode(0o755)).unwrap();
         let runner = SystemCommandRunner;
         let mut deliverer = SystemDeliverer {
             clipboard: CommandClipboard::new(
                 runner,
-                PlatformExecutable::at(PlatformTool::WlCopy, wl_copy),
-                PlatformExecutable::at(PlatformTool::WlPaste, wl_paste),
-                PlatformExecutable::missing(PlatformTool::Xsel),
+                PlatformExecutable::at(PlatformTool::Xsel, xsel),
             ),
             focus: X11FocusObserver::new(
                 runner,
@@ -831,26 +804,39 @@ mod tests {
             job.final_text.as_bytes()
         );
         assert_eq!(fs::read(&primary_state).unwrap(), job.final_text.as_bytes());
+        let xsel_arguments = fs::read_to_string(xsel_log).unwrap();
+        let owner_lines = xsel_arguments
+            .lines()
+            .filter(|arguments| arguments.ends_with("--input --nodetach"))
+            .collect::<Vec<_>>();
+        // Primary is claimed before the clipboard so a later failure never
+        // leaves a fresh clipboard without its primary counterpart.
         assert_eq!(
-            fs::read_to_string(wl_copy_log).unwrap(),
-            "--foreground --primary\n--foreground\n"
-        );
-        let readback_arguments = fs::read_to_string(wl_paste_log).unwrap();
-        assert!(
-            readback_arguments
-                .lines()
-                .any(|arguments| arguments == "--no-newline --primary")
+            owner_lines,
+            [
+                "--primary --input --nodetach",
+                "--clipboard --input --nodetach",
+            ],
         );
         assert!(
-            readback_arguments
+            xsel_arguments
                 .lines()
-                .any(|arguments| arguments == "--no-newline")
+                .any(|arguments| arguments == "--primary --output")
         );
         assert!(
-            readback_arguments
+            xsel_arguments
                 .lines()
-                .all(|arguments| matches!(arguments, "--no-newline --primary" | "--no-newline"))
+                .any(|arguments| arguments == "--clipboard --output")
         );
+        assert!(xsel_arguments.lines().all(|arguments| {
+            matches!(
+                arguments,
+                "--primary --input --nodetach"
+                    | "--clipboard --input --nodetach"
+                    | "--primary --output"
+                    | "--clipboard --output"
+            )
+        }));
         assert_eq!(
             injected_key_events(&mut reader, 4),
             vec![

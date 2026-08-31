@@ -14,8 +14,6 @@ use std::{
 pub enum PlatformTool {
     Xdotool,
     Xprop,
-    WlCopy,
-    WlPaste,
     Xsel,
 }
 
@@ -24,8 +22,6 @@ impl PlatformTool {
         match self {
             Self::Xdotool => "xdotool",
             Self::Xprop => "xprop",
-            Self::WlCopy => "wl-copy",
-            Self::WlPaste => "wl-paste",
             Self::Xsel => "xsel",
         }
     }
@@ -34,8 +30,7 @@ impl PlatformTool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlatformCapability {
     FocusObservation,
-    WaylandClipboard,
-    X11Clipboard,
+    Clipboard,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

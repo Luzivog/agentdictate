@@ -78,10 +78,14 @@ After transcription, the daemon delivers text to the focused application:
 
 1. Observe the focused window.
 2. Publish the transcript. Automatic mode on native Wayland publishes the
-   same text to both the clipboard and the primary selection with live
-   `wl-copy` owners. Other deliveries publish only to the clipboard, using
-   `wl-copy` on Wayland or a live non-detaching `xsel` owner on X11. Read the
-   published selections back to verify that the text landed.
+   same text to both the clipboard and the primary selection; other
+   deliveries publish only to the clipboard. Both selections are owned by
+   live non-detaching `xsel` owners over XWayland, and the compositor's
+   XWayland selection bridge carries them to Wayland-native applications.
+   wl-clipboard is deliberately unused: without a data-control protocol on
+   GNOME, every `wl-copy`/`wl-paste` call pops a transient toplevel that
+   visibly re-layouts the taskbar at paste time. Read the published
+   selections back through `xsel` to verify that the text landed.
 3. Select the paste chord. On X11 or XWayland, Automatic mode uses
    `Ctrl+Shift+V` for detected terminals and `Ctrl+V` for regular or unknown
    targets. On native Wayland, Automatic mode uses `Shift+Insert`. Standard

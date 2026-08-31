@@ -148,7 +148,9 @@ fn now_unix_millis() -> i64 {
 
 #[gpui::test]
 fn dismissal_preserves_the_rendered_card_while_it_fades(cx: &mut TestAppContext) {
-    let (audio_path, cx) = open_recording_overlay(cx, 0);
+    // A distinct elapsed value keeps this fixture file separate from the
+    // waveform test's, which runs in parallel in the same process.
+    let (audio_path, cx) = open_recording_overlay(cx, 1);
 
     cx.update(|_, _| {});
     let overlay = cx

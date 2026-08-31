@@ -107,7 +107,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
+Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, xsel, xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
 Maintainer: AgentDictate <local@agentdictate>
 Description: Fast native Linux dictation for AI coding prompts
  AgentDictate records speech, transcribes it with OpenAI, safely checkpoints

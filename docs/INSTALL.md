@@ -8,7 +8,7 @@ install the runtime and build dependencies:
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
   libfontconfig1-dev libfreetype6-dev libvulkan1 x11-utils \
-  pipewire-bin wl-clipboard xsel xdotool
+  pipewire-bin xsel xdotool
 ```
 
 Debian 13 uses the same package list. Paste injection is built into
