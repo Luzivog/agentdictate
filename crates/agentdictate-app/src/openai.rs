@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use agentdictate_core::{
-    DEFAULT_CLEANUP_PROMPT, ReasoningEffort, Settings, TranscriptionProvider,
+    DEFAULT_CLEANUP_PROMPT, JobId, ReasoningEffort, Settings, TranscriptionProvider,
     count_words_unicode_alphanumeric,
 };
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
@@ -119,6 +119,9 @@ pub struct TranscriptionPipeline<S, C> {
     settings: Settings,
     speech: S,
     cleanup: C,
+    /// Called with the job id right before the cleanup model runs, so the UI
+    /// can show the cleaning phase while `transcribe` is still blocking.
+    cleanup_started_observer: Option<Box<dyn Fn(JobId) + Send>>,
 }
 
 impl<S, C> TranscriptionPipeline<S, C> {
@@ -128,7 +131,12 @@ impl<S, C> TranscriptionPipeline<S, C> {
             settings,
             speech,
             cleanup,
+            cleanup_started_observer: None,
         }
+    }
+
+    pub fn set_cleanup_started_observer(&mut self, observer: impl Fn(JobId) + Send + 'static) {
+        self.cleanup_started_observer = Some(Box::new(observer));
     }
 
     pub fn update_settings(&mut self, settings: Settings) {
@@ -164,6 +172,9 @@ impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipel
                 &self.settings.cleanup_style,
                 &self.settings.cleanup_prompt,
             );
+            if let Some(observer) = &self.cleanup_started_observer {
+                observer(job.id);
+            }
             match self.cleanup.cleanup_text(CleanupRequest {
                 transcript: &raw,
                 model: self.settings.active_cleanup_model(),

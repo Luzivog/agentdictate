@@ -169,3 +169,95 @@ fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
     assert_eq!(result.raw, "subscription transcript");
     assert_eq!(result.final_text, "subscription transcript");
 }
+
+#[test]
+fn cleanup_started_observer_fires_before_the_cleanup_transport() {
+    use std::sync::{Arc, Mutex};
+
+    struct LoggingCleanup(Arc<Mutex<Vec<String>>>);
+
+    impl CleanupTransport for LoggingCleanup {
+        fn cleanup_text(&mut self, _request: CleanupRequest<'_>) -> Result<String, ExternalError> {
+            self.0.lock().unwrap().push("cleanup-ran".to_owned());
+            Ok("Cleaned.".to_owned())
+        }
+    }
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::default();
+    let settings = Settings {
+        cleanup_enabled: true,
+        cleanup_model: "gpt-5.4-nano".into(),
+        ..Settings::default()
+    };
+    let mut transcriber =
+        TranscriptionPipeline::new(settings, FixedOpenAi, LoggingCleanup(events.clone()));
+    let observed = events.clone();
+    transcriber.set_cleanup_started_observer(move |job_id| {
+        observed.lock().unwrap().push(format!("observer:{job_id}"));
+    });
+    let now = Utc::now();
+    let job = RecordingJob {
+        id: JobId::new(),
+        legacy_id: 1,
+        started_at: now,
+        updated_at: now,
+        stage: JobStage::Transcribing,
+        audio_path: PathBuf::from("speech.wav"),
+        duration_seconds: 12.0,
+        transcription_provider: TranscriptionProvider::OpenAiApi,
+        transcription_model: "gpt-transcribe".into(),
+        raw_transcript: String::new(),
+        final_text: String::new(),
+        copied_to_clipboard: false,
+        paste_triggered: false,
+        delivery_status: DeliveryStatus::NotAttempted,
+        error_message: None,
+        cleanup_error: None,
+    };
+
+    transcriber.transcribe(&job).unwrap();
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        [format!("observer:{}", job.id), "cleanup-ran".to_owned()]
+    );
+}
+
+#[test]
+fn cleanup_started_observer_stays_silent_when_cleanup_is_disabled() {
+    use std::sync::{Arc, Mutex};
+
+    let events: Arc<Mutex<Vec<String>>> = Arc::default();
+    let settings = Settings {
+        cleanup_enabled: false,
+        ..Settings::default()
+    };
+    let mut transcriber = TranscriptionPipeline::new(settings, FixedOpenAi, FixedOpenAi);
+    let observed = events.clone();
+    transcriber.set_cleanup_started_observer(move |job_id| {
+        observed.lock().unwrap().push(format!("observer:{job_id}"));
+    });
+    let now = Utc::now();
+    let job = RecordingJob {
+        id: JobId::new(),
+        legacy_id: 1,
+        started_at: now,
+        updated_at: now,
+        stage: JobStage::Transcribing,
+        audio_path: PathBuf::from("speech.wav"),
+        duration_seconds: 12.0,
+        transcription_provider: TranscriptionProvider::OpenAiApi,
+        transcription_model: "gpt-transcribe".into(),
+        raw_transcript: String::new(),
+        final_text: String::new(),
+        copied_to_clipboard: false,
+        paste_triggered: false,
+        delivery_status: DeliveryStatus::NotAttempted,
+        error_message: None,
+        cleanup_error: None,
+    };
+
+    transcriber.transcribe(&job).unwrap();
+
+    assert!(events.lock().unwrap().is_empty());
+}

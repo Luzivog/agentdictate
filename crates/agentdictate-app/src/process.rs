@@ -3,7 +3,7 @@ use std::{io, path::PathBuf};
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
-    WorkflowPhase,
+    ProcessingStage, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -13,7 +13,7 @@ use agentdictate_runtime::{
 
 use crate::model_catalog::ModelCatalog;
 use crate::{
-    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
+    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, OverlayUpdate, ReqwestOpenAiTransport,
     SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
     chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_startup_with_systemctl,
 };
@@ -111,6 +111,24 @@ impl AgentProcess {
     }
 
     pub fn set_overlay_controller(&mut self, controller: OverlayController) {
+        // The transcription pipeline blocks the daemon while it transcribes
+        // and cleans, so the workflow cannot signal the cleaning stage from
+        // there. Push the overlay presentation for it directly instead; the
+        // daemon's next publish after the pipeline returns supersedes it.
+        let overlay = controller.clone();
+        self.daemon
+            .transcriber_mut()
+            .set_cleanup_started_observer(move |job_id| {
+                overlay.update(OverlayUpdate {
+                    workflow: WorkflowSnapshot {
+                        phase: WorkflowPhase::Processing {
+                            job_id,
+                            stage: ProcessingStage::Cleaning,
+                        },
+                    },
+                    active_recording: None,
+                });
+            });
         self.daemon.set_overlay_controller(controller);
     }
 

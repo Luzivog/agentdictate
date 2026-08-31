@@ -3,6 +3,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{OverlayPresentation, OverlayState, ThemeTokens, WaveformFrame};
 
+/// Per-dot opacities for the processing ellipsis: a soft sequential pulse
+/// derived from wall-clock time so every frame is deterministic to render.
+fn busy_dot_alphas() -> [f32; 3] {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as f64;
+    let cycle = millis / 1_100.0 * std::f64::consts::TAU;
+    core::array::from_fn(|index| {
+        let phase = cycle - index as f64 * 0.85;
+        (0.3 + 0.7 * (0.5 + 0.5 * phase.sin())) as f32
+    })
+}
+
 /// GPUI content for the bottom-centered recording status window.
 pub struct RecordingOverlay {
     state: OverlayState,
@@ -71,8 +85,18 @@ impl Render for RecordingOverlay {
         let label = self.state.label().to_owned();
         let stable_id = self.state.stable_id().to_owned();
         let recording = self.state == OverlayState::Recording;
-        if recording {
+        // Processing states (transcribing, cleaning) animate a small pulsing
+        // ellipsis so the helper visibly shows work in progress.
+        let busy = self.state.is_visible() && !recording;
+        if recording || busy {
             window.request_animation_frame();
+        }
+        let busy_label = label
+            .trim_end_matches(['\u{2026}', '.'])
+            .trim_end()
+            .to_owned();
+        let busy_dot_alphas = busy_dot_alphas();
+        if recording {
             let now = Instant::now();
             if self.last_sample_at.is_none_or(|sampled| {
                 now.saturating_duration_since(sampled) >= Duration::from_millis(33)
@@ -182,13 +206,40 @@ impl Render for RecordingOverlay {
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .gap(px(5.))
                                     .px_3()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(gpui::rgba(0xf5f5f5f5))
-                                    .child(label),
+                                    .child(if busy { busy_label } else { label })
+                                    .when(busy, |row| {
+                                        row.child(
+                                            gpui::div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(3.))
+                                                .children(
+                                                    busy_dot_alphas.into_iter().enumerate().map(
+                                                        |(index, alpha)| {
+                                                            let dot_color: Hsla =
+                                                                gpui::rgb(0xf5f5f5).into();
+                                                            gpui::div()
+                                                                .debug_selector(move || {
+                                                                    format!(
+                                                                        "recording-overlay-busy-dot-{index}"
+                                                                    )
+                                                                })
+                                                                .w(px(3.5))
+                                                                .h(px(3.5))
+                                                                .rounded_full()
+                                                                .bg(dot_color.opacity(alpha))
+                                                        },
+                                                    ),
+                                                ),
+                                        )
+                                    }),
                             )
                         }),
                 )
