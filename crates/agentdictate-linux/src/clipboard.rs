@@ -1,4 +1,8 @@
-use std::{ffi::OsString, thread, time::Instant};
+use std::{
+    ffi::OsString,
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     command::{
@@ -7,6 +11,12 @@ use crate::{
     },
     paste::{ClipboardProtocol, ClipboardReadinessEvidence},
 };
+
+/// Upper bound for one readback attempt; see the retry loop in
+/// `publish_selection`.
+const READBACK_ATTEMPT_BUDGET: Duration = Duration::from_millis(800);
+/// Pause between readback attempts so retries don't hammer the compositor.
+const READBACK_RETRY_GAP: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipboardSelection {
@@ -119,9 +129,14 @@ impl CommandClipboard {
                     ]
                 }
             };
+            // A readback can hang indefinitely on a stale selection offer
+            // while ownership is still settling (seen under heavy system
+            // load). Budget each attempt so one hung reader is killed and
+            // retried instead of consuming the whole delivery deadline.
+            let attempt_deadline = deadline.min(Instant::now() + READBACK_ATTEMPT_BUDGET);
             match self
                 .runner
-                .run_output(capability, reader_tool, &read_arguments, deadline)
+                .run_output(capability, reader_tool, &read_arguments, attempt_deadline)
             {
                 Ok(readback) if readback == contents => {
                     if !owner.is_alive()? {
@@ -136,8 +151,9 @@ impl CommandClipboard {
                         owner,
                     });
                 }
-                Err(error @ PlatformCommandError::Deadline { .. }) => return Err(error),
-                Ok(_) | Err(_) if Instant::now() < deadline => thread::yield_now(),
+                Ok(_) | Err(_) if Instant::now() < deadline => {
+                    thread::sleep(READBACK_RETRY_GAP);
+                }
                 Ok(_) | Err(_) => {
                     return Err(PlatformCommandError::Deadline {
                         tool: reader_tool.tool(),

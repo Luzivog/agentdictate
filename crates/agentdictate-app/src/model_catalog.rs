@@ -24,6 +24,7 @@ const BUNDLED_MODEL_IDS: &[&str] = &[
     "gpt-5.4-nano",
     "gpt-5.4-mini",
     "gpt-5.5",
+    "gpt-5.6-luna",
 ];
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -522,14 +523,14 @@ fn is_cleanup_candidate(model: &str) -> bool {
 }
 
 fn is_confirmed_cleanup_model(model: &str) -> bool {
-    matches!(model, "gpt-5.4-nano" | "gpt-5.4-mini" | "gpt-5.5")
+    matches!(model, "gpt-5.4-nano" | "gpt-5.4-mini" | "gpt-5.5" | "gpt-5.6-luna")
 }
 
 fn reasoning_efforts(model: &str) -> Vec<ReasoningEffort> {
     use ReasoningEffort::{Default, High, Low, Medium, Xhigh};
     match model {
         "gpt-5.5" => vec![Default, Low, Medium, High, Xhigh],
-        "gpt-5.4-nano" | "gpt-5.4-mini" => vec![Default, Low, Medium, High],
+        "gpt-5.4-nano" | "gpt-5.4-mini" | "gpt-5.6-luna" => vec![Default, Low, Medium, High],
         _ => vec![Default],
     }
 }
