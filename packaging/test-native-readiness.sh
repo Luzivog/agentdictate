@@ -34,21 +34,6 @@ EOF
 touch "${fixture_root}/dev/input/event4" "${fixture_root}/dev/uinput"
 chmod 0660 "${fixture_root}/dev/input/event4" "${fixture_root}/dev/uinput"
 
-cat > "${fixture_root}/bin/ydotool" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-cat > "${fixture_root}/bin/ydotoold" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-cat > "${fixture_root}/bin/systemctl" <<'EOF'
-#!/usr/bin/env bash
-[[ "$*" == *"is-active"* ]]
-EOF
-chmod 0755 "${fixture_root}/bin/ydotool" "${fixture_root}/bin/ydotoold" \
-  "${fixture_root}/bin/systemctl"
-
 if ! ready_output="$(
   PATH="${fixture_root}/bin:/usr/bin:/bin" \
   AGENTDICTATE_PROC_INPUT_DEVICES="${fixture_root}/proc-input-devices" \
@@ -99,26 +84,6 @@ if ! installer_check_output="$(
 fi
 assert_contains "${installer_check_output}" "Native input readiness: ready"
 
-cat > "${fixture_root}/bin/systemctl" <<'EOF'
-#!/usr/bin/env bash
-exit 3
-EOF
-chmod 0755 "${fixture_root}/bin/systemctl"
-if dependency_output="$(
-  PATH="${fixture_root}/bin:/usr/bin:/bin" \
-  YDOTOOL_SOCKET="${fixture_root}/missing-ydotool.socket" \
-  AGENTDICTATE_PROC_INPUT_DEVICES="${fixture_root}/proc-input-devices" \
-  AGENTDICTATE_DEV_INPUT_DIR="${fixture_root}/dev/input" \
-  AGENTDICTATE_UINPUT_PATH="${fixture_root}/dev/uinput" \
-  AGENTDICTATE_YDOTOOL_COMMAND="${fixture_root}/missing-ydotool" \
-  AGENTDICTATE_YDOTOOLD_COMMAND="${fixture_root}/missing-ydotoold" \
-  agentdictate_check_native_readiness 2>&1
-)"; then
-  fail "missing ydotool dependencies must fail readiness"
-fi
-assert_contains "${dependency_output}" "ydotool is not installed"
-assert_contains "${dependency_output}" "ydotoold is not installed"
-
 linker_fixture="${fixture_root}/linker"
 mkdir -p "${linker_fixture}/bin"
 cat > "${linker_fixture}/bin/cc" <<'EOF'
@@ -164,20 +129,14 @@ fi
   fail "runtime shim was not created when /usr/sbin was absent from PATH"
 
 RULE="${PROJECT_DIR}/packaging/70-agentdictate-input.rules"
-SERVICE="${PROJECT_DIR}/packaging/agentdictate-ydotoold.service"
 DAEMON_SERVICE="${PROJECT_DIR}/packaging/agentdictated.service"
 AUTOSTART="${PROJECT_DIR}/packaging/agentdictate-autostart.desktop"
 GUIDE="${PROJECT_DIR}/packaging/NATIVE_ACCESS.md"
 assert_file_contains "${RULE}" 'ENV{ID_INPUT_KEYBOARD}=="1"'
 assert_file_contains "${RULE}" 'TAG+="uaccess"'
 assert_file_contains "${RULE}" 'MODE="0660"'
-if grep -Eq 'MODE="?0?666"?|chmod[[:space:]]+0?666' "${RULE}" "${SERVICE}" "${GUIDE}"; then
+if grep -Eq 'MODE="?0?666"?|chmod[[:space:]]+0?666' "${RULE}" "${GUIDE}"; then
   fail "native access assets must never grant world-write access"
-fi
-assert_file_contains "${SERVICE}" "ExecStart=/usr/bin/ydotoold"
-assert_file_contains "${SERVICE}" "UMask=0077"
-if grep -Eq 'ExecStartPre=.*sleep|ExecStartPost=.*sleep' "${SERVICE}"; then
-  fail "ydotoold readiness must not depend on a fixed startup delay"
 fi
 assert_file_contains "${DAEMON_SERVICE}" "PartOf=graphical-session.target"
 assert_file_contains "${DAEMON_SERVICE}" "After=graphical-session.target"

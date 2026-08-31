@@ -17,7 +17,6 @@ pub enum PlatformTool {
     WlCopy,
     WlPaste,
     Xsel,
-    Ydotool,
 }
 
 impl PlatformTool {
@@ -28,7 +27,6 @@ impl PlatformTool {
             Self::WlCopy => "wl-copy",
             Self::WlPaste => "wl-paste",
             Self::Xsel => "xsel",
-            Self::Ydotool => "ydotool",
         }
     }
 }
@@ -38,8 +36,6 @@ pub enum PlatformCapability {
     FocusObservation,
     WaylandClipboard,
     X11Clipboard,
-    WaylandPasteInjection,
-    X11PasteInjection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

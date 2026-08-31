@@ -86,8 +86,10 @@ After transcription, the daemon delivers text to the focused application:
    `Ctrl+Shift+V` for detected terminals and `Ctrl+V` for regular or unknown
    targets. On native Wayland, Automatic mode uses `Shift+Insert`. Standard
    and Terminal modes bypass target detection and use their named shortcuts.
-4. Inject one paced paste chord with `ydotool` via uinput on Wayland or
-   `xdotool` on X11.
+4. Inject one paced paste chord from an in-process uinput virtual keyboard
+   (`evdev`). Press and release always run in-process and stay paired, and
+   the kernel releases any held key if the daemon dies, so a chord can never
+   leave a key stuck.
 
 Injection follows a single-injection-no-retry policy. A retry after a failed
 or ambiguous paste risks duplicating already-inserted text, which is worse

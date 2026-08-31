@@ -8,21 +8,12 @@ install the runtime and build dependencies:
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
   libfontconfig1-dev libfreetype6-dev libvulkan1 x11-utils \
-  pipewire-bin wl-clipboard xsel ydotool ydotoold xdotool
-```
-
-On Debian 13, first enable
-[`trixie-backports`](https://backports.debian.org/Instructions/), then install:
-
-```bash
-sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
-  libfontconfig1-dev libfreetype6-dev libvulkan1 x11-utils \
   pipewire-bin wl-clipboard xsel xdotool
-sudo apt install ydotool/trixie-backports
 ```
 
-The Debian 13 backport packages `ydotool` and `ydotoold` together. Ubuntu 24.04
-packages them separately.
+Debian 13 uses the same package list. Paste injection is built into
+AgentDictate (an in-process uinput virtual keyboard) and needs write access to
+`/dev/uinput`, granted by the packaged udev rule.
 
 Install [Rust with rustup](https://rustup.rs/). The repository selects Rust
 1.95.0 through `rust-toolchain.toml`. Recording also requires a running
@@ -74,9 +65,7 @@ Closing the settings window leaves the daemon, global shortcut, and transcript
 import running. Stop them with **Quit AgentDictate** in the tray or
 `systemctl --user stop agentdictated.service`.
 
-**Start on login** controls the AgentDictate daemon only. The separately enabled
-`ydotoold` helper remains enabled until you run
-`systemctl --user disable --now agentdictate-ydotoold.service`.
+**Start on login** controls the AgentDictate daemon only.
 
 ## Run from source
 
@@ -189,15 +178,14 @@ Each user who ran AgentDictate must first stop the services and remove the
 per-user startup files. Package removal does not own these generated files.
 
 ```bash
-systemctl --user disable --now agentdictated.service agentdictate-ydotoold.service
+systemctl --user disable --now agentdictated.service
 
 agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 agentdictate_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 rm -f -- \
   "$agentdictate_config_home/autostart/local.agentdictate.AgentDictate.desktop" \
-  "$agentdictate_data_home/systemd/user/agentdictated.service" \
-  "$agentdictate_data_home/systemd/user/agentdictate-ydotoold.service"
+  "$agentdictate_data_home/systemd/user/agentdictated.service"
 systemctl --user daemon-reload
 ```
 

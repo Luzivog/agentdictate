@@ -379,7 +379,7 @@ impl SystemDeliverer {
         Self {
             clipboard: CommandClipboard::for_system(runner),
             focus: X11FocusObserver::for_system(runner),
-            injector: PasteInjector::for_system(runner),
+            injector: PasteInjector::new(),
             shortcut_mode: shortcut_mode(paste_shortcut),
             wayland_session: std::env::var("XDG_SESSION_TYPE")
                 .is_ok_and(|session| session.eq_ignore_ascii_case("wayland")),
@@ -484,12 +484,12 @@ impl Deliverer for SystemDeliverer {
                     // This is deliberately exactly one injection. Once the
                     // command starts, an error is ambiguous and must not retry.
                     let protocol = target.protocol();
-                    let sent = match self.injector.inject(protocol, shortcut, deadline) {
-                        Ok(receipt) => {
+                    let sent = match self.injector.inject(shortcut, deadline) {
+                        Ok(()) => {
                             tracing::info!(
                                 ?protocol,
                                 ?shortcut,
-                                tool = receipt.tool.executable_name(),
+                                method = "uinput",
                                 "paste command submitted"
                             );
                             true
@@ -555,6 +555,56 @@ mod tests {
     use chrono::Utc;
     use tempfile::tempdir;
 
+    use evdev::{Device as EvdevReader, EventType as EvdevEventType, KeyCode as EvdevKeyCode};
+
+    /// Grabs the given injector's own uinput device (EVIOCGRAB) so injected
+    /// chords are consumed by the test instead of reaching the live desktop.
+    /// Targeting the injector's node keeps this unambiguous even while a real
+    /// agentdictated daemon (with an identically named device) is running.
+    fn grab_injection_device(injector: &mut PasteInjector) -> EvdevReader {
+        let node = injector.device_node().expect("injector exposes a device node");
+        // udev applies the session ACL to a fresh uinput node asynchronously;
+        // retry the open briefly instead of failing on the race.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut reader = loop {
+            match EvdevReader::open(&node) {
+                Ok(reader) => break reader,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("open {} failed: {error}", node.display()),
+            }
+        };
+        reader.grab().expect("injection device is grabbable");
+        reader.set_nonblocking(true).expect("reader supports nonblocking");
+        reader
+    }
+
+    fn injected_key_events(
+        reader: &mut EvdevReader,
+        expected: usize,
+    ) -> Vec<(EvdevKeyCode, i32)> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut events = Vec::new();
+        while events.len() < expected && Instant::now() < deadline {
+            match reader.fetch_events() {
+                Ok(batch) => events.extend(
+                    batch
+                        .filter(|event| event.event_type() == EvdevEventType::KEY)
+                        .map(|event| (EvdevKeyCode::new(event.code()), event.value())),
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("reading injected events failed: {error}"),
+            }
+        }
+        events
+    }
+
     #[test]
     fn work_area_detection_returns_after_its_command_deadline() {
         let directory = tempdir().unwrap();
@@ -576,6 +626,11 @@ mod tests {
 
     #[test]
     fn successful_paste_command_is_reported_as_submitted() {
+        if !std::path::Path::new("/dev/uinput").exists() {
+            return;
+        }
+        let mut injector = PasteInjector::new();
+        let mut reader = grab_injection_device(&mut injector);
         let directory = tempdir().unwrap();
         let clipboard_state = directory.path().join("clipboard.txt");
         let xsel = directory.path().join("xsel");
@@ -598,7 +653,7 @@ mod tests {
         let xdotool = directory.path().join("xdotool");
         fs::write(
             &xdotool,
-            "#!/bin/sh\ncase \"$1\" in\n  getactivewindow) printf '42\\n' ;;\n  key) exit 0 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  getactivewindow) printf '42\\n' ;;\nesac\n",
         )
         .unwrap();
         fs::set_permissions(&xdotool, fs::Permissions::from_mode(0o755)).unwrap();
@@ -624,14 +679,10 @@ mod tests {
             ),
             focus: X11FocusObserver::new(
                 runner,
-                xdotool.clone(),
+                xdotool,
                 PlatformExecutable::at(PlatformTool::Xprop, xprop),
             ),
-            injector: PasteInjector::new(
-                runner,
-                PlatformExecutable::missing(PlatformTool::Ydotool),
-                xdotool,
-            ),
+            injector,
             shortcut_mode: ShortcutMode::Standard,
             wayland_session: false,
             active_publications: Vec::new(),
@@ -665,10 +716,24 @@ mod tests {
                 paste_triggered: true,
             }
         );
+        assert_eq!(
+            injected_key_events(&mut reader, 4),
+            vec![
+                (EvdevKeyCode::KEY_LEFTCTRL, 1),
+                (EvdevKeyCode::KEY_V, 1),
+                (EvdevKeyCode::KEY_V, 0),
+                (EvdevKeyCode::KEY_LEFTCTRL, 0),
+            ],
+        );
     }
 
     #[test]
     fn automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste() {
+        if !std::path::Path::new("/dev/uinput").exists() {
+            return;
+        }
+        let mut injector = PasteInjector::new();
+        let mut reader = grab_injection_device(&mut injector);
         let directory = tempdir().unwrap();
         let clipboard_state = directory.path().join("clipboard.txt");
         let primary_state = directory.path().join("primary.txt");
@@ -714,17 +779,6 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&wl_paste, fs::Permissions::from_mode(0o755)).unwrap();
-        let ydotool_log = directory.path().join("ydotool.log");
-        let ydotool = directory.path().join("ydotool");
-        fs::write(
-            &ydotool,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
-                ydotool_log.display(),
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&ydotool, fs::Permissions::from_mode(0o755)).unwrap();
         let runner = SystemCommandRunner;
         let mut deliverer = SystemDeliverer {
             clipboard: CommandClipboard::new(
@@ -738,11 +792,7 @@ mod tests {
                 PlatformExecutable::missing(PlatformTool::Xdotool),
                 PlatformExecutable::missing(PlatformTool::Xprop),
             ),
-            injector: PasteInjector::new(
-                runner,
-                PlatformExecutable::at(PlatformTool::Ydotool, ydotool),
-                PlatformExecutable::missing(PlatformTool::Xdotool),
-            ),
+            injector,
             shortcut_mode: ShortcutMode::Auto,
             wayland_session: true,
             active_publications: Vec::new(),
@@ -802,8 +852,13 @@ mod tests {
                 .all(|arguments| matches!(arguments, "--no-newline --primary" | "--no-newline"))
         );
         assert_eq!(
-            fs::read_to_string(ydotool_log).unwrap(),
-            "key --delay 50 --key-delay 25 shift+insert\n"
+            injected_key_events(&mut reader, 4),
+            vec![
+                (EvdevKeyCode::KEY_LEFTSHIFT, 1),
+                (EvdevKeyCode::KEY_INSERT, 1),
+                (EvdevKeyCode::KEY_INSERT, 0),
+                (EvdevKeyCode::KEY_LEFTSHIFT, 0),
+            ],
         );
     }
 

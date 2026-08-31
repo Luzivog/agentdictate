@@ -48,8 +48,6 @@ install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${UDEV_RULES_DIR}/70-agentdictate-input.rules"
 install -m 0644 "${PROJECT_DIR}/packaging/agentdictated.service" \
   "${SYSTEMD_USER_DIR}/agentdictated.service"
-install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-ydotoold.service" \
-  "${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
 printf '%s\n' \
   "/etc/xdg/autostart/${DESKTOP_ID}.desktop" > "${PKG_DIR}/conffiles"
 
@@ -109,7 +107,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, ydotoold | ydotool (>= 1.0.4), xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
+Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, udev, systemd, wl-clipboard, xsel, xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
 Maintainer: AgentDictate <local@agentdictate>
 Description: Fast native Linux dictation for AI coding prompts
  AgentDictate records speech, transcribes it with OpenAI, safely checkpoints

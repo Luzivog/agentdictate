@@ -14,8 +14,8 @@
 
 ## Install
 
-These steps are tested on Ubuntu 24.04. Debian 13 requires `ydotool` from
-`trixie-backports`. The [system requirements](docs/INSTALL.md#requirements)
+These steps are tested on Ubuntu 24.04. The
+[system requirements](docs/INSTALL.md#requirements)
 cover both distributions. A graphical session with a working systemd user
 manager, a running PipeWire session, and Rust 1.95.0 through
 [rustup](https://rustup.rs/) are required.
@@ -151,10 +151,8 @@ import running. Stop them with **Quit AgentDictate** in the tray or
 
 The fresh-install behavior above comes from an XDG autostart entry. Turn off
 **Start on login** to prevent the AgentDictate daemon from starting at future
-logins. This does not stop a running daemon or disable the separately enabled
-`ydotoold` helper. Disable that helper with
-`systemctl --user disable --now agentdictate-ydotoold.service`. Reinstalls
-preserve the AgentDictate setting.
+logins. This does not stop a running daemon. Reinstalls preserve the AgentDictate
+setting.
 
 ## Architecture
 

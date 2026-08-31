@@ -14,8 +14,6 @@ mod hotkey;
 mod hotkey_listener;
 #[path = "linux/hotkey_property.rs"]
 mod hotkey_property;
-#[path = "linux/injection.rs"]
-mod injection;
 #[path = "linux/paste_delivery.rs"]
 mod paste_delivery;
 #[path = "linux/recorder.rs"]

@@ -52,32 +52,6 @@ agentdictate_command_exists() {
   fi
 }
 
-agentdictate_ydotoold_is_ready() {
-  local systemctl_command="${AGENTDICTATE_SYSTEMCTL_COMMAND:-systemctl}"
-  if agentdictate_command_exists "${systemctl_command}"; then
-    if "${systemctl_command}" --user is-active --quiet \
-      agentdictate-ydotoold.service 2>/dev/null; then
-      return 0
-    fi
-    if "${systemctl_command}" --user is-active --quiet ydotoold.service \
-      2>/dev/null; then
-      return 0
-    fi
-  fi
-
-  local socket_path
-  if [[ -n "${YDOTOOL_SOCKET:-}" ]]; then
-    [[ -S "${YDOTOOL_SOCKET}" ]]
-    return
-  fi
-  for socket_path in \
-    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/.ydotool_socket" \
-    "/tmp/.ydotool_socket"; do
-    [[ -S "${socket_path}" ]] && return 0
-  done
-  return 1
-}
-
 agentdictate_check_native_readiness() {
   local failed=0
   local keyboard_count=0
@@ -110,25 +84,10 @@ agentdictate_check_native_readiness() {
 
   local uinput_path="${AGENTDICTATE_UINPUT_PATH:-/dev/uinput}"
   if [[ ! -w "${uinput_path}" ]]; then
-    echo "Native input issue: Cannot write ${uinput_path}; Wayland paste injection is unavailable." >&2
+    echo "Native input issue: Cannot write ${uinput_path}; paste injection is unavailable." >&2
     failed=1
   elif agentdictate_world_permission_is_set "${uinput_path}" 2; then
     echo "Native input issue: ${uinput_path} is world-accessible; replace the permissive rule with 70-agentdictate-input.rules." >&2
-    failed=1
-  fi
-
-  local ydotool_command="${AGENTDICTATE_YDOTOOL_COMMAND:-ydotool}"
-  local ydotoold_command="${AGENTDICTATE_YDOTOOLD_COMMAND:-ydotoold}"
-  if ! agentdictate_command_exists "${ydotool_command}"; then
-    echo "Native input issue: ydotool is not installed; Wayland paste injection is unavailable." >&2
-    failed=1
-  fi
-  if ! agentdictate_command_exists "${ydotoold_command}"; then
-    echo "Native input issue: ydotoold is not installed; Wayland paste injection is unavailable." >&2
-    failed=1
-  elif ! agentdictate_ydotoold_is_ready; then
-    echo "Native input issue: the ydotoold user service is not active." >&2
-    echo "  Run: systemctl --user enable --now agentdictate-ydotoold.service" >&2
     failed=1
   fi
 

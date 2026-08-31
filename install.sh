@@ -76,8 +76,6 @@ trap - EXIT
 
 install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" \
   "${ICON_DIR}/agentdictate.svg"
-install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-ydotoold.service" \
-  "${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${NATIVE_ACCESS_DIR}/70-agentdictate-input.rules"
 install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
@@ -100,7 +98,6 @@ echo "Installed native AgentDictate:"
 echo "  ${BIN_DIR}/agentdictate"
 echo "  ${BIN_DIR}/agentdictated"
 echo "  ${SERVICE_TARGET}"
-echo "  ${SYSTEMD_USER_DIR}/agentdictate-ydotoold.service"
 
 if ! agentdictate_check_native_readiness; then
   cat >&2 <<EOF

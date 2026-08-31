@@ -7,11 +7,11 @@ license.workspace = true
 
 [features]
 default = []
-native-hotkey = ["dep:evdev"]
+native-hotkey = []
 
 [dependencies]
 agentdictate-core.workspace = true
-evdev = { version = "0.13.2", optional = true }
+evdev = "0.13.2"
 libc = "0.2"
 tracing.workspace = true
 

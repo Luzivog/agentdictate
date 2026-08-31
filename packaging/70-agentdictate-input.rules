@@ -1,5 +1,5 @@
-# AgentDictate reads keyboard events for its global shortcut and ydotoold
-# writes uinput for Wayland paste delivery. Access follows the active local
-# logind session instead of granting persistent access to every local user.
+# AgentDictate reads keyboard events for its global shortcut and writes
+# uinput itself for paste delivery. Access follows the active local logind
+# session instead of granting persistent access to every local user.
 ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", MODE="0660", TAG+="uaccess"
 ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="uinput", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uinput"

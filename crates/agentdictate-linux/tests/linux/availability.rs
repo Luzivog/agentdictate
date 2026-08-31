@@ -7,8 +7,7 @@ use agentdictate_linux::{
         PlatformTool, SystemCommandRunner,
     },
     focus::X11FocusObserver,
-    injection::PasteInjector,
-    paste::{ClipboardProtocol, PasteShortcut},
+    paste::ClipboardProtocol,
 };
 
 fn deadline() -> Instant {
@@ -35,29 +34,17 @@ fn focus_reports_every_missing_tool_as_typed_availability_data() {
 }
 
 #[test]
-fn clipboard_and_injection_report_the_protocol_specific_capability() {
+fn clipboard_reports_the_protocol_specific_capability() {
     let clipboard = CommandClipboard::new(
         SystemCommandRunner,
         PlatformExecutable::missing(PlatformTool::WlCopy),
         PlatformExecutable::missing(PlatformTool::WlPaste),
         PlatformExecutable::missing(PlatformTool::Xsel),
     );
-    let injector = PasteInjector::new(
-        SystemCommandRunner,
-        PlatformExecutable::missing(PlatformTool::Ydotool),
-        PlatformExecutable::missing(PlatformTool::Xdotool),
-    );
 
     let clipboard_error = clipboard
         .publish(ClipboardProtocol::Wayland, b"transcript", deadline())
         .expect_err("Wayland clipboard tools are missing");
-    let injection_error = injector
-        .inject(
-            ClipboardProtocol::Wayland,
-            PasteShortcut::Standard,
-            deadline(),
-        )
-        .expect_err("Wayland injection tool is missing");
 
     assert!(matches!(
         clipboard_error,
@@ -65,13 +52,6 @@ fn clipboard_and_injection_report_the_protocol_specific_capability() {
             capability: PlatformCapability::WaylandClipboard,
             missing_tools,
         }) if missing_tools == [PlatformTool::WlCopy, PlatformTool::WlPaste]
-    ));
-    assert!(matches!(
-        injection_error,
-        PlatformCommandError::Unavailable(AvailabilityDiagnostic {
-            capability: PlatformCapability::WaylandPasteInjection,
-            missing_tools,
-        }) if missing_tools == [PlatformTool::Ydotool]
     ));
 }
 

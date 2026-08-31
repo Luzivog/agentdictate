@@ -34,8 +34,6 @@ install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${APPDIR}/usr/share/doc/agentdictate/native-access/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${APPDIR}/usr/share/doc/agentdictate/native-access/70-agentdictate-input.rules"
-install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-ydotoold.service" \
-  "${APPDIR}/usr/share/doc/agentdictate/native-access/agentdictate-ydotoold.service"
 
 # Keep glibc and graphics drivers host-provided, but bundle the ordinary ELF
 # libraries that the Rust binaries link directly or transitively.
