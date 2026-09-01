@@ -1,5 +1,14 @@
 # Repository Guidelines
 
+## Mainline Delivery Workflow
+
+All work happens directly on `main`. Do not create feature branches, worktree
+branches, or pull requests for this repository. When a change is complete and
+its focused tests pass: commit on `main`, push to `origin/main`, rebuild and
+reinstall the release binaries with `./install.sh`, and restart the running
+daemon (`systemctl --user restart agentdictated`) so the change is actually
+live. A change is not done until it is committed, pushed, and running.
+
 ## Project Structure & Module Organization
 
 AgentDictate is a Rust workspace for a native Linux dictation app. The workspace

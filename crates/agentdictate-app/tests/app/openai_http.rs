@@ -221,58 +221,10 @@ fn a_future_unverified_transcription_model_is_sent_using_the_safe_standard_profi
     assert_eq!(text, "Complete future-model result.");
     assert!(request.contains("name=\"model\"\r\n\r\ngpt-6-transcribe"));
     assert!(request.contains("name=\"response_format\"\r\n\r\ntext"));
-}
-
-#[test]
-fn long_incomplete_transcription_retries_with_whisper_and_keeps_the_better_text() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let (request_sender, request_receiver) = mpsc::channel();
-    let server = thread::spawn(move || {
-        for body in [
-            r#"{"text":"Only the opening sentence."}"#,
-            "Only the opening sentence. The rest of the recording is here too.",
-        ] {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_request(&mut stream);
-            request_sender.send(request).unwrap();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
-        }
-    });
-    let directory = tempdir().unwrap();
-    let audio_path = directory.path().join("recording.wav");
-    std::fs::write(&audio_path, b"RIFFrecorded speech").unwrap();
-    let mut transport =
-        ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{address}/v1"));
-
-    let text = transport
-        .transcribe_audio(TranscriptionRequest {
-            audio_path: &audio_path,
-            provider: TranscriptionProvider::OpenAiApi,
-            model: "gpt-transcribe",
-            language: "en",
-            prompt: "AgentDictate",
-            duration_seconds: 30.0,
-        })
-        .unwrap();
-
-    assert_eq!(
-        text,
-        "Only the opening sentence. The rest of the recording is here too."
-    );
-    let primary_request = request_receiver.recv().unwrap();
-    let fallback_request = request_receiver.recv().unwrap();
-    server.join().unwrap();
-    assert!(primary_request.contains("name=\"model\"\r\n\r\ngpt-transcribe"));
-    assert!(fallback_request.contains("name=\"model\"\r\n\r\nwhisper-1"));
-    assert!(fallback_request.contains("name=\"language\"\r\n\r\nen"));
-    assert!(fallback_request.contains("Transcribe the entire recording"));
+    // The user's prompt is forwarded verbatim; no synthetic completeness
+    // instructions are injected for unknown models.
+    assert!(request.contains("name=\"prompt\"\r\n\r\nAgentDictate"));
+    assert!(!request.contains("Transcribe the entire recording"));
 }
 
 fn read_http_request(stream: &mut impl Read) -> String {

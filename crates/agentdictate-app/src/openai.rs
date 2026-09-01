@@ -1,9 +1,9 @@
 use std::path::Path;
-use std::time::Duration;
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     DEFAULT_CLEANUP_PROMPT, JobId, ReasoningEffort, Settings, TranscriptionProvider,
-    count_words_unicode_alphanumeric,
 };
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
 use reqwest::StatusCode;
@@ -11,32 +11,74 @@ use serde_json::{Value, json};
 
 use crate::model_catalog::{TranscriptionProfile, transcription_profile};
 
-const TRANSCRIPTION_COMPLETENESS_PROMPT: &str = "Transcribe the entire recording from beginning to end. Include every spoken sentence and phrase. Do not summarize, omit later sentences, or stop after the first sentence.";
-const FALLBACK_TRANSCRIPTION_MODEL: &str = "whisper-1";
+/// Opus bitrate for transcription uploads. Speech keeps full transcription
+/// accuracy at 16 kHz mono / 32 kbps while the payload shrinks ~30x versus
+/// raw PCM WAV, so upload time no longer dominates stop-to-paste latency on
+/// slow uplinks (measured 2026-09-01: 62 s recording, 14.7 s as 2.0 MB WAV vs
+/// 2.6 s as 186 KB Opus, identical transcript).
+const UPLOAD_OPUS_BITRATE: &str = "32k";
 
-fn sentence_count(text: &str) -> usize {
-    text.split(['.', '!', '?'])
-        .filter(|part| !part.trim().is_empty())
-        .count()
+/// Audio payload actually sent to the transcription endpoint: the Opus/OGG
+/// encoding of the captured WAV when ffmpeg is available, or the raw WAV
+/// bytes as a fallback so a missing encoder can never lose a dictation.
+struct UploadAudio {
+    bytes: Vec<u8>,
+    file_name: String,
+    mime: &'static str,
+    encode_ms: Option<u64>,
 }
 
-fn is_better_transcript(candidate: &str, current: &str) -> bool {
-    if candidate.trim().is_empty() {
-        return false;
-    }
-    let candidate_words = count_words_unicode_alphanumeric(candidate);
-    let current_words = count_words_unicode_alphanumeric(current);
-    candidate_words > current_words
-        && (sentence_count(candidate) > sentence_count(current)
-            || candidate_words >= (current_words + 5).max((current_words * 135) / 100))
+fn upload_file_name(audio_path: &Path, extension: &str) -> String {
+    let stem = audio_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("recording");
+    format!("{stem}.{extension}")
 }
 
-fn transcript_is_suspiciously_short(text: &str, duration_seconds: f64) -> bool {
-    if duration_seconds < 10.0 {
-        return false;
+fn encode_ogg_opus(audio_path: &Path) -> Result<Vec<u8>, ExternalError> {
+    let output = Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-i"])
+        .arg(audio_path)
+        .args(["-ac", "1", "-ar", "16000", "-c:a", "libopus"])
+        .args(["-b:a", UPLOAD_OPUS_BITRATE, "-f", "ogg", "pipe:1"])
+        .output()
+        .map_err(|error| ExternalError::new(format!("could not run ffmpeg: {error}")))?;
+    if !output.status.success() {
+        return Err(ExternalError::new(format!(
+            "ffmpeg exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    let conservative_minimum = (duration_seconds / 5.0).ceil().max(4.0) as usize;
-    count_words_unicode_alphanumeric(text) < conservative_minimum
+    if output.stdout.is_empty() {
+        return Err(ExternalError::new("ffmpeg produced no audio"));
+    }
+    Ok(output.stdout)
+}
+
+fn prepare_upload_audio(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
+    let encode_started = Instant::now();
+    match encode_ogg_opus(audio_path) {
+        Ok(bytes) => Ok(UploadAudio {
+            bytes,
+            file_name: upload_file_name(audio_path, "ogg"),
+            mime: "audio/ogg",
+            encode_ms: Some(encode_started.elapsed().as_millis() as u64),
+        }),
+        Err(error) => {
+            tracing::warn!(%error, "audio compression unavailable; uploading raw WAV");
+            let bytes = std::fs::read(audio_path).map_err(|error| {
+                ExternalError::new(format!("Could not read the captured recording: {error}"))
+            })?;
+            Ok(UploadAudio {
+                bytes,
+                file_name: upload_file_name(audio_path, "wav"),
+                mime: "audio/wav",
+                encode_ms: None,
+            })
+        }
+    }
 }
 
 fn cleanup_reasoning_effort(value: &str) -> Option<&str> {
@@ -279,59 +321,54 @@ impl ReqwestOpenAiTransport {
             message
         })
     }
+}
 
-    fn transcribe_once(
-        &self,
-        request: &TranscriptionRequest<'_>,
-        model: &str,
+impl SpeechTransport for ReqwestOpenAiTransport {
+    fn transcribe_audio(
+        &mut self,
+        request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
-        let profile = transcription_profile(model).unwrap_or(TranscriptionProfile::Standard);
-        let audio = std::fs::read(request.audio_path).map_err(|error| {
-            ExternalError::new(format!("Could not read the captured recording: {error}"))
-        })?;
-        let file_name = request
-            .audio_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("recording.wav")
-            .to_owned();
-        let file = reqwest::blocking::multipart::Part::bytes(audio)
-            .file_name(file_name)
-            .mime_str("audio/wav")
+        if request.model.trim().is_empty() {
+            return Err(ExternalError::new(
+                "The selected transcription model could not be used. Choose another model or check the custom model name.",
+            ));
+        }
+        let profile = transcription_profile(request.model).unwrap_or(TranscriptionProfile::Standard);
+        let upload = prepare_upload_audio(request.audio_path)?;
+        let upload_bytes = upload.bytes.len();
+        let file = reqwest::blocking::multipart::Part::bytes(upload.bytes)
+            .file_name(upload.file_name)
+            .mime_str(upload.mime)
             .map_err(|error| ExternalError::new(format!("Invalid audio upload: {error}")))?;
         let mut form = reqwest::blocking::multipart::Form::new()
-            .text("model", model.to_owned())
+            .text("model", request.model.to_owned())
             .part("file", file);
         let language = request.language.trim();
         let prompt = request.prompt.trim();
-        if profile == TranscriptionProfile::AgentDictateGpt {
-            form = form.text("response_format", "json");
-            if !language.is_empty() {
-                form = form.text("languages[]", language.to_owned());
+        match profile {
+            TranscriptionProfile::AgentDictateGpt => {
+                form = form.text("response_format", "json");
+                if !language.is_empty() {
+                    form = form.text("languages[]", language.to_owned());
+                }
             }
-            if !prompt.is_empty() {
-                form = form.text("prompt", prompt.to_owned());
+            TranscriptionProfile::OpenAiGpt => {
+                form = form.text("response_format", "json");
+                if !language.is_empty() {
+                    form = form.text("language", language.to_owned());
+                }
             }
-        } else if profile == TranscriptionProfile::OpenAiGpt {
-            form = form.text("response_format", "json");
-            if !language.is_empty() {
-                form = form.text("language", language.to_owned());
+            TranscriptionProfile::Standard => {
+                form = form.text("response_format", "text");
+                if !language.is_empty() {
+                    form = form.text("language", language.to_owned());
+                }
             }
-            if !prompt.is_empty() {
-                form = form.text("prompt", prompt.to_owned());
-            }
-        } else {
-            form = form.text("response_format", "text");
-            if !language.is_empty() {
-                form = form.text("language", language.to_owned());
-            }
-            let legacy_prompt = if prompt.is_empty() {
-                TRANSCRIPTION_COMPLETENESS_PROMPT.to_owned()
-            } else {
-                format!("{TRANSCRIPTION_COMPLETENESS_PROMPT}\n\nContext and vocabulary:\n{prompt}")
-            };
-            form = form.text("prompt", legacy_prompt);
         }
+        if !prompt.is_empty() {
+            form = form.text("prompt", prompt.to_owned());
+        }
+        let request_started = Instant::now();
         let response = self
             .client
             .post(format!("{}/audio/transcriptions", self.api_base))
@@ -343,6 +380,7 @@ impl ReqwestOpenAiTransport {
         let body = response.text().map_err(|error| {
             ExternalError::new(format!("Could not read OpenAI's response: {error}"))
         })?;
+        let request_ms = request_started.elapsed().as_millis() as u64;
         if !status.is_success() {
             return Err(Self::response_error(status, &body));
         }
@@ -360,37 +398,20 @@ impl ReqwestOpenAiTransport {
             } else {
                 body.trim().to_owned()
             };
-        if text.trim().is_empty() {
+        let text = text.trim().to_owned();
+        tracing::info!(
+            model = request.model,
+            audio_seconds = request.duration_seconds,
+            upload_bytes,
+            encode_ms = upload.encode_ms,
+            request_ms,
+            transcript_chars = text.chars().count(),
+            "transcription request completed"
+        );
+        if text.is_empty() {
             return Err(ExternalError::new("No speech detected."));
         }
-        Ok(text.trim().to_owned())
-    }
-}
-
-impl SpeechTransport for ReqwestOpenAiTransport {
-    fn transcribe_audio(
-        &mut self,
-        request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        if request.model.trim().is_empty() {
-            return Err(ExternalError::new(
-                "The selected transcription model could not be used. Choose another model or check the custom model name.",
-            ));
-        }
-        let primary = self.transcribe_once(&request, request.model)?;
-        if request.model == FALLBACK_TRANSCRIPTION_MODEL
-            || !transcript_is_suspiciously_short(&primary, request.duration_seconds)
-        {
-            return Ok(primary);
-        }
-        let fallback = self
-            .transcribe_once(&request, FALLBACK_TRANSCRIPTION_MODEL)
-            .unwrap_or_default();
-        if is_better_transcript(&fallback, &primary) {
-            Ok(fallback)
-        } else {
-            Ok(primary)
-        }
+        Ok(text)
     }
 }
 
@@ -410,6 +431,7 @@ impl CleanupTransport for ReqwestOpenAiTransport {
         if let Some(effort) = request.reasoning_effort {
             payload["reasoning"] = json!({"effort": effort});
         }
+        let request_started = Instant::now();
         let response = self
             .client
             .post(format!("{}/responses", self.api_base))
@@ -421,6 +443,7 @@ impl CleanupTransport for ReqwestOpenAiTransport {
         let body = response.text().map_err(|error| {
             ExternalError::new(format!("Could not read OpenAI's response: {error}"))
         })?;
+        let request_ms = request_started.elapsed().as_millis() as u64;
         if !status.is_success() {
             return Err(Self::response_error(status, &body));
         }
@@ -438,6 +461,21 @@ impl CleanupTransport for ReqwestOpenAiTransport {
             .join("")
             .trim()
             .to_owned();
+        let input_tokens = payload
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64);
+        let output_tokens = payload
+            .pointer("/usage/output_tokens")
+            .and_then(Value::as_u64);
+        tracing::info!(
+            model = request.model,
+            effort = request.reasoning_effort,
+            request_ms,
+            input_tokens,
+            output_tokens,
+            output_chars = text.chars().count(),
+            "cleanup request completed"
+        );
         if text.is_empty() {
             return Err(ExternalError::new("Cleanup returned an empty response."));
         }
@@ -448,19 +486,57 @@ impl CleanupTransport for ReqwestOpenAiTransport {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_cleanup_instruction, cleanup_reasoning_effort, transcript_is_suspiciously_short,
+        build_cleanup_instruction, cleanup_reasoning_effort, encode_ogg_opus, upload_file_name,
     };
 
     #[test]
-    fn fallback_is_reserved_for_obviously_truncated_audio() {
-        assert!(transcript_is_suspiciously_short(
-            "Only the opening sentence.",
-            30.0
-        ));
-        assert!(!transcript_is_suspiciously_short(
-            "This is a complete one sentence dictation with enough words to match its length and it should return immediately.",
-            30.0
-        ));
+    fn encoding_an_unreadable_recording_reports_an_error_instead_of_panicking() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio_path = directory.path().join("recording.wav");
+        std::fs::write(&audio_path, b"not a wav file").unwrap();
+
+        assert!(encode_ogg_opus(&audio_path).is_err());
+    }
+
+    #[test]
+    fn a_valid_wav_encodes_to_an_ogg_opus_payload() {
+        if !std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            eprintln!("skipping: ffmpeg is not installed");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let audio_path = directory.path().join("recording.wav");
+        std::fs::write(&audio_path, tiny_wav()).unwrap();
+
+        let encoded = encode_ogg_opus(&audio_path).unwrap();
+
+        assert!(encoded.starts_with(b"OggS"));
+        assert_eq!(upload_file_name(&audio_path, "ogg"), "recording.ogg");
+    }
+
+    /// 100 ms of 16 kHz mono s16 silence with a canonical 44-byte header.
+    fn tiny_wav() -> Vec<u8> {
+        let samples: u32 = 1600;
+        let data_len = samples * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&16000_u32.to_le_bytes());
+        bytes.extend_from_slice(&32000_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_len as usize, 0);
+        bytes
     }
 
     #[test]

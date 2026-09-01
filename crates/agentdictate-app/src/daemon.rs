@@ -173,6 +173,7 @@ where
     }
 
     pub fn stop_recording(&mut self) -> Result<RecordingJob, DaemonError> {
+        let stop_started = std::time::Instant::now();
         let id = self.active_job.ok_or(DaemonError::NotRecording)?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
@@ -274,7 +275,12 @@ where
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
-        tracing::info!(job_id = %id, stage = ?result.stage, "dictation flow completed");
+        tracing::info!(
+            job_id = %id,
+            stage = ?result.stage,
+            stop_to_paste_ms = stop_started.elapsed().as_millis() as u64,
+            "dictation flow completed"
+        );
         Ok(result)
     }
 

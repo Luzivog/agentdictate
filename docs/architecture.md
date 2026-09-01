@@ -57,6 +57,17 @@ signed into Codex. `crates/agentdictate-app/src/chatgpt_dictation_import.rs`
 imports completed ChatGPT desktop dictation records into local history. The
 undocumented route can stop working without notice.
 
+## Transcription Upload
+
+The daemon captures 16 kHz mono s16 WAV. Before the OpenAI transcription
+request, the app transport encodes the capture to Opus/OGG (ffmpeg, 32 kbps)
+so upload time does not dominate stop-to-paste latency on slow uplinks; if
+ffmpeg is unavailable or encoding fails, it falls back to uploading the raw
+WAV. The durable on-disk artifact stays WAV — recovery and retry are
+unaffected. Each transcription and cleanup request logs its payload size,
+encode time, and request time, and the daemon logs total stop-to-paste time
+per dictation.
+
 ## Daemon And Settings App Communication
 
 The settings app (`agentdictate`) talks to the daemon (`agentdictated`) over a
