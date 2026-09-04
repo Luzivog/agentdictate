@@ -5,7 +5,7 @@ use std::sync::{
 
 use agentdictate_app::{
     AgentProcess, AppPaths, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
-    detect_primary_work_area, init_file_logging, is_overlay_helper_argument, run_overlay_helper,
+    init_file_logging, is_overlay_helper_argument, run_overlay_helper,
     settings_executable_for_current_process, start_hotkey_listener, start_overlay_presenter,
     start_system_tray,
 };
@@ -43,11 +43,11 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let mut process = AgentProcess::open(paths)?;
     let overlay_presenter = match std::env::current_exe()
         .map_err(anyhow::Error::from)
-        .and_then(|executable| {
-            start_overlay_presenter(executable, detect_primary_work_area())
-                .map_err(anyhow::Error::from)
-        }) {
+        .and_then(|executable| start_overlay_presenter(executable).map_err(anyhow::Error::from))
+    {
         Ok((controller, thread)) => {
+            controller
+                .notify_health_changes_at(runtime.join(agentdictate_app::OVERLAY_HEALTH_FILE));
             process.set_overlay_controller(controller);
             Some(thread)
         }

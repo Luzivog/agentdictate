@@ -22,7 +22,5 @@ mod support;
 mod transcription;
 #[path = "app/tray.rs"]
 mod tray;
-#[path = "app/work_area.rs"]
-mod work_area;
 #[path = "app/workspace_process.rs"]
 mod workspace_process;

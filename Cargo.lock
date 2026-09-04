@@ -79,6 +79,7 @@ dependencies = [
  "libc",
  "proptest",
  "tracing",
+ "x11rb",
 ]
 
 [[package]]
@@ -104,6 +105,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui-component",
+ "raw-window-handle",
  "thiserror 2.0.20",
 ]
 

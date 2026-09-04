@@ -7,10 +7,11 @@ license.workspace = true
 
 [features]
 default = []
-desktop = ["dep:futures", "dep:gpui", "dep:gpui-component"]
+desktop = ["dep:futures", "dep:gpui", "dep:gpui-component", "dep:raw-window-handle"]
 test-support = ["desktop", "gpui/test-support"]
 
 [dependencies]
+raw-window-handle = { version = "0.6", optional = true }
 agentdictate-core.workspace = true
 thiserror.workspace = true
 futures = { version = "0.3", optional = true }

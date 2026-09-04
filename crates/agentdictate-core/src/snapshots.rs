@@ -213,6 +213,8 @@ pub struct ModelCatalogSnapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
+    #[serde(default)]
+    pub overlay_unavailable: bool,
     pub recoveries: Vec<RecoverySnapshot>,
     #[serde(default)]
     pub recent_history: Vec<HistorySnapshot>,

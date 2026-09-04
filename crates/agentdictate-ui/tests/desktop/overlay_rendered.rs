@@ -6,7 +6,7 @@ use std::{
     fs,
     ops::Deref,
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use agentdictate_core::{JobId, Workflow, WorkflowSignal};
@@ -22,7 +22,7 @@ use gpui_component::Root;
 
 #[gpui::test]
 fn recording_overlay_restores_the_twenty_bar_waveform_and_timer(cx: &mut TestAppContext) {
-    let (audio_path, cx) = open_recording_overlay(cx, 0);
+    let (audio_path, _, cx) = open_recording_overlay(cx, 0);
 
     let card = cx
         .debug_bounds("recording-overlay-card")
@@ -60,7 +60,7 @@ fn recording_overlay_restores_the_twenty_bar_waveform_and_timer(cx: &mut TestApp
 
 #[gpui::test]
 fn hour_long_timer_shrinks_the_waveform_without_overlap_or_clipping(cx: &mut TestAppContext) {
-    let (audio_path, cx) = open_recording_overlay(cx, 3_661_100);
+    let (audio_path, _, cx) = open_recording_overlay(cx, 3_661_100);
 
     let timer = cx
         .debug_bounds("recording-overlay-timer")
@@ -74,7 +74,11 @@ fn hour_long_timer_shrinks_the_waveform_without_overlap_or_clipping(cx: &mut Tes
 fn open_recording_overlay(
     cx: &mut TestAppContext,
     elapsed_millis: i64,
-) -> (PathBuf, &'static mut VisualTestContext) {
+) -> (
+    PathBuf,
+    gpui::Entity<RecordingOverlay>,
+    &'static mut VisualTestContext,
+) {
     test_support::initialize(cx);
     let audio_path = std::env::temp_dir().join(format!(
         "agentdictate-rendered-overlay-{}-{elapsed_millis}.wav",
@@ -119,7 +123,7 @@ fn open_recording_overlay(
     let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
     cx.run_until_parked();
 
-    (audio_path, cx)
+    (audio_path, overlay, cx)
 }
 
 fn assert_recording_content_fits(cx: &mut VisualTestContext) {
@@ -148,19 +152,33 @@ fn now_unix_millis() -> i64 {
 
 #[gpui::test]
 fn dismissal_preserves_the_rendered_card_while_it_fades(cx: &mut TestAppContext) {
-    // A distinct elapsed value keeps this fixture file separate from the
-    // waveform test's, which runs in parallel in the same process.
-    let (audio_path, cx) = open_recording_overlay(cx, 1);
-
-    cx.update(|_, _| {});
-    let overlay = cx
-        .debug_bounds("recording-overlay-recording")
-        .expect("overlay root renders before dismissal");
-    assert!(overlay.size.width > px(0.));
-
-    // The fade only lowers opacity; the card and its content keep rendering
-    // so nothing pops out of existence next to the taskbar.
+    let (audio_path, overlay, cx) = open_recording_overlay(cx, 1);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(100));
     cx.run_until_parked();
-
-    fs::remove_file(audio_path).expect("waveform fixture removes");
+    let opacity = |cx: &mut VisualTestContext| {
+        cx.read(|cx| overlay.read(cx).opacity_at(cx.background_executor().now()))
+    };
+    assert_eq!(opacity(cx), 1.0);
+    overlay.update(cx, |overlay, cx| {
+        overlay.begin_dismissal(cx.background_executor().now());
+        cx.notify();
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(60));
+    cx.run_until_parked();
+    assert!((opacity(cx) - 0.5).abs() < 0.01);
+    assert_recording_content_fits(cx);
+    // A second dismissal must not reset the fade clock.
+    overlay.update(cx, |overlay, cx| {
+        overlay.begin_dismissal(cx.background_executor().now());
+        cx.notify();
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(60));
+    cx.run_until_parked();
+    assert_eq!(opacity(cx), 0.0);
+    cx.debug_bounds("recording-overlay-card")
+        .expect("card remains until its owner closes the window");
+    fs::remove_file(audio_path).unwrap();
 }

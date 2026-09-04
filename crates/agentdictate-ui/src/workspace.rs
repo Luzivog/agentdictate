@@ -38,6 +38,7 @@ impl WorkspaceAction {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkspaceViewModel {
+    pub overlay_unavailable: bool,
     pub history: HistoryViewModel,
     pub recent_transcripts: Vec<TranscriptViewModel>,
     pub replacements: ReplacementsViewModel,
@@ -60,12 +61,19 @@ impl WorkspaceViewModel {
         usage: UsageViewModel,
     ) -> Self {
         Self {
+            overlay_unavailable: false,
             history,
             recent_transcripts,
             replacements,
             usage,
             model_catalog: ModelCatalogViewModel::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_overlay_unavailable(mut self, unavailable: bool) -> Self {
+        self.overlay_unavailable = unavailable;
+        self
     }
 
     #[must_use]

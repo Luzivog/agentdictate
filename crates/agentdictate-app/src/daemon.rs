@@ -452,6 +452,7 @@ where
         let replacements = self.runtime.replacement_rules()?;
         let usage = self.usage_snapshot()?;
         Ok(WorkspaceSnapshot {
+            overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
             recoveries,
             recent_history,
             history: history_page.rows,

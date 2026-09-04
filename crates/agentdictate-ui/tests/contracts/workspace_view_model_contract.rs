@@ -151,6 +151,7 @@ fn workspace_actions_own_stable_rendering_selectors() {
             replacements: ReplacementsViewModel::default(),
             usage: UsageViewModel::default(),
             model_catalog: agentdictate_ui::ModelCatalogViewModel::default(),
+            overlay_unavailable: false,
         }
     );
 }

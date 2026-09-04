@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -11,10 +10,7 @@ use agentdictate_core::{ClientCommand, JobId, ServerMessageKind, Settings};
 use agentdictate_linux::{
     audio_ducking::PlaybackDucker,
     clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
-    command::{
-        PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool,
-        SystemCommandRunner,
-    },
+    command::{PlatformCommandError, SystemCommandRunner},
     focus::X11FocusObserver,
     injection::PasteInjector,
     paste::{
@@ -27,64 +23,6 @@ use agentdictate_runtime::IpcClient;
 use agentdictate_runtime::{Deliverer, DeliveryDisposition, ExternalError, Recorder, RecordingJob};
 
 use crate::{CapturedRecording, RecordingController};
-
-const WORK_AREA_DETECTION_TIMEOUT: Duration = Duration::from_millis(250);
-
-pub fn detect_primary_work_area() -> Option<agentdictate_ui::LogicalRect> {
-    let xprop = PlatformExecutable::discover(PlatformTool::Xprop);
-    detect_primary_work_area_with(
-        &SystemCommandRunner,
-        &xprop,
-        Instant::now() + WORK_AREA_DETECTION_TIMEOUT,
-    )
-}
-
-fn detect_primary_work_area_with(
-    runner: &SystemCommandRunner,
-    xprop: &PlatformExecutable,
-    deadline: Instant,
-) -> Option<agentdictate_ui::LogicalRect> {
-    let output = runner
-        .run_output(
-            PlatformCapability::FocusObservation,
-            xprop,
-            &[
-                OsString::from("-root"),
-                OsString::from("_NET_CURRENT_DESKTOP"),
-                OsString::from("_NET_WORKAREA"),
-            ],
-            deadline,
-        )
-        .ok()?;
-    parse_x11_work_area(&String::from_utf8_lossy(&output))
-}
-
-#[must_use]
-pub fn parse_x11_work_area(output: &str) -> Option<agentdictate_ui::LogicalRect> {
-    let desktop = output
-        .lines()
-        .find(|line| line.contains("_NET_CURRENT_DESKTOP"))
-        .and_then(|line| line.split_once('='))
-        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    let values = output
-        .lines()
-        .find(|line| line.contains("_NET_WORKAREA"))
-        .and_then(|line| line.split_once('='))?
-        .1
-        .split(',')
-        .map(|value| value.trim().parse::<i64>())
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    let offset = desktop.checked_mul(4)?;
-    let geometry = values.get(offset..offset + 4)?;
-    Some(agentdictate_ui::LogicalRect::new(
-        i32::try_from(geometry[0]).ok()?,
-        i32::try_from(geometry[1]).ok()?,
-        u32::try_from(geometry[2]).ok()?,
-        u32::try_from(geometry[3]).ok()?,
-    ))
-}
 
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -538,6 +476,7 @@ fn shortcut_mode(paste_shortcut: &str) -> ShortcutMode {
 
 #[cfg(test)]
 mod tests {
+    use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -557,7 +496,9 @@ mod tests {
     /// Targeting the injector's node keeps this unambiguous even while a real
     /// agentdictated daemon (with an identically named device) is running.
     fn grab_injection_device(injector: &mut PasteInjector) -> EvdevReader {
-        let node = injector.device_node().expect("injector exposes a device node");
+        let node = injector
+            .device_node()
+            .expect("injector exposes a device node");
         // udev applies the session ACL to a fresh uinput node asynchronously;
         // retry the open briefly instead of failing on the race.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -574,14 +515,13 @@ mod tests {
             }
         };
         reader.grab().expect("injection device is grabbable");
-        reader.set_nonblocking(true).expect("reader supports nonblocking");
+        reader
+            .set_nonblocking(true)
+            .expect("reader supports nonblocking");
         reader
     }
 
-    fn injected_key_events(
-        reader: &mut EvdevReader,
-        expected: usize,
-    ) -> Vec<(EvdevKeyCode, i32)> {
+    fn injected_key_events(reader: &mut EvdevReader, expected: usize) -> Vec<(EvdevKeyCode, i32)> {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut events = Vec::new();
         while events.len() < expected && Instant::now() < deadline {
@@ -598,25 +538,6 @@ mod tests {
             }
         }
         events
-    }
-
-    #[test]
-    fn work_area_detection_returns_after_its_command_deadline() {
-        let directory = tempdir().unwrap();
-        let xprop = directory.path().join("xprop");
-        fs::write(&xprop, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
-        fs::set_permissions(&xprop, fs::Permissions::from_mode(0o755)).unwrap();
-        let executable = PlatformExecutable::at(PlatformTool::Xprop, xprop);
-        let started = Instant::now();
-
-        let result = detect_primary_work_area_with(
-            &SystemCommandRunner,
-            &executable,
-            started + Duration::from_millis(20),
-        );
-
-        assert_eq!(result, None);
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -4,6 +4,7 @@ use gpui::{
     WindowDecorations, WindowKind, WindowOptions, point, prelude::*, px, rgb, size,
 };
 use gpui_component::{Root, TitleBar};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -160,39 +161,19 @@ fn run_settings_shell_internal(
         });
 }
 
-/// Runs an overlay session and reports when GPUI has created its platform
-/// window. The daemon helper uses this to distinguish spawn from readiness.
+/// Runs a focus-neutral X11 overlay. Placement completes before its first
+/// animated frame; frame submission is acknowledged separately from creation.
 #[doc(hidden)]
-pub fn run_recording_overlay_with_ready(
+pub fn run_recording_overlay(
     initial: OverlayPresentation,
     snapshots: Receiver<OverlayPresentation>,
-    work_area: Option<crate::LogicalRect>,
-    on_ready: impl FnOnce() + 'static,
+    on_created: impl FnOnce(u32, f32) + 'static,
+    on_frame_submitted: impl FnOnce() + 'static,
 ) {
     Application::new()
         .with_assets(crate::AgentDictateAssets)
         .run(move |cx: &mut App| {
             crate::theme::initialize_gpui_theme(cx);
-            let display = cx.primary_display();
-            let display_id = display.as_ref().map(|display| display.id());
-            let primary_bounds = display.as_ref().map(|display| {
-                let bounds = display.bounds();
-                crate::LogicalRect::new(
-                    f32::from(bounds.origin.x).round() as i32,
-                    f32::from(bounds.origin.y).round() as i32,
-                    f32::from(bounds.size.width).max(0.0).round() as u32,
-                    f32::from(bounds.size.height).max(0.0).round() as u32,
-                )
-            });
-            let available = match (work_area, primary_bounds) {
-                (Some(work_area), Some(primary_bounds)) => {
-                    crate::intersect_logical_rects(work_area, primary_bounds)
-                        .unwrap_or(primary_bounds)
-                }
-                (Some(work_area), None) => work_area,
-                (None, Some(primary_bounds)) => primary_bounds,
-                (None, None) => crate::LogicalRect::new(0, 0, 0, 0),
-            };
             let (sender, mut receiver) = mpsc::unbounded();
             std::thread::Builder::new()
                 .name("agentdictate-overlay-events".into())
@@ -210,16 +191,13 @@ pub fn run_recording_overlay_with_ready(
                 cx.quit();
                 return;
             }
-            let placement = crate::OverlayPlacement::bottom_centered(
-                available,
-                crate::LogicalSize::new(crate::OVERLAY_WIDTH, crate::OVERLAY_HEIGHT),
-                crate::OVERLAY_BOTTOM_GAP,
-            );
-            let frame = placement.frame;
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(frame.x as f32), px(frame.y as f32)),
-                    size(px(frame.width as f32), px(frame.height as f32)),
+                    point(px(0.), px(0.)),
+                    size(
+                        px(crate::OVERLAY_WIDTH as f32),
+                        px(crate::OVERLAY_HEIGHT as f32),
+                    ),
                 ))),
                 titlebar: None,
                 focus: false,
@@ -228,7 +206,7 @@ pub fn run_recording_overlay_with_ready(
                 is_movable: false,
                 is_resizable: false,
                 is_minimizable: false,
-                display_id,
+                display_id: None,
                 window_background: WindowBackgroundAppearance::Transparent,
                 // PopUp maps to _NET_WM_WINDOW_TYPE_NOTIFICATION on X11. Sharing
                 // the main application id also prevents a second app identity.
@@ -238,11 +216,23 @@ pub fn run_recording_overlay_with_ready(
                 tabbing_identifier: None,
             };
             let overlay_window = cx
-                .open_window(options, move |_, cx| {
-                    cx.new(|_| RecordingOverlay::from_presentation(initial))
+                .open_window(options, move |window, cx| {
+                    let handle = HasWindowHandle::window_handle(window)
+                        .expect("overlay native window handle should exist");
+                    let id = match handle.as_raw() {
+                        RawWindowHandle::Xcb(handle) => handle.window.get(),
+                        RawWindowHandle::Xlib(handle) => {
+                            u32::try_from(handle.window).expect("X11 window id fits in u32")
+                        }
+                        _ => panic!("focus-neutral recording overlay requires X11 or XWayland"),
+                    };
+                    on_created(id, window.scale_factor());
+                    cx.new(|_| {
+                        RecordingOverlay::from_presentation(initial)
+                            .on_frame_submitted(on_frame_submitted)
+                    })
                 })
                 .expect("recording overlay should open");
-            on_ready();
 
             cx.spawn(async move |cx| {
                 while let Some(presentation) = receiver.next().await {
@@ -260,10 +250,12 @@ pub fn run_recording_overlay_with_ready(
                 // while this one finishes fading — a sub-150ms overlap of a
                 // mostly transparent card.
                 let _ = overlay_window.update(cx, |overlay, _, cx| {
-                    overlay.begin_dismissal();
+                    overlay.begin_dismissal(cx.background_executor().now());
                     cx.notify();
                 });
-                cx.background_executor().timer(crate::OVERLAY_FADE_HOLD).await;
+                cx.background_executor()
+                    .timer(crate::OVERLAY_FADE_HOLD)
+                    .await;
                 let _ = overlay_window.update(cx, |_, window, _| window.remove_window());
                 cx.update(|cx| cx.quit())
             })

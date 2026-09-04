@@ -151,7 +151,7 @@ fn daemon_waits_for_overlay_exit_before_delivery() {
     let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&executable, permissions).unwrap();
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
     let runtime = Runtime::open(&paths.database_file).unwrap();
     let recorder = InspectingRecorder {
         database: paths.database_file.clone(),

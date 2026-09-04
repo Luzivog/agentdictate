@@ -14,6 +14,7 @@ agentdictate-core.workspace = true
 evdev = "0.13.2"
 libc = "0.2"
 tracing.workspace = true
+x11rb = { version = "0.13.2", features = ["randr"] }
 
 [dev-dependencies]
 proptest = "1"

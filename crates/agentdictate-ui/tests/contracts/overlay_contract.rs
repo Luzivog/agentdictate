@@ -2,9 +2,8 @@
 
 use agentdictate_core::{JobId, Workflow, WorkflowSignal};
 use agentdictate_ui::{
-    ActiveRecordingPresentation, LogicalRect, LogicalSize, OVERLAY_BOTTOM_GAP, OVERLAY_HEIGHT,
-    OVERLAY_WIDTH, OverlayPlacement, OverlayPresentation, OverlayState, OverlayWindowPolicy,
-    StatusTone, WaveformArea, WaveformFrame, fit_waveform, format_elapsed, intersect_logical_rects,
+    ActiveRecordingPresentation, OverlayPresentation, OverlayState, OverlayWindowPolicy,
+    StatusTone, WaveformArea, WaveformFrame, fit_waveform, format_elapsed,
     recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 use agentdictate_ui::{
@@ -73,62 +72,6 @@ fn overlay_visibility_matches_the_previous_three_active_presentations() {
     assert_eq!(state.label(), "Could not paste");
     assert_eq!(state.action_label(), Some("Copy again"));
     assert_eq!(state.tone(), StatusTone::Danger);
-}
-
-#[test]
-fn overlay_is_centered_above_the_primary_monitor_work_area_bottom() {
-    let placement = OverlayPlacement::bottom_centered(
-        LogicalRect::new(1_920, 0, 1_440, 860),
-        LogicalSize::new(336, 64),
-        24,
-    );
-
-    assert_eq!(placement.frame, LogicalRect::new(2_472, 772, 336, 64));
-}
-
-#[test]
-fn overlay_fits_inside_a_constrained_work_area() {
-    let placement = OverlayPlacement::bottom_centered(
-        LogicalRect::new(-280, 24, 280, 48),
-        LogicalSize::new(336, 64),
-        24,
-    );
-
-    assert_eq!(placement.frame, LogicalRect::new(-280, 24, 280, 24));
-}
-
-#[test]
-fn restored_overlay_keeps_the_previous_size_and_bottom_offset() {
-    let placement = OverlayPlacement::bottom_centered(
-        LogicalRect::new(0, 0, 1_920, 1_040),
-        LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
-        OVERLAY_BOTTOM_GAP,
-    );
-
-    assert_eq!(placement.frame, LogicalRect::new(888, 912, 143, 56));
-}
-
-#[test]
-fn virtual_x11_work_area_is_clipped_to_the_primary_monitor_before_placement() {
-    let virtual_work_area = LogicalRect::new(0, 0, 3_840, 1_040);
-    let primary_display = LogicalRect::new(1_920, 0, 1_920, 1_080);
-
-    let primary_work_area = intersect_logical_rects(virtual_work_area, primary_display)
-        .expect("the virtual work area overlaps the primary monitor");
-    assert_eq!(primary_work_area, LogicalRect::new(1_920, 0, 1_920, 1_040));
-    assert_eq!(
-        OverlayPlacement::bottom_centered(
-            primary_work_area,
-            LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
-            OVERLAY_BOTTOM_GAP,
-        )
-        .frame,
-        LogicalRect::new(2_808, 912, 143, 56),
-    );
-    assert_eq!(
-        intersect_logical_rects(LogicalRect::new(-1_920, 0, 1_920, 1_040), primary_display,),
-        None,
-    );
 }
 
 #[test]
@@ -355,8 +298,14 @@ fn dismissal_during_fade_in_never_increases_opacity() {
 fn fade_is_active_only_while_a_ramp_is_progressing() {
     assert!(overlay_fade_active(Duration::ZERO, None));
     assert!(!overlay_fade_active(OVERLAY_FADE_IN, None));
-    assert!(overlay_fade_active(Duration::from_secs(5), Some(Duration::ZERO)));
-    assert!(!overlay_fade_active(Duration::from_secs(5), Some(OVERLAY_FADE_OUT)));
+    assert!(overlay_fade_active(
+        Duration::from_secs(5),
+        Some(Duration::ZERO)
+    ));
+    assert!(!overlay_fade_active(
+        Duration::from_secs(5),
+        Some(OVERLAY_FADE_OUT)
+    ));
 }
 
 #[test]

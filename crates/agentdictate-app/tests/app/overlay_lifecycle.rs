@@ -115,7 +115,7 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nprintf '{{\"status\":\"ready\"}}\\n'\nif [ \"$count\" -eq 1 ]; then\n  exit 17\nfi\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\n",
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nif [ \"$count\" -eq 1 ]; then\n  exit 17\nfi\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\n",
             launches.display(),
             launches.display(),
             received.display(),
@@ -142,7 +142,7 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
         }),
     };
     let hidden = update(&Workflow::new());
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
 
     overlay.update(visible);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -183,7 +183,7 @@ fn helper_error_before_readiness_is_killed_and_relaunched() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":\"error\",\"message\":\"X11 unavailable\"}}\\n'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":\"error\",\"message\":\"X11 unavailable\"}}\\n'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
             launches.display(),
             launches.display(),
             received.display(),
@@ -203,7 +203,7 @@ fn helper_error_before_readiness_is_killed_and_relaunched() {
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     let visible = update(&recording);
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
 
     overlay.update(visible);
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -230,7 +230,7 @@ fn helper_error_before_readiness_is_killed_and_relaunched() {
 }
 
 #[test]
-fn helper_that_never_reports_readiness_is_killed_and_relaunched() {
+fn created_window_without_a_submitted_frame_is_killed_and_relaunched() {
     let directory = tempdir().unwrap();
     let executable = directory.path().join("overlay-helper");
     let launches = directory.path().join("launches");
@@ -238,7 +238,7 @@ fn helper_that_never_reports_readiness_is_killed_and_relaunched() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":\"window_created\"}}\\n'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
             launches.display(),
             launches.display(),
             received.display(),
@@ -258,7 +258,7 @@ fn helper_that_never_reports_readiness_is_killed_and_relaunched() {
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     let (overlay, presenter) =
-        start_overlay_presenter_with_timeout(executable, None, Duration::from_millis(50)).unwrap();
+        start_overlay_presenter_with_timeout(executable, Duration::from_millis(50)).unwrap();
 
     overlay.update(update(&recording));
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -293,7 +293,7 @@ fn partial_readiness_message_cannot_bypass_the_startup_deadline() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"ready\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\ncount=$(wc -l < '{}')\nIFS= read -r line\nif [ \"$count\" -eq 1 ]; then\n  printf '{{\"status\":'\n  while IFS= read -r ignored; do :; done\n  exit 17\nfi\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r ignored; do :; done\n",
             launches.display(),
             launches.display(),
             received.display(),
@@ -313,7 +313,7 @@ fn partial_readiness_message_cannot_bypass_the_startup_deadline() {
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     let (overlay, presenter) =
-        start_overlay_presenter_with_timeout(executable, None, Duration::from_millis(50)).unwrap();
+        start_overlay_presenter_with_timeout(executable, Duration::from_millis(50)).unwrap();
 
     overlay.update(update(&recording));
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -365,7 +365,7 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     let visible = update(&recording);
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
 
     overlay.update(visible.clone());
     let first_deadline = Instant::now() + Duration::from_secs(2);
@@ -426,7 +426,7 @@ fn dismissal_acknowledges_only_after_the_helper_exits() {
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nIFS= read -r line\nprintf '{{\"status\":\"ready\"}}\\n'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
+            "#!/bin/sh\nIFS= read -r line\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
             exited.display(),
         ),
     )
@@ -443,7 +443,7 @@ fn dismissal_acknowledges_only_after_the_helper_exits() {
     recording
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
     overlay.update(update(&recording));
 
     overlay.dismiss_and_wait().unwrap();
@@ -457,7 +457,7 @@ fn dismissal_acknowledges_only_after_the_helper_exits() {
 fn dismissal_without_a_helper_is_immediately_acknowledged() {
     let directory = tempdir().unwrap();
     let executable = directory.path().join("unused-overlay-helper");
-    let (overlay, presenter) = start_overlay_presenter(executable, None).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
 
     overlay.dismiss_and_wait().unwrap();
 
@@ -469,4 +469,62 @@ fn dismissal_without_a_helper_is_immediately_acknowledged() {
 fn dismissal_timeout_comfortably_covers_the_helper_fade() {
     // The dismissal ack includes the helper's fade-out before process exit.
     assert!(agentdictate_app::OVERLAY_TEARDOWN_TIMEOUT >= 4 * agentdictate_ui::OVERLAY_FADE_HOLD);
+}
+
+#[test]
+fn presentation_error_after_a_frame_reports_unavailable_until_recovery() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let launches = directory.path().join("launches");
+    fs::write(
+        &executable,
+        format!(
+            r#"#!/bin/sh
+IFS= read -r line
+printf 'launch\n' >> '{}'
+count=$(wc -l < '{}')
+printf '{{"status":"window_created"}}\n'
+if [ "$count" -eq 2 ]; then
+    IFS= read -r line
+fi
+printf '{{"status":"frame_submitted"}}\n'
+if [ "$count" -eq 1 ]; then
+    IFS= read -r line
+    printf '{{"status":"error","message":"display connection lost"}}\n'
+fi
+while IFS= read -r line; do :; done
+"#,
+            launches.display(),
+            launches.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
+    let mut recording = Workflow::new();
+    let job_id = JobId::new();
+    recording
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    recording
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    let wait_for = |condition: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !condition() {
+            assert!(Instant::now() < deadline, "overlay health did not converge");
+            std::thread::yield_now();
+        }
+    };
+    overlay.update(update(&recording));
+    wait_for(&|| launches.exists());
+    overlay.update(update(&recording));
+    wait_for(&|| {
+        overlay.is_unavailable() && fs::read_to_string(&launches).unwrap().lines().count() == 2
+    });
+    overlay.update(update(&recording));
+    wait_for(&|| !overlay.is_unavailable());
+    overlay.dismiss_and_wait().unwrap();
+    drop(overlay);
+    presenter.join().unwrap();
 }

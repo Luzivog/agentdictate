@@ -8,5 +8,6 @@ pub mod hotkey;
 pub mod injection;
 #[cfg(feature = "native-hotkey")]
 pub mod native_hotkey;
+pub mod overlay_placement;
 pub mod paste;
 pub mod recorder;

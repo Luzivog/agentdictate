@@ -1,26 +1,21 @@
 use std::{
     io::{self, Read, Write},
     os::fd::AsRawFd,
-    os::unix::process::CommandExt,
+    os::unix::process::{CommandExt, ExitStatusExt},
     path::Path,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::mpsc::Sender,
     time::{Duration, Instant},
 };
 
-use agentdictate_ui::LogicalRect;
-
 use super::{
-    protocol::{
-        OVERLAY_HELPER_ARGUMENT, OVERLAY_WORK_AREA, OverlayHelperStatus, OverlayUpdate,
-        format_work_area,
-    },
+    protocol::{OVERLAY_HELPER_ARGUMENT, OverlayHelperStatus, OverlayUpdate},
     supervisor::PresenterEvent,
 };
 
 const MAX_OVERLAY_STATUS_BYTES: usize = 64 * 1024;
 
-fn wait_for_overlay_child(process_id: u32) -> io::Result<()> {
+fn wait_for_overlay_child(process_id: u32) -> io::Result<ExitStatus> {
     let process_id = i32::try_from(process_id)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "process id is too large"))?;
     let mut status = 0;
@@ -30,7 +25,7 @@ fn wait_for_overlay_child(process_id: u32) -> io::Result<()> {
         // is the kernel event source; no timer or polling loop is involved.
         let result = unsafe { libc::waitpid(process_id, &mut status, 0) };
         if result == process_id {
-            return Ok(());
+            return Ok(ExitStatus::from_raw(status));
         }
         if result == -1 {
             let error = io::Error::last_os_error();
@@ -42,45 +37,64 @@ fn wait_for_overlay_child(process_id: u32) -> io::Result<()> {
     }
 }
 
-fn read_overlay_helper_status(
+fn monitor_overlay_status(
     mut output: ChildStdout,
     timeout: Duration,
-) -> Result<OverlayHelperStatus, String> {
+    generation: u64,
+    events: &Sender<PresenterEvent>,
+) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
-    let mut status = Vec::new();
+    let mut pending = Vec::new();
     let mut buffer = [0_u8; 1024];
+    let mut submitted = false;
+    let mut created = false;
     loop {
-        wait_for_overlay_helper_status(&output, deadline)?;
+        if !submitted {
+            wait_for_overlay_helper_status(&output, deadline)?;
+        }
         match output.read(&mut buffer) {
-            Ok(0) if status.is_empty() => {
-                return Err("overlay helper exited without reporting readiness".to_owned());
+            Ok(0) if !pending.is_empty() => {
+                return Err("overlay helper status message was incomplete".into());
             }
-            Ok(0) => return Err("overlay helper readiness message was incomplete".to_owned()),
+            Ok(0) if !submitted => {
+                return Err("overlay helper exited without submitting a frame".into());
+            }
+            Ok(0) => return Ok(()),
             Ok(read) => {
-                status.extend_from_slice(&buffer[..read]);
-                if status.len() > MAX_OVERLAY_STATUS_BYTES {
-                    return Err("overlay helper readiness message was too large".to_owned());
+                pending.extend_from_slice(&buffer[..read]);
+                if pending.len() > MAX_OVERLAY_STATUS_BYTES {
+                    return Err("overlay helper status message was too large".into());
                 }
-                if let Some(newline) = status.iter().position(|byte| *byte == b'\n') {
-                    if status[newline + 1..]
-                        .iter()
-                        .any(|byte| !byte.is_ascii_whitespace())
-                    {
-                        return Err(
-                            "overlay helper wrote unexpected output after readiness".to_owned()
-                        );
+                while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                    let status: OverlayHelperStatus = serde_json::from_slice(&pending[..newline])
+                        .map_err(|error| {
+                        format!("overlay helper status message was invalid: {error}")
+                    })?;
+                    pending.drain(..=newline);
+                    match &status {
+                        OverlayHelperStatus::WindowCreated if !created && !submitted => {
+                            created = true
+                        }
+                        OverlayHelperStatus::FrameSubmitted if !submitted => submitted = true,
+                        OverlayHelperStatus::Error { .. } => {}
+                        _ => {
+                            return Err(
+                                "overlay helper repeated or reordered a startup milestone".into()
+                            );
+                        }
                     }
-                    return serde_json::from_slice(&status[..newline]).map_err(|error| {
-                        format!("overlay helper readiness message was invalid: {error}")
+                    let failed = matches!(status, OverlayHelperStatus::Error { .. });
+                    let _ = events.send(PresenterEvent::HelperStatus {
+                        generation,
+                        status: Ok(status),
                     });
+                    if failed {
+                        return Ok(());
+                    }
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => {
-                return Err(format!(
-                    "overlay helper readiness could not be read: {error}"
-                ));
-            }
+            Err(error) => return Err(format!("overlay helper status could not be read: {error}")),
         }
     }
 }
@@ -93,6 +107,9 @@ fn wait_for_overlay_helper_status(output: &ChildStdout, deadline: Instant) -> Re
     };
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("overlay helper did not submit a frame before the deadline".into());
+        }
         let timeout_millis = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
         // SAFETY: `descriptor` points to one initialized pollfd for the live
         // child stdout descriptor. poll does not retain the pointer.
@@ -125,7 +142,6 @@ pub(super) struct OverlayChild {
 impl OverlayChild {
     pub(super) fn launch(
         executable: &Path,
-        work_area: Option<LogicalRect>,
         ready_timeout: Duration,
         generation: u64,
         events: Sender<PresenterEvent>,
@@ -139,7 +155,7 @@ impl OverlayChild {
             .arg(OVERLAY_HELPER_ARGUMENT)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .process_group(0);
         if std::env::var_os("DISPLAY").is_some() {
             // The pinned GPUI patch maps X11 PopUp windows as unmanaged
@@ -149,9 +165,6 @@ impl OverlayChild {
             command
                 .env_remove("WAYLAND_DISPLAY")
                 .env("XDG_SESSION_TYPE", "x11");
-        }
-        if let Some(work_area) = work_area {
-            command.env(OVERLAY_WORK_AREA, format_work_area(work_area));
         }
         // SAFETY: the closure uses only async-signal-safe libc calls between
         // fork and exec. The parent check closes the signal-installation race.
@@ -180,11 +193,18 @@ impl OverlayChild {
             ));
         };
         let process_id = child.id();
+        tracing::info!(generation, process_id, "recording overlay helper launched");
         if let Err(error) = std::thread::Builder::new()
             .name("agentdictate-overlay-monitor".into())
             .spawn(move || {
-                let status = read_overlay_helper_status(output, ready_timeout);
-                let _ = events.send(PresenterEvent::HelperStatus { generation, status });
+                if let Err(error) =
+                    monitor_overlay_status(output, ready_timeout, generation, &events)
+                {
+                    let _ = events.send(PresenterEvent::HelperStatus {
+                        generation,
+                        status: Err(error),
+                    });
+                }
                 let result = wait_for_overlay_child(process_id);
                 let _ = events.send(PresenterEvent::HelperExited { generation, result });
             })

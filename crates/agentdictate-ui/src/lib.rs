@@ -27,7 +27,7 @@ mod workspace;
 pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
-    APPLICATION_ID, RecordingOverlay, SettingsShell, run_recording_overlay_with_ready,
+    APPLICATION_ID, RecordingOverlay, SettingsShell, run_recording_overlay,
     run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
@@ -39,13 +39,12 @@ pub use model_catalog::{
     ModelCatalogViewModel, ReasoningOptionViewModel,
 };
 pub use overlay::{
-    ActiveRecordingPresentation, LogicalRect, LogicalSize, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD,
-    OVERLAY_FADE_IN, OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPlacement,
-    OverlayPresentation, OverlayState, OverlayWindowPolicy,
-    RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT, WaveformArea,
-    WaveformBar, WaveformFrame, elapsed_seconds, fit_waveform, format_elapsed,
-    intersect_logical_rects, overlay_fade_active, overlay_opacity, recording_overlay_layout,
-    sample_recent_wav, waveform_bars,
+    ActiveRecordingPresentation, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD, OVERLAY_FADE_IN,
+    OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPresentation, OverlayState,
+    OverlayWindowPolicy, RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT,
+    WaveformArea, WaveformBar, WaveformFrame, elapsed_seconds, fit_waveform, format_elapsed,
+    overlay_fade_active, overlay_opacity, recording_overlay_layout, sample_recent_wav,
+    waveform_bars,
 };
 pub use replacements::{ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel};
 pub use route::{Route, RouteParseError};

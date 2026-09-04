@@ -42,6 +42,24 @@ impl DesktopHarness for Harness {
 }
 
 #[gpui::test]
+fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    assert!(!harness.has("overlay-unavailable-notice"));
+    for unavailable in [true, false] {
+        harness.shell.update(harness.cx, |shell, cx| {
+            let workspace = shell
+                .view_model()
+                .workspace
+                .clone()
+                .with_overlay_unavailable(unavailable);
+            shell.apply_workspace_update(workspace, cx);
+        });
+        harness.cx.run_until_parked();
+        assert_eq!(harness.has("overlay-unavailable-notice"), unavailable);
+    }
+}
+
+#[gpui::test]
 fn gpui_root_uses_the_tokscope_dark_palette(cx: &mut TestAppContext) {
     test_support::initialize(cx);
 

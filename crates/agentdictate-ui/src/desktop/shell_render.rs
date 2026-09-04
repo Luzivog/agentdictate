@@ -33,6 +33,7 @@ struct ShellChromeModel {
 struct RouteViewportModel {
     page: RoutePageModel,
     feedback: Option<String>,
+    overlay_unavailable: bool,
     scroll: ScrollHandle,
 }
 
@@ -189,6 +190,7 @@ impl Render for SettingsShell {
         let viewport = RouteViewportModel {
             page: RoutePageModel::from_shell(self, cx),
             feedback: self.routes.entry(route).feedback.clone(),
+            overlay_unavailable: self.model.workspace.overlay_unavailable,
             scroll: self.routes.entry(route).scroll.clone(),
         };
 
@@ -267,6 +269,7 @@ fn route_viewport(
     let RouteViewportModel {
         page,
         feedback,
+        overlay_unavailable,
         scroll,
     } = viewport;
     let route = page.route();
@@ -287,6 +290,13 @@ fn route_viewport(
                 .size_full()
                 .p_6()
                 .gap_5()
+                .when(overlay_unavailable, |content| {
+                    content.child(gpui::div()
+                        .debug_selector(|| "overlay-unavailable-notice".to_owned())
+                        .rounded_lg().border_1().border_color(gpui_color(theme.border))
+                        .p_3().text_sm()
+                        .child("Recording overlay unavailable. Dictation and saved audio remain available. Try another recording to reconnect the overlay."))
+                })
                 .child(surface)
                 .when(!embeds_feedback, |content| {
                     content.when_some(feedback, |content, feedback| {

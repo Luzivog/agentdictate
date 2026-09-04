@@ -26,8 +26,9 @@ pub struct RecordingOverlay {
     active_recording: Option<crate::ActiveRecordingPresentation>,
     waveform: WaveformFrame,
     last_sample_at: Option<Instant>,
-    shown_at: Instant,
+    shown_at: Option<Instant>,
     dismissed_at: Option<Instant>,
+    on_frame_submitted: Option<Box<dyn FnOnce()>>,
 }
 
 impl RecordingOverlay {
@@ -37,8 +38,9 @@ impl RecordingOverlay {
             active_recording: None,
             waveform: WaveformFrame::default(),
             last_sample_at: None,
-            shown_at: Instant::now(),
+            shown_at: None,
             dismissed_at: None,
+            on_frame_submitted: None,
         }
     }
 
@@ -48,9 +50,15 @@ impl RecordingOverlay {
             active_recording: presentation.active_recording,
             waveform: WaveformFrame::default(),
             last_sample_at: None,
-            shown_at: Instant::now(),
+            shown_at: None,
             dismissed_at: None,
+            on_frame_submitted: None,
         }
+    }
+
+    pub fn on_frame_submitted(mut self, callback: impl FnOnce() + 'static) -> Self {
+        self.on_frame_submitted = Some(Box::new(callback));
+        self
     }
 
     pub fn with_theme(state: OverlayState, _theme: ThemeTokens) -> Self {
@@ -72,10 +80,20 @@ impl RecordingOverlay {
 
     /// Starts the fade-out while keeping the last visible content untouched.
     /// Idempotent: repeated dismissals keep the first timestamp.
-    pub fn begin_dismissal(&mut self) {
+    pub fn begin_dismissal(&mut self, now: Instant) {
         if self.dismissed_at.is_none() {
-            self.dismissed_at = Some(Instant::now());
+            self.dismissed_at = Some(now);
         }
+    }
+
+    /// Opacity of the production view, using the same clock as GPUI animation.
+    pub fn opacity_at(&self, now: Instant) -> f32 {
+        overlay_opacity(
+            self.shown_at
+                .map_or(Duration::ZERO, |shown| now.saturating_duration_since(shown)),
+            self.dismissed_at
+                .map(|dismissed| now.saturating_duration_since(dismissed)),
+        )
     }
 
     pub fn set_presentation(&mut self, presentation: OverlayPresentation) {
@@ -98,16 +116,28 @@ impl RecordingOverlay {
 }
 
 impl Render for RecordingOverlay {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self.state.label().to_owned();
         let stable_id = self.state.stable_id().to_owned();
         let recording = self.state == OverlayState::Recording;
         // Processing states (transcribing, cleaning) animate a small pulsing
         // ellipsis so the helper visibly shows work in progress.
         let busy = self.state.is_visible() && !recording;
-        let since_shown = self.shown_at.elapsed();
-        let since_dismissal = self.dismissed_at.map(|dismissed| dismissed.elapsed());
-        let opacity = overlay_opacity(since_shown, since_dismissal);
+        let now = cx.background_executor().now();
+        let shown_at = *self.shown_at.get_or_insert(now);
+        let since_shown = now.saturating_duration_since(shown_at);
+        let since_dismissal = self
+            .dismissed_at
+            .map(|dismissed| now.saturating_duration_since(dismissed));
+        let opacity = self.opacity_at(now);
+        // A callback scheduled by this render runs on the next platform frame,
+        // after this fully faded-in scene has been submitted to the renderer.
+        // This is not a claim about compositor visibility or occlusion.
+        if opacity >= 1.0
+            && let Some(callback) = self.on_frame_submitted.take()
+        {
+            window.on_next_frame(move |_, _| callback());
+        }
         if recording || busy || overlay_fade_active(since_shown, since_dismissal) {
             window.request_animation_frame();
         }
@@ -116,17 +146,16 @@ impl Render for RecordingOverlay {
             .trim_end()
             .to_owned();
         let busy_dot_alphas = busy_dot_alphas();
-        if recording {
-            let now = Instant::now();
-            if self.last_sample_at.is_none_or(|sampled| {
+        if recording
+            && self.last_sample_at.is_none_or(|sampled| {
                 now.saturating_duration_since(sampled) >= Duration::from_millis(33)
-            }) {
-                if let Some(active) = &self.active_recording {
-                    self.waveform
-                        .advance(&crate::sample_recent_wav(&active.audio_path));
-                }
-                self.last_sample_at = Some(now);
+            })
+        {
+            if let Some(active) = &self.active_recording {
+                self.waveform
+                    .advance(&crate::sample_recent_wav(&active.audio_path));
             }
+            self.last_sample_at = Some(now);
         }
 
         let elapsed = self.active_recording.as_ref().map_or(0.0, |active| {

@@ -1,18 +1,16 @@
-use agentdictate_ui::LogicalRect;
-
-use super::protocol::{OVERLAY_HELPER_ARGUMENT, OVERLAY_WORK_AREA, parse_work_area};
+use super::protocol::OVERLAY_HELPER_ARGUMENT;
 
 #[cfg(feature = "desktop")]
 use std::{
+    cell::RefCell,
     io::{self, BufRead, BufReader, Write},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    rc::Rc,
 };
 
 #[cfg(feature = "desktop")]
-use agentdictate_ui::run_recording_overlay_with_ready;
+use agentdictate_linux::overlay_placement::OverlayPlacementWatcher;
+#[cfg(feature = "desktop")]
+use agentdictate_ui::run_recording_overlay;
 
 #[cfg(feature = "desktop")]
 use super::protocol::{OverlayHelperStatus, OverlayUpdate};
@@ -21,20 +19,21 @@ pub fn is_overlay_helper_argument(argument: Option<&str>) -> bool {
     argument == Some(OVERLAY_HELPER_ARGUMENT)
 }
 
-pub fn overlay_work_area_from_environment() -> Option<LogicalRect> {
-    std::env::var(OVERLAY_WORK_AREA)
-        .ok()
-        .as_deref()
-        .and_then(parse_work_area)
-}
-
 #[cfg(feature = "desktop")]
 pub fn run_overlay_helper() -> anyhow::Result<()> {
+    if std::env::var_os("DISPLAY").is_none() {
+        let message = "focus-neutral recording overlay requires X11 or XWayland";
+        write_overlay_helper_status(&OverlayHelperStatus::Error {
+            message: message.into(),
+        })?;
+        anyhow::bail!(message);
+    }
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("agentdictate-overlay-input".into())
         .spawn(move || {
             let input = std::io::stdin();
+            let mut last_phase = None;
             for line in BufReader::new(input).lines() {
                 let update = match line {
                     Ok(line) => match serde_json::from_str::<OverlayUpdate>(&line) {
@@ -49,6 +48,10 @@ pub fn run_overlay_helper() -> anyhow::Result<()> {
                         return;
                     }
                 };
+                if last_phase != Some(update.workflow.phase) {
+                    tracing::info!(phase = ?update.workflow.phase, "recording overlay workflow changed");
+                    last_phase = Some(update.workflow.phase);
+                }
                 if sender.send(update.presentation()).is_err() {
                     return;
                 }
@@ -57,27 +60,44 @@ pub fn run_overlay_helper() -> anyhow::Result<()> {
     let initial = receiver
         .recv()
         .map_err(|_| anyhow::anyhow!("overlay helper received no initial update"))?;
-    let ready = Arc::new(AtomicBool::new(false));
-    let ready_callback = Arc::clone(&ready);
+    let placement = Rc::new(RefCell::new(None));
+    let placement_owner = Rc::clone(&placement);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_recording_overlay_with_ready(
+        run_recording_overlay(
             initial,
             receiver,
-            overlay_work_area_from_environment(),
-            move || {
-                write_overlay_helper_status(&OverlayHelperStatus::Ready)
-                    .expect("overlay helper readiness should be writable");
-                ready_callback.store(true, Ordering::Release);
+            move |window, scale| {
+                let watcher = OverlayPlacementWatcher::start(
+                    window,
+                    scale,
+                    [
+                        agentdictate_ui::OVERLAY_WIDTH,
+                        agentdictate_ui::OVERLAY_HEIGHT,
+                        agentdictate_ui::OVERLAY_BOTTOM_GAP,
+                    ],
+                    |error| {
+                        tracing::error!(%error, "recording overlay placement failed");
+                        let _ = write_overlay_helper_status(&OverlayHelperStatus::Error {
+                            message: error.to_string(),
+                        });
+                    },
+                )
+                .expect("recording overlay placement should initialize");
+                *placement_owner.borrow_mut() = Some(watcher);
+                write_overlay_helper_status(&OverlayHelperStatus::WindowCreated)
+                    .expect("overlay window creation should be reportable");
+            },
+            || {
+                write_overlay_helper_status(&OverlayHelperStatus::FrameSubmitted)
+                    .expect("overlay frame submission should be reportable");
             },
         );
     }));
     if let Err(payload) = result {
         let message = panic_message(payload.as_ref());
-        if !ready.load(Ordering::Acquire) {
-            let _ = write_overlay_helper_status(&OverlayHelperStatus::Error {
-                message: message.clone(),
-            });
-        }
+        let _ = write_overlay_helper_status(&OverlayHelperStatus::Error {
+            message: message.clone(),
+        });
         anyhow::bail!("recording overlay panicked: {message}")
     }
     Ok(())

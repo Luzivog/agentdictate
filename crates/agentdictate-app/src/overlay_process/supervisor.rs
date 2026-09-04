@@ -1,19 +1,26 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    process::ExitStatus,
     sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::JoinHandle,
     time::Duration,
 };
 
 use agentdictate_runtime::{DeliveryGate, DeliveryGateError};
-use agentdictate_ui::{LogicalRect, OverlayState};
+use agentdictate_ui::OverlayState;
 use thiserror::Error;
 
 use super::{
     child::OverlayChild,
     protocol::{OverlayHelperStatus, OverlayUpdate},
 };
+
+pub const OVERLAY_HEALTH_FILE: &str = "overlay-health";
 
 const AUTOMATIC_RESTART_LIMIT_PER_UPDATE: u8 = 1;
 const OVERLAY_READY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,9 +52,47 @@ pub enum OverlayTeardownError {
 #[derive(Clone)]
 pub struct OverlayController {
     commands: Sender<OverlayCommand>,
+    health: Arc<OverlayHealth>,
+}
+
+#[derive(Default)]
+struct OverlayHealth {
+    unavailable: AtomicBool,
+    notification_file: Mutex<Option<PathBuf>>,
+}
+
+impl OverlayHealth {
+    fn set_unavailable(&self, unavailable: bool) {
+        if self.unavailable.swap(unavailable, Ordering::AcqRel) != unavailable {
+            self.notify();
+        }
+    }
+
+    fn notify(&self) {
+        if let Ok(path) = self.notification_file.lock()
+            && let Some(path) = path.as_ref()
+            && let Err(error) = std::fs::write(path, [])
+        {
+            tracing::warn!(%error, "could not notify desktop of overlay health change");
+        }
+    }
 }
 
 impl OverlayController {
+    pub fn is_unavailable(&self) -> bool {
+        self.health.unavailable.load(Ordering::Acquire)
+    }
+
+    /// The file is only an inotify signal; the daemon snapshot owns the value.
+    pub fn notify_health_changes_at(&self, path: PathBuf) {
+        *self
+            .health
+            .notification_file
+            .lock()
+            .expect("overlay health lock") = Some(path);
+        self.health.notify();
+    }
+
     pub fn update(&self, update: OverlayUpdate) {
         let _ = self.commands.send(OverlayCommand::Update(update));
     }
@@ -114,23 +159,25 @@ impl OverlayProcessState {
 
 pub fn start_overlay_presenter(
     executable: PathBuf,
-    work_area: Option<LogicalRect>,
 ) -> io::Result<(OverlayController, JoinHandle<()>)> {
-    start_overlay_presenter_with_timeout(executable, work_area, OVERLAY_READY_TIMEOUT)
+    start_overlay_presenter_with_timeout(executable, OVERLAY_READY_TIMEOUT)
 }
 
 #[doc(hidden)]
 pub fn start_overlay_presenter_with_timeout(
     executable: PathBuf,
-    work_area: Option<LogicalRect>,
     ready_timeout: Duration,
 ) -> io::Result<(OverlayController, JoinHandle<()>)> {
     let (commands, receiver) = channel();
-    let controller = OverlayController { commands };
+    let health = Arc::new(OverlayHealth::default());
+    let controller = OverlayController {
+        commands,
+        health: Arc::clone(&health),
+    };
     let presenter = std::thread::Builder::new()
         .name("agentdictate-overlay-presenter".into())
         .spawn(move || {
-            overlay_presenter_loop(&executable, receiver, work_area, ready_timeout);
+            overlay_presenter_loop(&executable, receiver, ready_timeout, health);
         })?;
     Ok((controller, presenter))
 }
@@ -138,8 +185,8 @@ pub fn start_overlay_presenter_with_timeout(
 fn overlay_presenter_loop(
     executable: &Path,
     commands: Receiver<OverlayCommand>,
-    work_area: Option<LogicalRect>,
     ready_timeout: Duration,
+    health: Arc<OverlayHealth>,
 ) {
     let (events, event_receiver) = channel();
     let update_events = events.clone();
@@ -158,11 +205,11 @@ fn overlay_presenter_loop(
         })
     else {
         tracing::warn!("recording overlay update forwarder could not start");
+        health.set_unavailable(true);
         return;
     };
 
-    let mut supervisor =
-        OverlaySupervisor::new(executable, work_area, ready_timeout, events.clone());
+    let mut supervisor = OverlaySupervisor::new(executable, ready_timeout, events.clone(), health);
     while let Ok(event) = event_receiver.recv() {
         match event {
             PresenterEvent::Command(command) => supervisor.handle_command(command),
@@ -189,17 +236,17 @@ pub(super) enum PresenterEvent {
     },
     HelperExited {
         generation: u64,
-        result: io::Result<()>,
+        result: io::Result<ExitStatus>,
     },
     UpdatesClosed,
 }
 
 struct OverlaySupervisor<'a> {
     executable: &'a Path,
-    work_area: Option<LogicalRect>,
     ready_timeout: Duration,
     events: Sender<PresenterEvent>,
     lifecycle: OverlayProcessState,
+    health: Arc<OverlayHealth>,
     helper: Option<OverlayChild>,
     last_visible_update: Option<OverlayUpdate>,
     remaining_restarts: u8,
@@ -215,16 +262,16 @@ struct PendingDismissal {
 impl<'a> OverlaySupervisor<'a> {
     fn new(
         executable: &'a Path,
-        work_area: Option<LogicalRect>,
         ready_timeout: Duration,
         events: Sender<PresenterEvent>,
+        health: Arc<OverlayHealth>,
     ) -> Self {
         Self {
             executable,
-            work_area,
             ready_timeout,
             events,
             lifecycle: OverlayProcessState::default(),
+            health,
             helper: None,
             last_visible_update: None,
             remaining_restarts: 0,
@@ -327,22 +374,31 @@ impl<'a> OverlaySupervisor<'a> {
             return;
         };
         match status {
-            Ok(OverlayHelperStatus::Ready) => {
+            Ok(OverlayHelperStatus::WindowCreated) => {
+                tracing::info!(
+                    generation,
+                    "recording overlay window created; awaiting a submitted frame"
+                );
+            }
+            Ok(OverlayHelperStatus::FrameSubmitted) => {
                 child.mark_ready();
-                tracing::info!(generation, "recording overlay helper is ready");
+                self.health.set_unavailable(false);
+                tracing::info!(generation, "recording overlay first frame submitted");
             }
             Ok(OverlayHelperStatus::Error { message }) => {
-                tracing::warn!(generation, %message, "recording overlay helper failed before readiness");
+                tracing::warn!(generation, %message, "recording overlay helper presentation failed");
+                self.health.set_unavailable(true);
                 child.terminate();
             }
             Err(error) => {
-                tracing::warn!(generation, %error, "recording overlay helper failed before readiness");
+                tracing::warn!(generation, %error, "recording overlay helper presentation failed");
+                self.health.set_unavailable(true);
                 child.terminate();
             }
         }
     }
 
-    fn handle_helper_exit(&mut self, generation: u64, result: io::Result<()>) {
+    fn handle_helper_exit(&mut self, generation: u64, result: io::Result<ExitStatus>) {
         if self
             .pending_dismissal
             .as_ref()
@@ -356,21 +412,25 @@ impl<'a> OverlaySupervisor<'a> {
                 self.helper.take();
                 self.lifecycle.mark_stopped();
             }
-            let acknowledgment = result.map_err(OverlayTeardownError::ExitObservation);
+            let acknowledgment = result
+                .map(|_| ())
+                .map_err(OverlayTeardownError::ExitObservation);
             let _ = pending.reply.send(acknowledgment);
             return;
         }
         if self.helper.as_ref().map(OverlayChild::generation) != Some(generation) {
             return;
         }
+        self.health.set_unavailable(true);
         let was_ready = self.helper.take().is_some_and(|child| child.is_ready());
         self.lifecycle.mark_stopped();
-        if let Err(error) = result {
-            tracing::warn!(%error, "recording overlay helper exit could not be observed");
-        } else if !was_ready {
-            tracing::warn!("recording overlay helper exited before readiness");
-        } else {
-            tracing::warn!("recording overlay helper exited unexpectedly");
+        match result {
+            Err(error) => {
+                tracing::warn!(generation, %error, "recording overlay helper exit could not be observed")
+            }
+            Ok(status) => {
+                tracing::warn!(generation, %status, was_ready, "recording overlay helper exited unexpectedly")
+            }
         }
 
         if let Some(update) = self.last_visible_update.clone() {
@@ -391,7 +451,6 @@ impl<'a> OverlaySupervisor<'a> {
         self.next_generation = self.next_generation.wrapping_add(1);
         match OverlayChild::launch(
             self.executable,
-            self.work_area,
             self.ready_timeout,
             self.next_generation,
             self.events.clone(),
@@ -406,6 +465,7 @@ impl<'a> OverlaySupervisor<'a> {
             }
             Err(error) => {
                 self.lifecycle.mark_stopped();
+                self.health.set_unavailable(true);
                 tracing::warn!(%error, "{failure_message}");
             }
         }

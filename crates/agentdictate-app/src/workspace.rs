@@ -2,7 +2,10 @@ use std::{
     ffi::{CString, OsString},
     fs::File,
     io::{self, Read},
-    os::{fd::FromRawFd, unix::ffi::OsStrExt},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    },
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{
@@ -338,8 +341,9 @@ impl WorkspaceClient {
         database_file: impl AsRef<Path>,
         catalog_file: impl AsRef<Path>,
     ) -> io::Result<Receiver<WorkspaceViewModel>> {
-        let watcher =
+        let mut watcher =
             DatabaseChangeWatcher::with_catalog(database_file.as_ref(), catalog_file.as_ref())?;
+        watcher.add_file(&self.runtime_directory.join(crate::OVERLAY_HEALTH_FILE))?;
         self.watch_changes(watcher)
     }
 
@@ -443,6 +447,29 @@ impl DatabaseChangeWatcher {
             descriptor,
             watched_names,
         })
+    }
+
+    fn add_file(&mut self, path: &Path) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("watch file has no parent"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("watch file has no name"))?;
+        let parent = CString::new(parent.as_os_str().as_bytes()).map_err(io::Error::other)?;
+        // SAFETY: descriptor is owned, and parent is NUL-terminated for this call.
+        let result = unsafe {
+            libc::inotify_add_watch(
+                self.descriptor.as_raw_fd(),
+                parent.as_ptr(),
+                libc::IN_MASK_ADD | libc::IN_CLOSE_WRITE | libc::IN_CREATE | libc::IN_MOVED_TO,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.watched_names.push(name.as_bytes().to_vec());
+        Ok(())
     }
 
     fn wait_for_change(&mut self) -> io::Result<()> {
@@ -566,6 +593,7 @@ pub fn workspace_view_model(
         usage_view_model(&snapshot.usage, period),
     )
     .with_model_catalog(ModelCatalogViewModel::from(snapshot.model_catalog.clone()))
+    .with_overlay_unavailable(snapshot.overlay_unavailable)
 }
 
 fn transcript_view_model(entry: &agentdictate_core::HistorySnapshot) -> TranscriptViewModel {
@@ -1152,6 +1180,39 @@ mod tests {
         assert_eq!(update.history.transcripts.len(), 1);
         assert_eq!(update.history.transcripts[0].text, "fresh transcript");
         assert_eq!(client.view_model().unwrap(), update);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn overlay_health_change_refreshes_the_workspace_without_a_database_write() {
+        let directory = tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        let database = directory.path().join("history.sqlite");
+        let catalog = directory.path().join("catalog.json");
+        let server = IpcServer::bind(&runtime).unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server
+                .serve_next(&mut WorkspaceHandler {
+                    snapshot: Arc::new(Mutex::new(WorkspaceSnapshot {
+                        overlay_unavailable: true,
+                        ..WorkspaceSnapshot::default()
+                    })),
+                })
+                .unwrap();
+        });
+        let client = Arc::new(WorkspaceClient::new(
+            runtime.clone(),
+            WorkspaceSnapshot::default(),
+        ));
+        let updates = client.watch_with_catalog(&database, &catalog).unwrap();
+        std::fs::write(runtime.join(crate::OVERLAY_HEALTH_FILE), []).unwrap();
+        assert!(
+            updates
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .overlay_unavailable
+        );
+        assert!(client.view_model().unwrap().overlay_unavailable);
         server_thread.join().unwrap();
     }
 

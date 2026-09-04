@@ -29,20 +29,16 @@ pub use openai::{
 #[cfg(feature = "desktop")]
 pub use overlay_process::run_overlay_helper;
 pub use overlay_process::{
-    ActiveRecordingUpdate, OVERLAY_TEARDOWN_TIMEOUT, OverlayController, OverlayProcessAction,
-    OverlayProcessState,
-    OverlayTeardownError, OverlayUpdate, is_overlay_helper_argument,
-    overlay_work_area_from_environment, start_overlay_presenter,
-    start_overlay_presenter_with_timeout,
+    ActiveRecordingUpdate, OVERLAY_HEALTH_FILE, OVERLAY_TEARDOWN_TIMEOUT, OverlayController,
+    OverlayProcessAction, OverlayProcessState, OverlayTeardownError, OverlayUpdate,
+    is_overlay_helper_argument, start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
     sync_startup_command, sync_startup_with_systemctl,
 };
-pub use system::{
-    SystemDeliverer, SystemRecordingController, detect_primary_work_area, parse_x11_work_area,
-};
+pub use system::{SystemDeliverer, SystemRecordingController};
 pub use tray::{
     SystemTrayHandle, TrayAction, settings_executable_for_current_process, start_system_tray,
     tray_command_for_phase,

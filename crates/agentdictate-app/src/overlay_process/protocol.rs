@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
 use agentdictate_core::WorkflowSnapshot;
-use agentdictate_ui::{ActiveRecordingPresentation, LogicalRect, OverlayPresentation};
+use agentdictate_ui::{ActiveRecordingPresentation, OverlayPresentation};
 use serde::{Deserialize, Serialize};
 
 pub(super) const OVERLAY_HELPER_ARGUMENT: &str = "--overlay-helper";
-pub(super) const OVERLAY_WORK_AREA: &str = "AGENTDICTATE_OVERLAY_WORK_AREA";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum OverlayHelperStatus {
-    Ready,
+    WindowCreated,
+    FrameSubmitted,
     Error { message: String },
 }
 
@@ -43,23 +43,4 @@ impl OverlayUpdate {
             }),
         }
     }
-}
-
-pub(super) fn format_work_area(work_area: LogicalRect) -> String {
-    format!(
-        "{},{},{},{}",
-        work_area.x, work_area.y, work_area.width, work_area.height
-    )
-}
-
-pub(super) fn parse_work_area(value: &str) -> Option<LogicalRect> {
-    let mut values = value.split(',');
-    let x = values.next()?.parse().ok()?;
-    let y = values.next()?.parse().ok()?;
-    let width = values.next()?.parse().ok()?;
-    let height = values.next()?.parse().ok()?;
-    values
-        .next()
-        .is_none()
-        .then(|| LogicalRect::new(x, y, width, height))
 }
