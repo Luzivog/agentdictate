@@ -2,12 +2,15 @@
 
 ## Mainline Delivery Workflow
 
-All work happens directly on `main`. Do not create feature branches, worktree
-branches, or pull requests for this repository. When a change is complete and
-its focused tests pass: commit on `main`, push to `origin/main`, rebuild and
-reinstall the release binaries with `./install.sh`, and restart the running
-daemon (`systemctl --user restart agentdictated`) so the change is actually
-live. A change is not done until it is committed, pushed, and running.
+All work happens directly on `main`; do not create feature branches or pull
+requests. For changes to application behavior, complete focused verification,
+commit the task's changes, push to `origin/main`, run `./install.sh`, and restart
+`agentdictated` so the changed behavior is live. Follow the resource checks below
+before rebuilding. Preserve unrelated staged or working changes.
+
+For documentation or instruction-only maintenance, verify the edited documents,
+references, and applicable command contracts. Rebuild, reinstall, and daemon restart
+are unnecessary. Publish these edits only when included in the requested scope.
 
 ## Project Structure & Module Organization
 
@@ -78,11 +81,13 @@ variant, so avoid uncontrolled full rebuilds while an oversized target remains.
 `./run-tests.sh` is the one final comprehensive local gate. It runs the locked
 Rust workspace with every target and feature, the native-readiness packaging
 checks, and `cargo deny check` when `cargo-deny` is installed. The gate is
-local-only by design; CI runs tag-gated packaging only. Run it exactly once
-after focused checks pass and only after the disk-heavy gate coordination above
-says it is safe. Do not use it as an inner loop command.
+local-only by design; CI runs tag-gated packaging only. For application code or
+packaging changes, run it after focused checks pass and disk-heavy coordination
+says it is safe. Repeat only after a relevant fix or new failure. Documentation-only
+changes do not require this gate. Do not use it as an inner loop command.
 
-For ordinary changes, add focused Rust tests to the affected crate and mock
+For changed behavior that needs coverage, add focused Rust tests in the owning
+crate. Reuse existing meaningful tests when they already prove it. Mock
 network, subprocess, clipboard, audio, desktop, and external-service
 boundaries. Prefer headless GPUI tests and deterministic fixtures. Do not open
 the application visibly, move the user's mouse, or interfere with their active
