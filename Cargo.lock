@@ -89,7 +89,6 @@ dependencies = [
  "agentdictate-core",
  "chrono",
  "libc",
- "regex",
  "rusqlite",
  "serde",
  "serde_json",

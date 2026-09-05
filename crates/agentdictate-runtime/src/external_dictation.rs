@@ -1,8 +1,8 @@
-use agentdictate_core::{AppliedReplacement, TranscriptionProvider};
+use agentdictate_core::{AppliedReplacement, TranscriptionProvider, count_words_ascii_history};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
-use crate::history::{recompute_daily_stats, serialize_replacements, word_count};
+use crate::history::{recompute_daily_stats, serialize_replacements};
 use crate::{Runtime, RuntimeError, timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,8 +76,8 @@ impl Runtime {
 
         let raw_transcript = receipt.raw_transcript.trim();
         let final_text = receipt.final_text.trim();
-        let raw_words = word_count(raw_transcript);
-        let final_words = word_count(final_text);
+        let raw_words = count_words_ascii_history(raw_transcript);
+        let final_words = count_words_ascii_history(final_text);
         let replacements_applied = serialize_replacements(&receipt.replacements_applied)?;
         let duration_milliseconds = (receipt.duration_seconds * 1_000.0).round() as i64;
         let ended_at = receipt.started_at + Duration::milliseconds(duration_milliseconds);

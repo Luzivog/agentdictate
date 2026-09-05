@@ -77,6 +77,9 @@ import running. Stop them with **Quit AgentDictate** in the tray or
 
 ## Focused development
 
+See [Develop and verify AgentDictate](DEVELOPMENT.md) for the setup doctor,
+saved test feedback, headless desktop tests, benchmarks, debugging, and delivery.
+
 Use the narrowest command that covers the change:
 
 ```bash

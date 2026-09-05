@@ -10,8 +10,6 @@ mod route_contract;
 mod settings_draft_contract;
 #[path = "contracts/shell_layout_contract.rs"]
 mod shell_layout_contract;
-#[path = "contracts/theme_contract.rs"]
-mod theme_contract;
 #[path = "contracts/usage_view_model_contract.rs"]
 mod usage_view_model_contract;
 #[path = "contracts/view_model_contract.rs"]

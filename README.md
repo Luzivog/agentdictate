@@ -171,6 +171,8 @@ socket. The daemon runs as a user service for the current graphical session.
 
 See the [full architecture overview](docs/architecture.md).
 
+For repository work, use the [development and verification workflow](docs/DEVELOPMENT.md).
+
 ## Uninstall
 
 Stop and remove the app before removing the host udev rule that grants the

@@ -16,3 +16,7 @@ uuid.workspace = true
 proptest = "1"
 # Exact float parsing keeps the Python golden values bit-comparable.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[[bench]]
+name = "replacements"
+harness = false

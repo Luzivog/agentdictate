@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+static WORD_CHARACTER: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^\w$").expect("word-character expression is valid"));
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReplacementRule {
@@ -31,7 +35,6 @@ pub fn apply_replacements(
 ) -> Result<ReplacementResult, regex::Error> {
     let mut text = text.to_owned();
     let mut applied = Vec::new();
-    let word_character = regex::Regex::new(r"^\w$")?;
     for rule in rules {
         if !rule.enabled || rule.source_phrase.is_empty() {
             continue;
@@ -39,25 +42,25 @@ pub fn apply_replacements(
         let expression = regex::RegexBuilder::new(&regex::escape(&rule.source_phrase))
             .case_insensitive(!rule.case_sensitive)
             .build()?;
-        let matches = expression
+        let mut matches = expression
             .find_iter(&text)
             .filter(|matched| {
                 !rule.whole_word_only
-                    || (!neighbor_is_word(&text, matched.start(), true, &word_character)
-                        && !neighbor_is_word(&text, matched.end(), false, &word_character))
+                    || (!neighbor_is_word(&text, matched.start(), true)
+                        && !neighbor_is_word(&text, matched.end(), false))
             })
-            .map(|matched| (matched.start(), matched.end()))
-            .collect::<Vec<_>>();
-        let count = matches.len();
-        if count == 0 {
+            .peekable();
+        if matches.peek().is_none() {
             continue;
         }
         let mut replaced = String::with_capacity(text.len());
         let mut cursor = 0;
-        for (start, end) in matches {
-            replaced.push_str(&text[cursor..start]);
+        let mut count = 0;
+        for matched in matches {
+            replaced.push_str(&text[cursor..matched.start()]);
             replaced.push_str(&rule.replacement_phrase);
-            cursor = end;
+            cursor = matched.end();
+            count += 1;
         }
         replaced.push_str(&text[cursor..]);
         text = replaced;
@@ -71,12 +74,7 @@ pub fn apply_replacements(
     Ok(ReplacementResult { text, applied })
 }
 
-fn neighbor_is_word(
-    text: &str,
-    byte_index: usize,
-    before: bool,
-    word_character: &regex::Regex,
-) -> bool {
+fn neighbor_is_word(text: &str, byte_index: usize, before: bool) -> bool {
     let neighbor = if before {
         text[..byte_index].chars().next_back()
     } else {
@@ -84,6 +82,6 @@ fn neighbor_is_word(
     };
     neighbor.is_some_and(|character| {
         let mut encoded = [0; 4];
-        word_character.is_match(character.encode_utf8(&mut encoded))
+        WORD_CHARACTER.is_match(character.encode_utf8(&mut encoded))
     })
 }

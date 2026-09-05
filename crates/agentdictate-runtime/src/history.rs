@@ -1,9 +1,9 @@
 use agentdictate_core::{
-    AppliedReplacement, JobId, JobStage, Settings, TranscriptionProvider, estimate_session_cost,
+    AppliedReplacement, JobId, JobStage, Settings, TranscriptionProvider,
+    count_words_ascii_history, estimate_session_cost,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, params};
-use std::sync::OnceLock;
 
 use crate::{Runtime, RuntimeError, parse_timestamp, timestamp};
 
@@ -287,8 +287,8 @@ impl Runtime {
                 cleanup_enabled,
                 cleanup_model,
                 cleanup_style,
-                word_count(&job.raw_transcript),
-                word_count(&job.final_text),
+                count_words_ascii_history(&job.raw_transcript),
+                count_words_ascii_history(&job.final_text),
                 job.final_text.chars().count() as u64,
                 cost.transcription_cost,
                 cost.cleanup_cost,
@@ -551,17 +551,6 @@ pub(super) fn recompute_daily_stats(
         ],
     )?;
     Ok(())
-}
-
-pub(crate) fn word_count(text: &str) -> u64 {
-    static WORD_EXPRESSION: OnceLock<regex::Regex> = OnceLock::new();
-    WORD_EXPRESSION
-        .get_or_init(|| {
-            regex::Regex::new(r"[A-Za-z0-9_]+(?:[-'][A-Za-z0-9_]+)?")
-                .expect("word-count expression is valid")
-        })
-        .find_iter(text)
-        .count() as u64
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
