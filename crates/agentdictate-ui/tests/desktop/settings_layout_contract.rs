@@ -18,13 +18,56 @@ use agentdictate_ui::{
     AgentDictateWindowFrame, Route, SettingsShell, ShellViewModel, test_support,
 };
 use gpui::{
-    AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, TestAppContext, VisualTestContext,
-    WindowBounds, WindowOptions, point, px, size,
+    AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
+    TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point, px, size,
 };
 use gpui_component::Root;
 
 struct SettingsHarness {
     cx: &'static mut VisualTestContext,
+}
+
+#[gpui::test]
+fn save_and_discard_remain_clickable_at_the_bottom_of_settings(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness =
+        SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(720.), px(520.)));
+    let viewport = harness.bounds("route-content");
+    harness.cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    harness.click("toggle-save-history");
+
+    let scroll_area = harness.bounds("route-content");
+    for selector in ["save-settings", "discard-settings"] {
+        let button = harness.bounds(selector);
+        assert!(
+            button.top() >= scroll_area.bottom(),
+            "{selector} scrolled out of view"
+        );
+        assert!(
+            button.bottom() <= px(520.),
+            "{selector} is below the window"
+        );
+    }
+    harness.click("discard-settings");
+    assert!(commands.lock().unwrap().is_empty());
+    assert_eq!(harness.bounds("route-content"), viewport);
+
+    harness.click("toggle-save-history");
+    harness.click("save-settings");
+    let commands = commands.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0].kind,
+        ClientCommandKind::UpdateSettings { settings, .. } if !settings.save_history
+    ));
+    let feedback = harness.bounds("settings-feedback");
+    assert!(feedback.top() >= viewport.top());
+    assert!(feedback.bottom() <= px(520.));
 }
 
 impl DesktopHarness for SettingsHarness {
@@ -157,6 +200,14 @@ fn maximum_recording_step_buttons_are_real_click_targets(cx: &mut TestAppContext
             if settings.max_recording_seconds == Settings::default().max_recording_seconds + 1
     ));
 
+    let viewport = harness.bounds("route-content");
+    harness.cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    let control = harness.bounds("settings-input-max-recording-control");
     harness.click_at(point(control.left() + px(14.), control.center().y));
     harness.click("save-settings");
     assert!(matches!(

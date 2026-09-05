@@ -75,14 +75,13 @@ pub(super) fn surface(
     let SettingsPageModel {
         draft: settings,
         model_catalog,
-        settings_dirty,
         has_api_key,
         api_key_input,
         api_key_feedback,
-        feedback,
         settings_form,
         shortcut_capture_active,
         shortcut_capture_error,
+        ..
     } = model;
     let transcription_provider =
         settings_form
@@ -103,26 +102,22 @@ pub(super) fn surface(
             .max_w(px(980.))
             .gap_6()
             .child(
-                h_flex()
-                    .justify_between()
-                    .gap_6()
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child(
-                                gpui::div()
-                                    .text_base()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child("Settings"),
-                            )
-                            .child(
-                                gpui::div()
-                                    .text_xs()
-                                    .text_color(gpui_color(theme.text_muted))
-                                    .child("Changes apply to the running dictation service."),
-                            ),
-                    )
-                    .when(settings_dirty, |header| header.child(save_bar(theme, cx))),
+                h_flex().justify_between().gap_6().child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            gpui::div()
+                                .text_base()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child("Settings"),
+                        )
+                        .child(
+                            gpui::div()
+                                .text_xs()
+                                .text_color(gpui_color(theme.text_muted))
+                                .child("Changes apply to the running dictation service."),
+                        ),
+                ),
             )
             .child(account_section(
                 has_api_key,
@@ -159,20 +154,55 @@ pub(super) fn surface(
                 settings_form.as_ref(),
                 theme,
                 cx,
-            ))
-            .when_some(feedback, |page, feedback| {
-                page.child(
-                    gpui::div()
-                        .debug_selector(|| "settings-feedback".to_owned())
-                        .border_l_2()
-                        .border_color(gpui_color(theme.accent))
-                        .pl_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(gpui_color(theme.text_muted))
-                        .child(feedback),
-                )
-            }),
+            )),
+    )
+}
+
+/// Rendered below the route viewport so actions and feedback stay visible.
+pub(super) fn footer(
+    model: &SettingsPageModel,
+    theme: ThemeTokens,
+    cx: &mut Context<SettingsShell>,
+) -> Option<gpui::Div> {
+    if !model.settings_dirty && model.feedback.is_none() {
+        return None;
+    }
+    Some(
+        h_flex()
+            .debug_selector(|| "settings-footer".to_owned())
+            .flex_none()
+            .w_full()
+            .justify_center()
+            .border_t_1()
+            .border_color(gpui_color(theme.border))
+            .bg(gpui_color(theme.canvas))
+            .px_6()
+            .py_3()
+            .child(
+                h_flex()
+                    .w_full()
+                    .max_w(px(980.))
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(gpui_color(theme.text_muted))
+                            .when(model.settings_dirty, |status| {
+                                status.child("Unsaved changes")
+                            })
+                            .when_some(model.feedback.clone(), |status, feedback| {
+                                status.child(
+                                    gpui::div()
+                                        .debug_selector(|| "settings-feedback".to_owned())
+                                        .child(feedback),
+                                )
+                            }),
+                    )
+                    .when(model.settings_dirty, |bar| bar.child(save_bar(theme, cx))),
+            ),
     )
 }
 

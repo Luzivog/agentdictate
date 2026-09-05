@@ -247,6 +247,10 @@ fn main_panel(
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
     let route = viewport.page.route();
+    let footer = match &viewport.page {
+        RoutePageModel::Settings(settings) => settings_page::footer(settings, chrome.theme, cx),
+        _ => None,
+    };
     v_flex()
         .h_full()
         .min_w_0()
@@ -259,6 +263,7 @@ fn main_panel(
             cx,
         ))
         .child(route_viewport(viewport, chrome.theme, cx))
+        .when_some(footer, |panel, footer| panel.child(footer))
 }
 
 fn route_viewport(
