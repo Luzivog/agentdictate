@@ -421,7 +421,7 @@ fn dictation_section(
     })
     .child(select_row(
         "Language",
-        "Language hint, or automatic detection",
+        "One language or automatic detection. English & French requires gpt-transcribe.",
         if settings.language.is_empty() {
             "Automatic"
         } else {

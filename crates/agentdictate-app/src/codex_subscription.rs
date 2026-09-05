@@ -307,6 +307,11 @@ impl SpeechTransport for CodexSubscriptionTransport {
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
+        if request.language.contains(',') {
+            return Err(ExternalError::new(
+                "ChatGPT subscription accepts one language hint; choose one language or automatic detection",
+            ));
+        }
         self.transcribe(&request)
             .map_err(|error| ExternalError::new(error.to_string()))
     }

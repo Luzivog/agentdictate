@@ -17,6 +17,23 @@ struct SubscriptionSpeech;
 struct PaidApiMustNotRun;
 
 #[test]
+fn subscription_language_list_is_rejected_before_reading_audio_or_authentication() {
+    let mut transport = agentdictate_app::CodexSubscriptionTransport::new();
+    let error = transport
+        .transcribe_audio(TranscriptionRequest {
+            keywords: &[],
+            audio_path: std::path::Path::new("does-not-exist.wav"),
+            provider: TranscriptionProvider::ChatGptSubscription,
+            model: "ignored",
+            language: "en,fr",
+            prompt: "",
+            duration_seconds: 1.0,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("one language hint"));
+}
+
+#[test]
 fn recovered_raw_skips_speech_and_uses_original_cleanup_options() {
     struct InspectCleanup;
     impl CleanupTransport for InspectCleanup {

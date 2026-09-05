@@ -60,8 +60,8 @@ window contents, selected text, or conversation is scraped automatically. The
 effective cleanup preview shows the assembled instructions and vocabulary.
 
 `gpt-transcribe` receives `keywords[]` and comma-separated language hints as
-`languages[]`. Older file models accept a single language hint and reject a language
-list locally. Subscription transcription remains separate and never falls back to
+`languages[]`. Older file models and subscription speech accept a single language
+hint and reject a language list locally. Subscription transcription remains separate and never falls back to
 paid API speech. Cleanup is an OpenAI API operation regardless of speech provider.
 
 ## Failure behavior
