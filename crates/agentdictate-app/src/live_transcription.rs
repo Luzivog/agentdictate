@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::captured_audio::data_start;
+
 use agentdictate_core::{DictationOptions, JobId};
 use agentdictate_runtime::ExternalError;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -69,56 +71,6 @@ impl LiveTranscription {
 impl Drop for LiveTranscription {
     fn drop(&mut self) {
         self.command.store(CANCEL, Ordering::Release);
-    }
-}
-
-/// Locate PCM data without assuming a 44-byte header. `pw-record` can write extra chunks.
-fn data_start(file: &mut File) -> anyhow::Result<u64> {
-    let mut header = [0; 12];
-    file.read_exact(&mut header)?;
-    anyhow::ensure!(
-        &header[..4] == b"RIFF" && &header[8..] == b"WAVE",
-        "not WAV"
-    );
-    let mut format_seen = false;
-    loop {
-        anyhow::ensure!(file.stream_position()? < 65536, "oversized WAV header");
-        let mut chunk = [0; 8];
-        file.read_exact(&mut chunk)?;
-        let size = u32::from_le_bytes(chunk[4..].try_into()?) as u64;
-        if &chunk[..4] == b"data" {
-            anyhow::ensure!(format_seen, "PCM format missing");
-            return Ok(file.stream_position()?);
-        }
-        let start = file.stream_position()?;
-        if &chunk[..4] == b"fmt " {
-            anyhow::ensure!(size >= 16, "short format");
-            let mut fmt = [0; 16];
-            file.read_exact(&mut fmt)?;
-            let encoding = u16::from_le_bytes(fmt[0..2].try_into()?);
-            anyhow::ensure!(encoding == 1 || encoding == 65534, "not PCM");
-            anyhow::ensure!(
-                u16::from_le_bytes(fmt[2..4].try_into()?) == 1
-                    && u32::from_le_bytes(fmt[4..8].try_into()?) == 16000
-                    && u16::from_le_bytes(fmt[14..16].try_into()?) == 16,
-                "expected mono 16kHz PCM16"
-            );
-            if encoding == 65534 {
-                anyhow::ensure!(size >= 40, "short extensible format");
-                let mut extension = [0; 24];
-                file.read_exact(&mut extension)?;
-                anyhow::ensure!(
-                    extension[8..24] == [1, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113],
-                    "not extensible PCM"
-                );
-            }
-            format_seen = true;
-        }
-        file.seek(SeekFrom::Start(
-            start
-                .checked_add(size + size % 2)
-                .ok_or_else(|| anyhow::anyhow!("chunk overflow"))?,
-        ))?;
     }
 }
 

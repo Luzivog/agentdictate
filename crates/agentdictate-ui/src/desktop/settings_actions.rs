@@ -71,19 +71,6 @@ impl SettingsShell {
         self.settings.applied_model_catalog = catalog;
     }
 
-    pub(super) fn cleanup_model_selection_changed(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(form) = self.settings.form.clone() else {
-            return;
-        };
-        form.sync_dependent_options(&self.model.workspace.model_catalog, window, cx);
-        self.recompute_settings_dirty(cx);
-        cx.notify();
-    }
-
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn select_transcription_provider_for_test(
@@ -101,38 +88,6 @@ impl SettingsShell {
         self.recompute_settings_dirty(cx);
         self.clear_route_feedback();
         cx.notify();
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn select_cleanup_model_for_test(
-        &mut self,
-        model_id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(form) = self.settings.form.clone() else {
-            return;
-        };
-        form.cleanup_model.update(cx, |state, cx| {
-            state.set_selected_value(&model_id.to_owned(), window, cx);
-        });
-        self.cleanup_model_selection_changed(window, cx);
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn selected_cleanup_reasoning_for_test(&self, cx: &gpui::App) -> String {
-        self.settings.form.as_ref().map_or_else(
-            || self.settings.current.cleanup_reasoning_effort.clone(),
-            |form| {
-                form.cleanup_reasoning_effort
-                    .read(cx)
-                    .selected_value()
-                    .cloned()
-                    .unwrap_or_else(|| form.draft.cleanup_reasoning_effort.clone())
-            },
-        )
     }
 
     #[cfg(feature = "test-support")]

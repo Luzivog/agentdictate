@@ -93,7 +93,13 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         TranscriptionProvider::ChatGptSubscription
     );
     let recorded = runtime
-        .record_delivered_session(delivered.id, &Settings::default())
+        .record_delivered_session(
+            delivered.id,
+            &Settings {
+                cleanup_enabled: true,
+                ..Settings::default()
+            },
+        )
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -911,7 +917,13 @@ fn pricing_sync_reprices_existing_history_and_usage() {
     let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     runtime
-        .record_delivered_session(delivered.id, &Settings::default())
+        .record_delivered_session(
+            delivered.id,
+            &Settings {
+                cleanup_enabled: true,
+                ..Settings::default()
+            },
+        )
         .unwrap();
     let mut repriced = Settings::default();
     repriced

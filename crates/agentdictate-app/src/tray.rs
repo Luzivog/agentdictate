@@ -21,7 +21,6 @@ pub enum TrayAction {
     OpenSettings,
     ToggleDictation,
     StartLiteral,
-    StartOrganize,
     Quit,
 }
 
@@ -34,15 +33,11 @@ pub const fn tray_command_for_phase(
     phase: WorkflowPhase,
     request_id: u64,
 ) -> Option<ClientCommand> {
-    if matches!(action, TrayAction::StartLiteral | TrayAction::StartOrganize) {
+    if matches!(action, TrayAction::StartLiteral) {
         return match phase {
             WorkflowPhase::Ready => Some(ClientCommand::start_recording_in_mode(
                 request_id,
-                if matches!(action, TrayAction::StartLiteral) {
-                    agentdictate_core::DictationMode::Literal
-                } else {
-                    agentdictate_core::DictationMode::Organize
-                },
+                agentdictate_core::DictationMode::Literal,
             )),
             _ => None,
         };
@@ -86,7 +81,6 @@ impl ksni::Tray for AgentDictateTray {
         let toggle_actions = self.actions.clone();
         let quit_actions = self.actions.clone();
         let literal_actions = self.actions.clone();
-        let organize_actions = self.actions.clone();
         vec![
             StandardItem {
                 label: "Open AgentDictate".to_owned(),
@@ -109,14 +103,6 @@ impl ksni::Tray for AgentDictateTray {
                 label: "Start literal dictation".into(),
                 activate: Box::new(move |_| {
                     let _ = literal_actions.send(TrayAction::StartLiteral);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Start and organize request".into(),
-                activate: Box::new(move |_| {
-                    let _ = organize_actions.send(TrayAction::StartOrganize);
                 }),
                 ..Default::default()
             }
@@ -195,7 +181,7 @@ fn execute_tray_action(
             );
             Ok(())
         }
-        TrayAction::ToggleDictation | TrayAction::StartLiteral | TrayAction::StartOrganize => {
+        TrayAction::ToggleDictation | TrayAction::StartLiteral => {
             let (mut client, initial) = IpcClient::connect(runtime_directory)?;
             let ServerMessageKind::Snapshot { snapshot, .. } = initial.kind else {
                 anyhow::bail!("daemon did not provide its current workflow")

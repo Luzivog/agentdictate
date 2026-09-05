@@ -219,7 +219,7 @@ impl Default for Settings {
             dictation_mode: crate::DictationMode::Dictate,
             streaming_enabled: false,
             cleanup_timeout_ms: 3000,
-            cleanup_enabled: true,
+            cleanup_enabled: false,
             cleanup_model: "gpt-5.4-nano".into(),
             custom_cleanup_model: String::new(),
             cleanup_reasoning_effort: "default".into(),

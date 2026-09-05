@@ -185,6 +185,7 @@ pub(crate) fn stage_name(stage: JobStage) -> &'static str {
         JobStage::ReadyToDeliver => "ready_to_deliver",
         JobStage::Delivering => "delivering",
         JobStage::Delivered => "delivered",
+        JobStage::NoSpeech => "no_speech",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",
         JobStage::Canceled => "canceled",
@@ -202,6 +203,7 @@ fn parse_stage(value: &str) -> Result<JobStage, RuntimeError> {
         "ready_to_deliver" => Ok(JobStage::ReadyToDeliver),
         "delivering" => Ok(JobStage::Delivering),
         "delivered" => Ok(JobStage::Delivered),
+        "no_speech" => Ok(JobStage::NoSpeech),
         "interrupted" => Ok(JobStage::Interrupted),
         "failed" => Ok(JobStage::Failed),
         "canceled" => Ok(JobStage::Canceled),
@@ -215,6 +217,7 @@ fn parse_stage(value: &str) -> Result<JobStage, RuntimeError> {
 pub(crate) fn state_for_stage(stage: JobStage) -> &'static str {
     match stage {
         JobStage::Delivered => "delivered",
+        JobStage::NoSpeech => "no_speech",
         JobStage::Deleted => "deleted",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",

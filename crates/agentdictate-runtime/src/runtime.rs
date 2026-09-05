@@ -240,6 +240,12 @@ impl Runtime {
                 Ok(())
             }) {
                 Ok(transcript) => transcript,
+                Err(ExternalError::NoSpeech) => {
+                    self.update_stage(id, JobStage::NoSpeech, None)?;
+                    let finished = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
+                    self.publish(RuntimeEvent::JobUpdated(finished.clone()));
+                    return Ok(finished);
+                }
                 Err(error) => {
                     self.update_stage(id, JobStage::Failed, Some(error.to_string()))?;
                     return Err(error.into());
@@ -675,7 +681,7 @@ impl Runtime {
                    final_text, copied_to_clipboard, paste_triggered,
                    delivery_status, error_message, cleanup_error, processing_options
             FROM dictation_jobs
-            WHERE state NOT IN ('delivered', 'deleted')
+            WHERE state NOT IN ('delivered', 'deleted', 'no_speech')
             ORDER BY updated_at DESC, id DESC
             "#,
         )?;

@@ -15,11 +15,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     draft.transcription_model = "gpt-4o-transcribe".to_owned();
     draft.language = "en".to_owned();
     draft.transcription_prompt = "Leadlord, AgentDictate".to_owned();
-    draft.cleanup_enabled = false;
-    draft.cleanup_model = "gpt-5.4-mini".to_owned();
-    draft.cleanup_reasoning_effort = "low".to_owned();
-    draft.cleanup_style = "Technical".to_owned();
-    draft.cleanup_prompt = "Preserve exact identifiers.".to_owned();
     draft.hotkey = "Alt+Space".to_owned();
     draft.recording_mode = "hold".to_owned();
     draft.max_recording_seconds = "420".to_owned();
@@ -41,11 +36,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     assert_eq!(updated.transcription_model, "gpt-4o-transcribe");
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
-    assert!(!updated.cleanup_enabled);
-    assert_eq!(updated.cleanup_model, "gpt-5.4-mini");
-    assert_eq!(updated.cleanup_reasoning_effort, "low");
-    assert_eq!(updated.cleanup_style, "Technical");
-    assert_eq!(updated.cleanup_prompt, "Preserve exact identifiers.");
     assert_eq!(updated.hotkey, "Alt+Space");
     assert_eq!(updated.recording_mode, "hold");
     assert_eq!(updated.max_recording_seconds, 420);
@@ -130,9 +120,9 @@ fn settings_draft_reports_unsaved_text_and_toggle_changes() {
     assert!(draft.is_dirty_against(&persisted));
 
     let mut toggle_edits = Vec::new();
-    let mut cleanup = SettingsDraft::from(&persisted);
-    cleanup.cleanup_enabled = !cleanup.cleanup_enabled;
-    toggle_edits.push(cleanup);
+    let mut streaming = SettingsDraft::from(&persisted);
+    streaming.streaming_enabled = !streaming.streaming_enabled;
+    toggle_edits.push(streaming);
     let mut ducking = SettingsDraft::from(&persisted);
     ducking.audio_ducking_enabled = !ducking.audio_ducking_enabled;
     toggle_edits.push(ducking);
@@ -163,7 +153,6 @@ fn discarding_changes_restores_the_entire_persisted_form() {
     };
     let mut draft = SettingsDraft::from(&persisted);
     draft.language = "fr".to_owned();
-    draft.cleanup_enabled = false;
     draft.start_on_login = true;
 
     draft.discard_changes(&persisted);
@@ -230,7 +219,5 @@ fn custom_model_choices_round_trip_without_collapsing_the_custom_sentinel() {
 
     assert_eq!(draft.transcription_model, "Custom");
     assert_eq!(draft.custom_transcription_model, "whisper-enterprise");
-    assert_eq!(draft.cleanup_model, "Custom");
-    assert_eq!(draft.custom_cleanup_model, "cleanup-enterprise");
     assert_eq!(draft.apply_to(&persisted).unwrap(), persisted);
 }

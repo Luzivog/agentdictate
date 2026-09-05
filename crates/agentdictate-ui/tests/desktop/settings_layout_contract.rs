@@ -249,7 +249,8 @@ fn toggles_are_draft_changes_until_the_user_saves(cx: &mut TestAppContext) {
         SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
 
     assert!(!harness.has("settings-save-bar"));
-    harness.click("toggle-cleanup");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
 
     assert!(commands.lock().expect("command lock").is_empty());
     harness.bounds("settings-save-bar");
@@ -259,7 +260,7 @@ fn toggles_are_draft_changes_until_the_user_saves(cx: &mut TestAppContext) {
     assert_eq!(commands.len(), 1);
     assert!(matches!(
         &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. } if !settings.cleanup_enabled
+        ClientCommandKind::UpdateSettings { settings, .. } if settings.streaming_enabled
     ));
 }
 
@@ -269,7 +270,8 @@ fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext
     let mut harness =
         SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
 
-    harness.click("toggle-cleanup");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
     harness.bounds("settings-save-bar");
     harness.click("discard-settings");
 
@@ -278,12 +280,13 @@ fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext
     // A second toggle must start from the persisted `true` value. Saving it as
     // `false` proves that Discard restored the draft instead of leaving the
     // first click in memory.
-    harness.click("toggle-cleanup");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
     harness.click("save-settings");
     let commands = commands.lock().expect("command lock");
     assert_eq!(commands.len(), 1);
     assert!(matches!(
         &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. } if !settings.cleanup_enabled
+        ClientCommandKind::UpdateSettings { settings, .. } if settings.streaming_enabled
     ));
 }

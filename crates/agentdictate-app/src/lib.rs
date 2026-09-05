@@ -2,6 +2,7 @@
 
 use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
+mod captured_audio;
 mod chatgpt_dictation_import;
 mod codex_subscription;
 mod daemon;

@@ -59,7 +59,7 @@ fn mode_override_is_one_start_and_never_interrupts_an_active_recording() {
     ));
     assert!(
         tray_command_for_phase(
-            TrayAction::StartOrganize,
+            TrayAction::StartLiteral,
             WorkflowPhase::Recording {
                 job_id: JobId::new()
             },

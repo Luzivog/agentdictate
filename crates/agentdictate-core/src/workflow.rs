@@ -49,6 +49,7 @@ pub enum JobStage {
     ReadyToDeliver,
     Delivering,
     Delivered,
+    NoSpeech,
     Interrupted,
     Failed,
     Canceled,
@@ -117,6 +118,9 @@ pub enum WorkflowSignal {
     CaptureFinalized {
         job_id: JobId,
     },
+    NoSpeechDetected {
+        job_id: JobId,
+    },
     TranscriptStored {
         job_id: JobId,
     },
@@ -149,6 +153,7 @@ impl WorkflowSignal {
             | Self::FirstAudioFrameWritten { job_id }
             | Self::DiscardCommitted { job_id }
             | Self::CaptureFinalized { job_id }
+            | Self::NoSpeechDetected { job_id }
             | Self::TranscriptStored { job_id }
             | Self::TranscriptStoredForCleanup { job_id }
             | Self::CleanupStored { job_id }
@@ -208,6 +213,14 @@ impl Workflow {
             return Err(WorkflowError::JobMismatch { expected, received });
         }
         let next_phase = match (self.snapshot.phase, signal) {
+            (
+                WorkflowPhase::Processing {
+                    job_id: expected,
+                    stage: ProcessingStage::Transcribing,
+                },
+                WorkflowSignal::NoSpeechDetected { job_id },
+            ) if expected == job_id => WorkflowPhase::Ready,
+
             (WorkflowPhase::Ready, WorkflowSignal::StartRequested { job_id }) => {
                 WorkflowPhase::Starting { job_id }
             }

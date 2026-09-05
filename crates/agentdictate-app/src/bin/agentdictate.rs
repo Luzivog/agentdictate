@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
                 ClientCommand::start_recording_in_mode(1, mode.parse().map_err(anyhow::Error::msg)?)
             }
             _ => anyhow::bail!(
-                "Usage: agentdictate [start [--mode dictate|literal|organize] | stop | cancel]"
+                "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel]"
             ),
         };
         let (mut client, _) = IpcClient::connect(&paths.runtime)?;

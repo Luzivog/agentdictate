@@ -8,7 +8,7 @@ macro_rules! settings_fields {
         $callback! {
             select {
                 dictation_mode: String {
-                    from: stringified,
+                    from: supported_mode,
                     apply: validate_field(parsed_dictation_mode),
                     options: plain(dictation_mode_options),
                     searchable: false,
@@ -35,20 +35,6 @@ macro_rules! settings_fields {
                     searchable: true,
                     read: string,
                 },
-                cleanup_model: String {
-                    from: cloned,
-                    apply: validate_field(validated_cleanup_model),
-                    options: catalog(cleanup_model_options),
-                    searchable: true,
-                    read: string,
-                },
-                cleanup_style: String {
-                    from: cloned,
-                    apply: value(trimmed),
-                    options: plain(cleanup_style_options),
-                    searchable: false,
-                    read: string,
-                },
                 recording_mode: String {
                     from: cloned,
                     apply: validate_field(validated_recording_mode),
@@ -65,23 +51,12 @@ macro_rules! settings_fields {
                 },
             }
             dependent_select {
-                cleanup_reasoning_effort: String {
-                    from: cloned,
-                    apply: value(trimmed),
-                    depends_on: cleanup_model,
-                    options: reasoning_effort_options,
-                },
             }
             input {
                 custom_transcription_model: String {
                     from: cloned,
                     apply: validate_draft(validated_custom_transcription_model),
                     placeholder: "Custom OpenAI model",
-                },
-                custom_cleanup_model: String {
-                    from: cloned,
-                    apply: validate_draft(validated_custom_cleanup_model),
-                    placeholder: "Custom cleanup model",
                 },
             }
             text_area {
@@ -103,20 +78,8 @@ macro_rules! settings_fields {
                     placeholder: "Names and technical context",
                     rows: 2..=5,
                 },
-                cleanup_prompt: String {
-                    from: cloned,
-                    apply: value(trimmed),
-                    placeholder: "Cleanup instructions",
-                    rows: 3..=6,
-                },
             }
             number {
-                cleanup_timeout_ms: String {
-                    from: stringified,
-                    apply: validate_field(parsed_cleanup_timeout),
-                    placeholder: "3000",
-                    maximum: 30000,
-                },
                 max_recording_seconds: String {
                     from: stringified,
                     apply: validate_field(parsed_max_recording_seconds),
@@ -144,10 +107,6 @@ macro_rules! settings_fields {
             }
             draft_only {
                 streaming_enabled: bool {
-                    from: copied,
-                    apply: value(copied),
-                },
-                cleanup_enabled: bool {
                     from: copied,
                     apply: value(copied),
                 },
@@ -294,6 +253,7 @@ macro_rules! define_settings_draft {
                 $(updated.$number_field = apply_settings_field!(self, $number_field, $number_apply_kind($number_apply));)*
                 $(updated.$draft_only_field = apply_settings_field!(self, $draft_only_field, $draft_only_apply_kind($draft_only_apply));)*
                 $(updated.$shortcut_field = apply_settings_field!(self, $shortcut_field, $shortcut_apply_kind($shortcut_apply));)*
+                updated.cleanup_enabled = false;
                 Ok(updated)
             }
         }
@@ -369,18 +329,6 @@ fn validated_custom_transcription_model(
     }
 }
 
-fn validated_cleanup_model(value: &str) -> Result<String, SettingsDraftError> {
-    required("Cleanup model", value)
-}
-
-fn validated_custom_cleanup_model(draft: &SettingsDraft) -> Result<String, SettingsDraftError> {
-    if draft.cleanup_model.trim() == "Custom" {
-        required("Custom cleanup model", &draft.custom_cleanup_model)
-    } else {
-        Ok(trimmed(&draft.custom_cleanup_model))
-    }
-}
-
 fn validated_hotkey(value: &str) -> Result<String, SettingsDraftError> {
     required("Global shortcut", value)
 }
@@ -451,16 +399,11 @@ fn parsed_dictation_mode(
 ) -> Result<agentdictate_core::DictationMode, SettingsDraftError> {
     value.parse().map_err(SettingsDraftError::InvalidDictation)
 }
-fn parsed_cleanup_timeout(value: &str) -> Result<u32, SettingsDraftError> {
-    let ms = value.parse::<u32>().map_err(|_| {
-        SettingsDraftError::InvalidDictation(
-            "Cleanup deadline must be 100–30000 milliseconds".into(),
-        )
-    })?;
-    if !(100..=30000).contains(&ms) {
-        return Err(SettingsDraftError::InvalidDictation(
-            "Cleanup deadline must be 100–30000 milliseconds".into(),
-        ));
+
+fn supported_mode(mode: &agentdictate_core::DictationMode) -> String {
+    if *mode == agentdictate_core::DictationMode::Literal {
+        "Literal".into()
+    } else {
+        "Dictate".into()
     }
-    Ok(ms)
 }

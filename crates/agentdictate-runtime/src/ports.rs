@@ -53,15 +53,17 @@ pub enum RuntimeError {
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
-#[error("{message}")]
-pub struct ExternalError {
-    message: String,
+pub enum ExternalError {
+    #[error("{message}")]
+    Failure { message: String },
+    #[error("No speech detected.")]
+    NoSpeech,
 }
 
 impl ExternalError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self::Failure {
             message: message.into(),
         }
     }

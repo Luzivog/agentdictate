@@ -61,7 +61,7 @@ fn control_slot(selector: &'static str, kind: SettingsControlKind) -> gpui::Div 
 }
 
 fn prompt_control_slot(selector: &'static str) -> gpui::Div {
-    gpui::div()
+    h_flex()
         .debug_selector(move || format!("{selector}-control"))
         .w_full()
         .min_w_0()
@@ -124,7 +124,6 @@ pub(super) fn surface(
                 api_key_input,
                 api_key_feedback,
                 uses_chatgpt_subscription,
-                settings.cleanup_enabled || settings.dictation_mode == "Organize",
                 theme,
                 cx,
             ))
@@ -135,12 +134,7 @@ pub(super) fn surface(
                 theme,
                 cx,
             ))
-            .child(cleanup_section(
-                &settings,
-                settings_form.as_ref(),
-                theme,
-                cx,
-            ))
+            .child(output_section(&settings, settings_form.as_ref(), theme, cx))
             .child(recording_audio_section(
                 &settings,
                 settings_form.as_ref(),
@@ -245,7 +239,7 @@ fn account_section(
     api_key_input: Option<Entity<InputState>>,
     api_key_feedback: Option<String>,
     uses_chatgpt_subscription: bool,
-    cleanup_enabled: bool,
+
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -270,13 +264,9 @@ fn account_section(
             .child(setting_label(
                 "OpenAI API key",
                 if uses_chatgpt_subscription {
-                    if cleanup_enabled {
-                        "Required for cleanup"
-                    } else {
-                        "Not needed for transcription"
-                    }
+                    "Not needed for transcription"
                 } else {
-                    "Used for transcription and cleanup"
+                    "Used for API transcription"
                 },
                 theme,
             ))
@@ -312,14 +302,14 @@ fn account_section(
                             .text_xs()
                             .text_color(gpui_color(if has_api_key {
                                 theme.success
-                            } else if uses_chatgpt_subscription && !cleanup_enabled {
+                            } else if uses_chatgpt_subscription {
                                 theme.text_muted
                             } else {
                                 theme.danger
                             }))
                             .child(if has_api_key {
                                 "Configured"
-                            } else if uses_chatgpt_subscription && !cleanup_enabled {
+                            } else if uses_chatgpt_subscription {
                                 "Not needed"
                             } else {
                                 "Required"
@@ -360,7 +350,7 @@ fn dictation_section(
     settings_section(
         "settings-group-dictation",
         "Dictation",
-        "Choose how recorded speech is recognized before optional cleanup.",
+        "Choose how recorded speech is recognized.",
         true,
         theme,
     )
@@ -464,14 +454,6 @@ fn active_transcription_model(settings: &SettingsDraft) -> &str {
     }
 }
 
-fn active_cleanup_model(settings: &SettingsDraft) -> &str {
-    if settings.cleanup_model == "Custom" {
-        settings.custom_cleanup_model.trim()
-    } else {
-        &settings.cleanup_model
-    }
-}
-
 fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeTokens) -> gpui::Div {
     let status = &model_catalog.status;
     let selector = status.selector();
@@ -507,99 +489,53 @@ fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeToken
         )
 }
 
-fn cleanup_section(
+fn output_section(
     settings: &SettingsDraft,
     editor: Option<&SettingsFormState>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
-    let disabled = (!settings.cleanup_enabled && settings.dictation_mode != "Organize")
-        || settings.dictation_mode == "Literal";
     settings_section(
         "settings-group-cleanup",
         "Dictation output",
-        "Vocabulary, output mode, and optional cleanup.",
+        "Vocabulary and literal text.",
         true,
         theme,
     )
+    .child(select_row(
+        "Output mode",
+        "Literal skips context hints and automatic spelling corrections",
+        &settings.dictation_mode,
+        "settings-input-dictation-mode",
+        editor.map(|editor| editor.dictation_mode.clone()),
+        false,
+        theme,
+    ))
+    .child(prompt_row(
+        "Vocabulary",
+        "One spelling per line. Add = spoken alias only for automatic corrections.",
+        &settings.vocabulary,
+        "settings-input-vocabulary",
+        editor.map(|editor| editor.vocabulary.clone()),
+        false,
+        theme,
+    ))
+    .child(prompt_row(
+        "Current work context",
+        "Optional context you supply; clear it when changing projects",
+        &settings.project_context,
+        "settings-input-project-context",
+        editor.map(|editor| editor.project_context.clone()),
+        false,
+        theme,
+    ))
     .child(toggle_row(
-        "Cleanup",
-        "Use cleanup in Dictate mode. Organize always rewrites; Literal always bypasses cleanup.",
-        settings.cleanup_enabled,
-        "toggle-cleanup",
+        "Stream speech",
+        "Experimental OpenAI API streaming; falls back to saved audio",
+        settings.streaming_enabled,
+        "toggle-streaming",
         theme,
         cx,
-        |draft| draft.cleanup_enabled = !draft.cleanup_enabled,
-    ))
-    .child(select_row(
-        "Cleanup model",
-        "Model used to polish the transcript",
-        active_cleanup_model(settings),
-        "settings-input-cleanup-model",
-        editor.map(|editor| editor.cleanup_model.clone()),
-        disabled,
-        theme,
-    ))
-    .when(
-        editor.is_some_and(|editor| {
-            selected_setting(&editor.cleanup_model, &settings.cleanup_model, cx) == "Custom"
-        }),
-        |section| {
-            section.child(input_row(
-                "Custom cleanup model",
-                "Exact OpenAI model identifier",
-                &settings.custom_cleanup_model,
-                "settings-input-custom-cleanup-model",
-                editor.map(|editor| editor.custom_cleanup_model.clone()),
-                disabled,
-                theme,
-            ))
-        },
-    )
-    .child(select_row(
-        "Reasoning effort",
-        "Choose a supported effort, or use the model's default",
-        &settings.cleanup_reasoning_effort,
-        "settings-input-cleanup-reasoning",
-        editor.map(|editor| editor.cleanup_reasoning_effort.clone()),
-        disabled,
-        theme,
-    ))
-    .child(select_row(
-        "Output mode", "Literal bypasses cleanup and replacements; Organize rewrites structure",
-        &settings.dictation_mode, "settings-input-dictation-mode",
-        editor.map(|editor| editor.dictation_mode.clone()), false, theme,
-    ))
-    .child(number_row(
-        "Cleanup deadline", "Milliseconds before using the original transcript",
-        &settings.cleanup_timeout_ms, "settings-input-cleanup-timeout",
-        editor.map(|editor| editor.cleanup_timeout_ms.clone()), "ms", disabled, theme,
-    ))
-    .child(prompt_row(
-        "Cleanup instructions",
-        "Prompt applied after transcription",
-        &settings.cleanup_prompt,
-        "settings-input-cleanup-prompt",
-        editor.map(|editor| editor.cleanup_prompt.clone()),
-        disabled,
-        theme,
-    ))
-    .child(prompt_row(
-        "Vocabulary", "One spelling per line. Add = spoken alias only for automatic corrections.",
-        &settings.vocabulary, "settings-input-vocabulary", editor.map(|editor| editor.vocabulary.clone()), false, theme,
-    ))
-    .child(prompt_row(
-        "Current work context", "Optional context you supply; clear it when changing projects",
-        &settings.project_context, "settings-input-project-context", editor.map(|editor| editor.project_context.clone()), false, theme,
-    ))
-    .child(prompt_row(
-        "Effective cleanup instructions", "Preview of these settings, including generated vocabulary",
-        &settings.apply_to(&agentdictate_core::Settings::default()).map(|s| agentdictate_core::DictationOptions::from_settings(&s, Vec::new()).cleanup_instruction).unwrap_or_else(|e| e.to_string()),
-        "settings-effective-cleanup", None, true, theme,
-    ))
-    .child(toggle_row(
-        "Stream speech", "OpenAI API only: uses gpt-live-transcribe ($0.017/min); the selected file model is the fallback. Ignored for ChatGPT subscription.",
-        settings.streaming_enabled, "toggle-streaming", theme, cx,
         |draft| draft.streaming_enabled = !draft.streaming_enabled,
     ))
 }
@@ -745,6 +681,7 @@ fn settings_section(
     theme: ThemeTokens,
 ) -> gpui::Div {
     v_flex()
+        .w_full()
         .debug_selector(move || selector.to_owned())
         .w_full()
         .gap_0()
@@ -1035,6 +972,7 @@ fn prompt_row(
 ) -> gpui::Div {
     let has_input = input.is_some();
     v_flex()
+        .w_full()
         .debug_selector(move || selector.to_owned())
         .gap_2()
         .border_b_1()

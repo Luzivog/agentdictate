@@ -44,6 +44,7 @@ fn recovered_raw_skips_speech_and_uses_original_cleanup_options() {
         }
     }
     let original = Settings {
+        cleanup_enabled: true,
         cleanup_model: "original-model".into(),
         cleanup_timeout_ms: 1234,
         ..Settings::default()
@@ -333,4 +334,73 @@ fn cleanup_started_observer_stays_silent_when_cleanup_is_disabled() {
     transcriber.transcribe(&job).unwrap();
 
     assert!(events.lock().unwrap().is_empty());
+}
+
+#[test]
+fn empty_results_require_quiet_audio_while_short_words_and_network_errors_survive() {
+    struct Speech(Result<String, ExternalError>);
+    impl SpeechTransport for Speech {
+        fn transcribe_audio(
+            &mut self,
+            _: TranscriptionRequest<'_>,
+        ) -> Result<String, ExternalError> {
+            self.0.clone()
+        }
+    }
+    struct NoCleanup;
+    impl CleanupTransport for NoCleanup {
+        fn cleanup_text(&mut self, _: CleanupRequest<'_>) -> Result<String, ExternalError> {
+            panic!("ordinary dictation must not use cleanup")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let audio_path = dir.path().join("short.wav");
+    let now = Utc::now();
+    let job = RecordingJob {
+        options: None,
+        id: JobId::new(),
+        legacy_id: 1,
+        started_at: now,
+        updated_at: now,
+        stage: JobStage::Transcribing,
+        audio_path: audio_path.clone(),
+        duration_seconds: 0.1,
+        transcription_provider: TranscriptionProvider::OpenAiApi,
+        transcription_model: "gpt-transcribe".into(),
+        raw_transcript: String::new(),
+        final_text: String::new(),
+        copied_to_clipboard: false,
+        paste_triggered: false,
+        delivery_status: DeliveryStatus::NotAttempted,
+        error_message: None,
+        cleanup_error: None,
+    };
+    for sample in [12i16, 2000] {
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data\x80\x0c\0\0".to_vec();
+        for _ in 0..1600 {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&audio_path, wav).unwrap();
+        for result in [
+            Err(ExternalError::NoSpeech),
+            Ok("  ".into()),
+            Ok("Yes.".into()),
+            Err(ExternalError::new("network unavailable")),
+        ] {
+            let original = result.clone();
+            let mut pipeline =
+                TranscriptionPipeline::new(Settings::default(), Speech(result), NoCleanup);
+            let actual = pipeline.transcribe(&job);
+            match original {
+                Ok(text) if !text.trim().is_empty() => {
+                    assert_eq!(actual.unwrap().final_text, "Yes.")
+                }
+                Err(ExternalError::Failure { .. }) => {
+                    assert_eq!(actual.unwrap_err().to_string(), "network unavailable")
+                }
+                _ if sample == 12 => assert_eq!(actual.unwrap_err(), ExternalError::NoSpeech),
+                _ => assert!(matches!(actual, Err(ExternalError::Failure { .. }))),
+            }
+        }
+    }
 }

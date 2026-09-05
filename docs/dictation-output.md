@@ -1,6 +1,6 @@
 # Dictation output and evaluation
 
-AgentDictate now keeps the recognition result before attempting cleanup. Each new
+AgentDictate keeps the recognition result before normalization. Each new
 recording stores its output mode, context, vocabulary, cleanup configuration, and
 replacement rules without API credentials. A retry reuses saved raw text and the
 original options. Historical jobs without an options snapshot retain the legacy
@@ -8,14 +8,12 @@ fallback to current settings. Imported ChatGPT dictations still bypass this pipe
 
 ## Everyday controls
 
-- **Dictate:** recognition, optional cleanup, then spelling normalization.
+- **Dictate:** recognition followed by spelling normalization. No cleanup request.
 - **Literal:** skips recognition context/keywords, cleanup, vocabulary aliases, and
   legacy replacements. Speech recognition still cannot guarantee exact characters.
-- **Organize:** explicitly requests paragraphs or bullets from the cleanup model,
-  even when cleanup is off for ordinary Dictate. It must preserve the stated request.
 
 Choose the default under Settings → Dictation output. For one recording, choose
-**Start literal dictation** or **Start and organize request** in the tray. Stop with
+**Start literal dictation** in the tray. Stop with
 the normal hotkey. These overrides do not change saved settings. Headless controls
 are also available:
 
@@ -24,9 +22,12 @@ agentdictate start --mode literal
 agentdictate stop
 ```
 
-`start --mode organize`, plain `start`, and `cancel` are also supported. Mode starts
+Plain `start` and `cancel` are also supported. Mode starts
 are ignored by the tray while busy and rejected by the daemon while recording.
-Protocol version 4 prevents an older daemon from silently ignoring an override.
+Protocol version 5 requires a matching client and daemon. Cleanup settings and
+Organize have been removed from the everyday controls. Existing Organize defaults
+become Dictate for new recordings. Saved recovery snapshots retain their original
+processing options; the evaluator still supports explicit cleanup experiments.
 
 ## Maintain vocabulary once
 
@@ -56,17 +57,24 @@ correction in both collections.
 
 Context prompt describes the speaking situation. Current work context is optional
 text you supply for the active task; clear it when moving projects. No repository,
-window contents, selected text, or conversation is scraped automatically. The
-effective cleanup preview shows the assembled instructions and vocabulary.
+window contents, selected text, or conversation is scraped automatically.
 
 `gpt-transcribe` receives `keywords[]` and comma-separated language hints as
 `languages[]`. Older file models and subscription speech accept a single language
 hint and reject a language list locally. Subscription transcription remains separate and never falls back to
-paid API speech. Cleanup is an OpenAI API operation regardless of speech provider.
+paid API speech. Legacy recovery cleanup and explicit cleanup evaluations use the
+OpenAI API regardless of speech provider.
 
 ## Failure behavior
 
-Cleanup has a configurable deadline, defaulting to 3,000 ms. Incomplete, malformed,
+A valid empty recognition result finishes quietly when the saved WAV is also
+clearly near-silent (PCM16 peak at most 128 and RMS at most 32). It creates no
+Recovery warning, pasted text, or transcript history entry. Audio follows the
+existing retention setting. This is not a duration cutoff: short recognized words
+still deliver. Audible or unreadable audio and transport failures stay recoverable.
+
+For historical jobs that requested cleanup, the saved deadline applies (default
+3,000 ms). Incomplete, malformed,
 refused, empty, or timed-out responses fall back to saved raw text. A conservative
 guard also rejects changes to literal spans, signed numbers/operators, acronyms,
 negations, conditional words, and large content reductions/expansions. It can reject
@@ -85,8 +93,9 @@ successful speech model; it does not account for every failed streaming attempt.
 ## Local rollout decision, 5 September 2026
 
 The selected personal defaults are buffered `gpt-transcribe`, English, a compact
-vocabulary, and Dictate without a mandatory cleanup call. Optional cleanup and
-Organize use `gpt-5.4-nano` with `none` reasoning and a 3-second deadline. Streaming
+vocabulary, and Dictate without a cleanup call. The earlier cleanup/Organize
+experiment used `gpt-5.4-nano` with `none` reasoning and a 3-second deadline; these
+controls were subsequently removed to keep everyday dictation simple. Streaming
 remains off by default. These personal choices do not overwrite other installations'
 saved model settings. The local migration backs up and disables the 18 audited
 database rules; ten narrow aliases move into the protected vocabulary collection. Ambiguous

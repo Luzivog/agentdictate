@@ -312,8 +312,10 @@ impl SpeechTransport for CodexSubscriptionTransport {
                 "ChatGPT subscription accepts one language hint; choose one language or automatic detection",
             ));
         }
-        self.transcribe(&request)
-            .map_err(|error| ExternalError::new(error.to_string()))
+        self.transcribe(&request).map_err(|error| match error {
+            CodexSubscriptionError::EmptyTranscript => ExternalError::NoSpeech,
+            error => ExternalError::new(error.to_string()),
+        })
     }
 }
 

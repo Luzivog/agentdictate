@@ -272,6 +272,7 @@ macro_rules! define_settings_form {
                 window: &mut Window,
                 cx: &mut Context<SettingsShell>,
             ) {
+                let _ = catalog;
                 self.draft = SettingsDraft::from(settings);
                 let draft = self.draft.clone();
                 $(
@@ -333,32 +334,7 @@ macro_rules! define_settings_form {
                         cx
                     );
                 )*
-                self.sync_dependent_options(catalog, window, cx);
-            }
 
-            pub(super) fn sync_dependent_options(
-                &self,
-                catalog: &ModelCatalogViewModel,
-                window: &mut Window,
-                cx: &mut Context<SettingsShell>,
-            ) {
-                let draft = self.snapshot(cx);
-                $(
-                    {
-                        let dependency = active_cleanup_model(&draft);
-                        let selected = catalog.normalized_reasoning_effort(
-                            &dependency,
-                            &draft.$dependent_field,
-                        );
-                        replace_select_options(
-                            &self.$dependent_field,
-                            $dependent_options(catalog, &dependency),
-                            &selected,
-                            window,
-                            cx,
-                        );
-                    }
-                )*
             }
 
             pub(super) fn subscriptions(
@@ -547,14 +523,6 @@ pub(super) fn selected_transcription_provider(
         .unwrap_or(fallback)
 }
 
-fn active_cleanup_model(draft: &SettingsDraft) -> String {
-    if draft.cleanup_model == "Custom" {
-        draft.custom_cleanup_model.trim().to_owned()
-    } else {
-        draft.cleanup_model.clone()
-    }
-}
-
 fn transcription_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOption> {
     catalog
         .transcription_models
@@ -572,26 +540,6 @@ fn transcription_provider_options() -> Vec<SettingOption> {
         ),
         SettingOption::new("OpenAI API", TranscriptionProvider::OpenAiApi.as_str()),
     ]
-}
-
-fn cleanup_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOption> {
-    catalog
-        .cleanup_models
-        .iter()
-        .map(|model| SettingOption::new(model.label.clone(), model.id.clone()))
-        .chain(std::iter::once(SettingOption::new("Custom…", "Custom")))
-        .collect()
-}
-
-fn reasoning_effort_options(
-    catalog: &ModelCatalogViewModel,
-    cleanup_model: &str,
-) -> Vec<SettingOption> {
-    catalog
-        .reasoning_options_for(cleanup_model)
-        .into_iter()
-        .map(|effort| SettingOption::new(effort.label, effort.value))
-        .collect()
 }
 
 fn setting_options(options: &[(&str, &str)]) -> Vec<SettingOption> {
@@ -621,13 +569,6 @@ fn language_options() -> Vec<SettingOption> {
     ])
 }
 
-fn cleanup_style_options() -> Vec<SettingOption> {
-    setting_options(&[
-        ("Light cleanup", "Light cleanup"),
-        ("Structured coding prompt", "Structured coding prompt"),
-    ])
-}
-
 fn recording_mode_options() -> Vec<SettingOption> {
     setting_options(&[("Toggle", "toggle"), ("Hold", "hold")])
 }
@@ -641,9 +582,5 @@ fn paste_shortcut_options() -> Vec<SettingOption> {
 }
 
 fn dictation_mode_options() -> Vec<SettingOption> {
-    setting_options(&[
-        ("Dictate", "Dictate"),
-        ("Literal", "Literal"),
-        ("Organize", "Organize"),
-    ])
+    setting_options(&[("Dictate", "Dictate"), ("Literal", "Literal")])
 }

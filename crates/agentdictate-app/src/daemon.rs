@@ -132,7 +132,17 @@ where
             JobId::new()
         ));
         let mut recording_settings = self.settings.clone();
+        recording_settings.cleanup_enabled = false;
+        if recording_settings.dictation_mode == agentdictate_core::DictationMode::Organize {
+            recording_settings.dictation_mode = agentdictate_core::DictationMode::Dictate;
+        }
         if let Some(mode) = mode {
+            if mode == agentdictate_core::DictationMode::Organize {
+                return Err(ExternalError::new(
+                    "Organize has been removed; use Dictate or Literal",
+                )
+                .into());
+            }
             recording_settings.dictation_mode = mode;
         }
         let job = match self.runtime.start_recording(
@@ -266,6 +276,18 @@ where
                 return Err(error.into());
             }
         };
+        if result.stage == JobStage::NoSpeech {
+            self.workflow
+                .apply(WorkflowSignal::NoSpeechDetected { job_id: id })?;
+            self.active_job = None;
+            self.active_recording = None;
+            self.cleanup_completed_audio(&result);
+            self.recoverable_count = self.attention_recovery_count()?;
+            self.sequence += 1;
+            self.publish_overlay_update();
+            tracing::info!(job_id = %id, "empty dictation finished quietly");
+            return Ok(result);
+        }
         self.workflow
             .apply(WorkflowSignal::TranscriptStored { job_id: id })?;
         self.workflow
@@ -278,7 +300,7 @@ where
                 // failure must never make it retryable and risk a duplicate paste.
                 tracing::error!(job_id = %id, %error, "could not record delivered session history");
             }
-            self.cleanup_delivered_audio(&result);
+            self.cleanup_completed_audio(&result);
             self.workflow = Workflow::new();
         } else {
             self.workflow.apply(WorkflowSignal::Interrupted {
@@ -288,7 +310,9 @@ where
         }
         self.active_job = None;
         self.active_recording = None;
-        self.last_transcript = Some(result.final_text.clone());
+        if result.stage != JobStage::NoSpeech {
+            self.last_transcript = Some(result.final_text.clone());
+        }
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
@@ -407,10 +431,12 @@ where
         {
             tracing::error!(job_id = %id, %error, "could not record retried transcription history");
         }
-        if result.stage == JobStage::Delivered {
-            self.cleanup_delivered_audio(&result);
+        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
+            self.cleanup_completed_audio(&result);
         }
-        self.last_transcript = Some(result.final_text.clone());
+        if result.stage != JobStage::NoSpeech {
+            self.last_transcript = Some(result.final_text.clone());
+        }
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
@@ -430,10 +456,12 @@ where
         {
             tracing::error!(job_id = %id, %error, "could not record retried delivery history");
         }
-        if result.stage == JobStage::Delivered {
-            self.cleanup_delivered_audio(&result);
+        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
+            self.cleanup_completed_audio(&result);
         }
-        self.last_transcript = Some(result.final_text.clone());
+        if result.stage != JobStage::NoSpeech {
+            self.last_transcript = Some(result.final_text.clone());
+        }
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
@@ -742,15 +770,15 @@ where
         }
     }
 
-    fn cleanup_delivered_audio(&self, job: &RecordingJob) {
+    fn cleanup_completed_audio(&self, job: &RecordingJob) {
         if self.settings.preserve_temp_audio {
             return;
         }
         match fs::remove_file(&job.audio_path) {
-            Ok(()) => tracing::debug!(job_id = %job.id, "removed delivered recording audio"),
+            Ok(()) => tracing::debug!(job_id = %job.id, "removed completed recording audio"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                tracing::warn!(job_id = %job.id, %error, "could not remove delivered recording audio");
+                tracing::warn!(job_id = %job.id, %error, "could not remove completed recording audio");
             }
         }
     }

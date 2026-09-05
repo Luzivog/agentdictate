@@ -57,6 +57,52 @@ struct SubmittedDelivery {
     attempts: usize,
 }
 
+#[test]
+fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_next_start() {
+    struct Empty;
+    impl agentdictate_runtime::Transcriber for Empty {
+        fn transcribe(
+            &mut self,
+            _: &RecordingJob,
+        ) -> Result<agentdictate_runtime::Transcript, ExternalError> {
+            Err(ExternalError::NoSpeech)
+        }
+    }
+    let dir = tempdir().unwrap();
+    let paths = app_paths(dir.path());
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let runtime = Runtime::open(&paths.database_file).unwrap();
+    let mut daemon = Daemon::new(
+        runtime,
+        Settings::default(),
+        paths.clone(),
+        PreservingRecorder::default(),
+        Empty,
+        SubmittedDelivery::default(),
+    );
+    daemon.start_recording().unwrap();
+    let finished = daemon.stop_recording().unwrap();
+    assert_eq!(finished.stage, JobStage::NoSpeech);
+    assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
+    assert_eq!(daemon.snapshot().recoverable_count, 0);
+    assert_eq!(daemon.deliverer().attempts, 0);
+    assert!(!finished.audio_path.exists());
+    assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    assert!(
+        observer
+            .list_history(HistoryQuery::default())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(observer.recoverable_jobs().unwrap().is_empty());
+    assert_eq!(
+        observer.job(finished.id).unwrap().unwrap().stage,
+        JobStage::NoSpeech
+    );
+    daemon.start_recording().unwrap();
+}
+
 impl Deliverer for SubmittedDelivery {
     fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;

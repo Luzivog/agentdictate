@@ -13,9 +13,8 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ModelCatalogEntry, ModelCatalogFallback, ModelCatalogOrigin,
-    ModelCatalogSnapshot, ModelCatalogStatus, ModelCatalogSupport, ReasoningEffort, Settings,
-    TranscriptionProvider, WorkflowPhase, WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, ModelCatalogFallback, ModelCatalogSnapshot,
+    ModelCatalogStatus, Settings, TranscriptionProvider, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel,
@@ -394,7 +393,8 @@ fn catalog_updates_do_not_reset_the_current_dirty_settings_draft(cx: &mut TestAp
         Harness::open_connected_with(cx, model, Settings::default(), false, Arc::clone(&commands));
 
     harness.scroll_route_by(-120.);
-    harness.click("toggle-cleanup");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
     harness.bounds("settings-save-bar");
     harness.shell.update(harness.cx, |shell, cx| {
         shell.apply_workspace_update(
@@ -417,113 +417,8 @@ fn catalog_updates_do_not_reset_the_current_dirty_settings_draft(cx: &mut TestAp
         ClientCommandKind::UpdateSettings { settings, .. }
             if settings.transcription_model == "gpt-transcribe"
                 && settings.cleanup_model == "gpt-5.4-nano"
-                && !settings.cleanup_enabled
+                && settings.streaming_enabled
     ));
-}
-
-#[gpui::test]
-fn selecting_a_cleanup_model_normalizes_an_unsupported_reasoning_effort(cx: &mut TestAppContext) {
-    let catalog = ModelCatalogViewModel::from(ModelCatalogSnapshot {
-        cleanup_models: vec![
-            ModelCatalogEntry {
-                id: "gpt-reasoner".to_owned(),
-                origin: ModelCatalogOrigin::Account,
-                support: ModelCatalogSupport::Confirmed,
-                reasoning_efforts: vec![ReasoningEffort::Default, ReasoningEffort::High],
-            },
-            ModelCatalogEntry {
-                id: "gpt-6".to_owned(),
-                origin: ModelCatalogOrigin::Account,
-                support: ModelCatalogSupport::Unverified,
-                reasoning_efforts: vec![ReasoningEffort::Default],
-            },
-        ],
-        status: ModelCatalogStatus::Builtin,
-        ..ModelCatalogSnapshot::default()
-    });
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        model_catalog: catalog,
-        ..WorkspaceViewModel::default()
-    });
-    let settings = Settings {
-        cleanup_model: "gpt-reasoner".to_owned(),
-        cleanup_reasoning_effort: "high".to_owned(),
-        ..Settings::default()
-    };
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness =
-        Harness::open_connected_with(cx, model, settings, false, Arc::clone(&commands));
-
-    assert_eq!(
-        harness.shell.read_with(harness.cx, |shell, cx| {
-            shell.selected_cleanup_reasoning_for_test(cx)
-        }),
-        "high"
-    );
-    harness.shell.update_in(harness.cx, |shell, window, cx| {
-        shell.select_cleanup_model_for_test("gpt-6", window, cx);
-    });
-    harness.cx.run_until_parked();
-    assert_eq!(
-        harness.shell.read_with(harness.cx, |shell, cx| {
-            shell.selected_cleanup_reasoning_for_test(cx)
-        }),
-        "default"
-    );
-
-    harness.click("save-settings");
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.cleanup_model == "gpt-6"
-                && settings.cleanup_reasoning_effort == "default"
-    ));
-}
-
-#[gpui::test]
-fn opening_settings_rejects_an_effort_the_selected_model_does_not_support(cx: &mut TestAppContext) {
-    let catalog = ModelCatalogViewModel::from(ModelCatalogSnapshot {
-        cleanup_models: vec![ModelCatalogEntry {
-            id: "gpt-default-only".to_owned(),
-            origin: ModelCatalogOrigin::Account,
-            support: ModelCatalogSupport::Unverified,
-            reasoning_efforts: vec![ReasoningEffort::Default],
-        }],
-        status: ModelCatalogStatus::Builtin,
-        ..ModelCatalogSnapshot::default()
-    });
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        model_catalog: catalog,
-        ..WorkspaceViewModel::default()
-    });
-    let settings = Settings {
-        cleanup_model: "gpt-default-only".to_owned(),
-        cleanup_reasoning_effort: "max".to_owned(),
-        ..Settings::default()
-    };
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let harness = Harness::open_connected_with(cx, model, settings, false, commands);
-
-    assert_eq!(
-        harness.shell.read_with(harness.cx, |shell, cx| {
-            shell.selected_cleanup_reasoning_for_test(cx)
-        }),
-        "default"
-    );
 }
 
 #[gpui::test]
@@ -1547,7 +1442,6 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     harness.bounds("settings-input-transcription-provider");
     harness.bounds("settings-input-transcription-model");
     harness.bounds("settings-input-language");
-    harness.bounds("settings-input-cleanup-model");
     harness.bounds("settings-hotkey-change");
     harness.bounds("settings-input-recording-mode");
     harness.bounds("settings-input-max-recording");
@@ -1558,7 +1452,8 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     assert!(!harness.has("settings-clipboard"));
     assert!(!harness.has("settings-save-bar"));
     harness.scroll_route_by(-120.);
-    harness.click("toggle-cleanup");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
     assert!(commands.lock().expect("command lock").is_empty());
     harness.scroll_route_by(10_000.);
     harness.bounds("settings-save-bar");
@@ -1574,7 +1469,7 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
                 && settings.max_recording_seconds == 300
                 && settings.audio_ducking_fade_out_ms == 600
                 && settings.audio_ducking_fade_in_ms == 600
-                && settings.cleanup_enabled != Settings::default().cleanup_enabled
+                && settings.streaming_enabled != Settings::default().streaming_enabled
     ));
 }
 
@@ -1646,12 +1541,65 @@ fn vocabulary_editor_saves_hints_and_explicit_aliases(cx: &mut TestAppContext) {
         "settings-input-vocabulary-control",
         "AgentDictate = agent dictate\nCodex",
     );
-    harness.bounds("settings-effective-cleanup");
     harness.click("save-settings");
     let commands = commands.lock().unwrap();
     assert!(
         matches!(&commands[0].kind, ClientCommandKind::UpdateSettings { settings, .. }
         if settings.vocabulary == agentdictate_core::parse_vocabulary("AgentDictate = agent dictate\nCodex").unwrap())
+    );
+}
+
+#[gpui::test]
+fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let settings = Settings {
+        transcription_prompt:
+            "The speaker is describing software changes, filenames, and project terminology."
+                .repeat(3),
+        project_context:
+            "Current project context includes a long description that wraps across the editor."
+                .repeat(3),
+        vocabulary: agentdictate_core::parse_vocabulary(
+            "ExampleProject = example project\nSecondProject\nThirdProject\nFourthProject",
+        )
+        .unwrap(),
+        ..Settings::default()
+    };
+    let model = ShellViewModel::from_snapshot(
+        Route::Settings,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    );
+    let mut harness =
+        Harness::open_connected_with(cx, model, settings, true, Arc::clone(&commands));
+    for selector in [
+        "settings-input-transcription-prompt-control",
+        "settings-input-vocabulary-control",
+        "settings-input-project-context-control",
+    ] {
+        harness.scroll_to(selector);
+        let control = harness.bounds(selector);
+        assert!(control.size.width > px(500.));
+        let position = point(
+            control.left() + control.size.width * 0.75,
+            control.center().y,
+        );
+        harness.cx.simulate_click(position, Modifiers::none());
+        harness.cx.simulate_input("Z");
+        harness.cx.run_until_parked();
+        harness.click("save-settings");
+    }
+    let commands = commands.lock().unwrap();
+    let commands: Vec<_> = commands
+        .iter()
+        .filter(|command| matches!(command.kind, ClientCommandKind::UpdateSettings { .. }))
+        .collect();
+    assert_eq!(commands.len(), 3);
+    assert!(
+        matches!(&commands[2].kind, ClientCommandKind::UpdateSettings { settings, .. }
+        if settings.transcription_prompt.contains('Z') && settings.project_context.contains('Z')
+            && agentdictate_core::vocabulary_text(&settings.vocabulary).contains('Z'))
     );
 }
 

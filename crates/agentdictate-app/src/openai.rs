@@ -227,7 +227,7 @@ impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipel
         let raw = if !job.raw_transcript.trim().is_empty() {
             job.raw_transcript.clone()
         } else {
-            self.speech.transcribe_audio(TranscriptionRequest {
+            match self.speech.transcribe_audio(TranscriptionRequest {
                 keywords: &keywords,
                 audio_path: &job.audio_path,
                 provider: job.transcription_provider,
@@ -235,10 +235,23 @@ impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipel
                 language: &options.language,
                 prompt: &options.context,
                 duration_seconds: job.duration_seconds,
-            })?
+            }) {
+                Err(ExternalError::NoSpeech)
+                    if !crate::captured_audio::is_near_silent(&job.audio_path) =>
+                {
+                    return Err(ExternalError::new(
+                        "No speech was recognized. Audio is saved for another attempt.",
+                    ));
+                }
+                result => result?,
+            }
         };
         if raw.trim().is_empty() {
-            return Err(ExternalError::new("Transcription returned an empty result"));
+            return Err(if crate::captured_audio::is_near_silent(&job.audio_path) {
+                ExternalError::NoSpeech
+            } else {
+                ExternalError::new("Transcription returned an empty result; audio is saved")
+            });
         }
         checkpoint(
             &raw,
@@ -524,7 +537,7 @@ impl SpeechTransport for ReqwestOpenAiTransport {
             "transcription request completed"
         );
         if text.is_empty() {
-            return Err(ExternalError::new("No speech detected."));
+            return Err(ExternalError::NoSpeech);
         }
         Ok(text)
     }
