@@ -400,9 +400,9 @@ impl IpcHandler for AgentProcess {
                 self.refresh_model_catalog().map_err(Into::into)
             }
             ClientCommandKind::GetHistoryPage { .. } => Ok(()),
-            ClientCommandKind::StartRecording { .. } => self
+            ClientCommandKind::StartRecording { mode, .. } => self
                 .daemon
-                .start_recording()
+                .start_recording_in_mode(mode)
                 .map(|_| ())
                 .map_err(Into::into),
             ClientCommandKind::StopRecording { .. } => {
@@ -518,7 +518,7 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
         | ClientCommandKind::GetWorkspace { request_id }
         | ClientCommandKind::RefreshModelCatalog { request_id }
         | ClientCommandKind::GetHistoryPage { request_id, .. }
-        | ClientCommandKind::StartRecording { request_id }
+        | ClientCommandKind::StartRecording { request_id, .. }
         | ClientCommandKind::StopRecording { request_id }
         | ClientCommandKind::Cancel { request_id }
         | ClientCommandKind::RecorderExited { request_id, .. }

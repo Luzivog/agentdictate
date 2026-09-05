@@ -221,6 +221,7 @@ mod tests {
         let job = foreground
             .start_recording(
                 RecordingRequest {
+                    options: None,
                     audio_path: directory.path().join("recording.wav"),
                     started_at: Utc::now(),
                     transcription_provider: TranscriptionProvider::OpenAiApi,

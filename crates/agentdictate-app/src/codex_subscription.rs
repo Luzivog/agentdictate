@@ -582,6 +582,7 @@ mod tests {
 
         let text = transport
             .transcribe_audio(TranscriptionRequest {
+                keywords: &[],
                 audio_path: &audio_path,
                 provider: TranscriptionProvider::ChatGptSubscription,
                 model: "gpt-transcribe",
@@ -641,6 +642,7 @@ mod tests {
 
         let text = transport
             .transcribe_audio(TranscriptionRequest {
+                keywords: &[],
                 audio_path: &audio_path,
                 provider: TranscriptionProvider::ChatGptSubscription,
                 model: "gpt-transcribe",

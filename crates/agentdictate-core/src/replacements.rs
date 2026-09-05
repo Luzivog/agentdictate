@@ -74,7 +74,7 @@ pub fn apply_replacements(
     Ok(ReplacementResult { text, applied })
 }
 
-fn neighbor_is_word(text: &str, byte_index: usize, before: bool) -> bool {
+pub(crate) fn neighbor_is_word(text: &str, byte_index: usize, before: bool) -> bool {
     let neighbor = if before {
         text[..byte_index].chars().next_back()
     } else {

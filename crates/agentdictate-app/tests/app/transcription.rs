@@ -16,6 +16,57 @@ struct SubscriptionSpeech;
 
 struct PaidApiMustNotRun;
 
+#[test]
+fn recovered_raw_skips_speech_and_uses_original_cleanup_options() {
+    struct InspectCleanup;
+    impl CleanupTransport for InspectCleanup {
+        fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError> {
+            assert_eq!(request.model, "original-model");
+            assert_eq!(request.timeout.as_millis(), 1234);
+            Ok("Push now.".into()) // Must be rejected by the constraint guard.
+        }
+    }
+    let original = Settings {
+        cleanup_model: "original-model".into(),
+        cleanup_timeout_ms: 1234,
+        ..Settings::default()
+    };
+    let now = Utc::now();
+    let job = RecordingJob {
+        options: Some(agentdictate_core::DictationOptions::from_settings(
+            &original,
+            vec![],
+        )),
+        id: JobId::new(),
+        legacy_id: 1,
+        started_at: now,
+        updated_at: now,
+        stage: JobStage::Transcribing,
+        audio_path: "missing.wav".into(),
+        duration_seconds: 2.0,
+        transcription_provider: TranscriptionProvider::OpenAiApi,
+        transcription_model: "gpt-transcribe".into(),
+        raw_transcript: "Do not push.".into(),
+        final_text: String::new(),
+        copied_to_clipboard: false,
+        paste_triggered: false,
+        delivery_status: DeliveryStatus::NotAttempted,
+        error_message: None,
+        cleanup_error: None,
+    };
+    let mut pipeline = TranscriptionPipeline::new(
+        Settings {
+            cleanup_enabled: false,
+            ..Settings::default()
+        },
+        PaidApiMustNotRun,
+        InspectCleanup,
+    );
+    let result = pipeline.transcribe(&job).unwrap();
+    assert_eq!(result.final_text, "Do not push.");
+    assert!(result.cleanup_error.is_some());
+}
+
 impl SpeechTransport for FixedOpenAi {
     fn transcribe_audio(
         &mut self,
@@ -74,6 +125,7 @@ fn transcription_and_cleanup_are_one_deep_runtime_operation() {
     let mut transcriber = TranscriptionPipeline::new(settings, FixedOpenAi, FixedOpenAi);
     let now = Utc::now();
     let job = RecordingJob {
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,
@@ -110,6 +162,7 @@ fn cleanup_failure_returns_the_successful_raw_transcript() {
         TranscriptionPipeline::new(settings, FailingCleanupOpenAi, FailingCleanupOpenAi);
     let now = Utc::now();
     let job = RecordingJob {
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,
@@ -146,6 +199,7 @@ fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
     let mut transcriber = TranscriptionPipeline::new(settings, speech, FixedOpenAi);
     let now = Utc::now();
     let job = RecordingJob {
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,
@@ -197,6 +251,7 @@ fn cleanup_started_observer_fires_before_the_cleanup_transport() {
     });
     let now = Utc::now();
     let job = RecordingJob {
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,
@@ -239,6 +294,7 @@ fn cleanup_started_observer_stays_silent_when_cleanup_is_disabled() {
     });
     let now = Utc::now();
     let job = RecordingJob {
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,

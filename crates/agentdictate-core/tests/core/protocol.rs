@@ -10,7 +10,7 @@ fn client_commands_have_a_versioned_stable_wire_shape() {
 
     assert_eq!(
         wire,
-        r#"{"protocol_version":3,"command":"start_recording","request_id":7}"#
+        r#"{"protocol_version":4,"command":"start_recording","request_id":7}"#
     );
 }
 
@@ -30,7 +30,7 @@ fn rejected_commands_return_a_correlated_error_instead_of_looking_successful() {
     ));
     assert_eq!(
         serde_json::to_string(&message).unwrap(),
-        r#"{"protocol_version":3,"message":"command_rejected","request_id":19,"error":"microphone unavailable"}"#
+        r#"{"protocol_version":4,"message":"command_rejected","request_id":19,"error":"microphone unavailable"}"#
     );
 }
 
@@ -69,7 +69,7 @@ fn history_page_requests_are_bounded_and_typed_on_the_wire() {
 
     assert_eq!(
         wire,
-        r#"{"protocol_version":3,"command":"get_history_page","request_id":12,"request":{"search":"database migration","page_size":20,"after":"opaque-page-2"}}"#
+        r#"{"protocol_version":4,"command":"get_history_page","request_id":12,"request":{"search":"database migration","page_size":20,"after":"opaque-page-2"}}"#
     );
     assert_eq!(
         serde_json::from_str::<ClientCommand>(&wire).unwrap(),

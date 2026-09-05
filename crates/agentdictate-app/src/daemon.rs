@@ -114,6 +114,13 @@ where
     }
 
     pub fn start_recording(&mut self) -> Result<RecordingJob, DaemonError> {
+        self.start_recording_in_mode(None)
+    }
+
+    pub fn start_recording_in_mode(
+        &mut self,
+        mode: Option<agentdictate_core::DictationMode>,
+    ) -> Result<RecordingJob, DaemonError> {
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
@@ -124,8 +131,16 @@ where
             now.format("%Y%m%dT%H%M%S%.fZ"),
             JobId::new()
         ));
+        let mut recording_settings = self.settings.clone();
+        if let Some(mode) = mode {
+            recording_settings.dictation_mode = mode;
+        }
         let job = match self.runtime.start_recording(
             RecordingRequest {
+                options: Some(agentdictate_core::DictationOptions::from_settings(
+                    &recording_settings,
+                    self.runtime.replacement_rules()?,
+                )),
                 audio_path: path.clone(),
                 started_at: now,
                 transcription_provider: self.settings.transcription_provider,
@@ -158,6 +173,7 @@ where
             .apply(WorkflowSignal::StartRequested { job_id: job.id })?;
         self.workflow
             .apply(WorkflowSignal::FirstAudioFrameWritten { job_id: job.id })?;
+        self.transcriber.begin_recording(&job);
         self.active_job = Some(job.id);
         self.active_recording = Some(ActiveRecordingUpdate {
             audio_path: job.audio_path.clone(),
@@ -183,6 +199,7 @@ where
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
             Err(error) => {
+                self.transcriber.cancel_recording(id);
                 tracing::error!(job_id = %id, %error, "recording finalization failed");
                 self.runtime.interrupt_job(
                     id,
@@ -289,6 +306,7 @@ where
     /// preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
         let id = self.active_job.ok_or(DaemonError::NotRecording)?;
+        self.transcriber.cancel_recording(id);
         tracing::info!(job_id = %id, "dictation discard requested");
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
@@ -364,7 +382,8 @@ where
     /// Finalizes active audio without transcribing or deleting it, so process
     /// shutdown can never discard an in-progress dictation.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
-        if self.active_job.is_some() {
+        if let Some(id) = self.active_job {
+            self.transcriber.cancel_recording(id);
             self.preserve_active_recording(
                 "AgentDictate shut down before this dictation completed; audio was preserved",
             )?;
@@ -373,6 +392,9 @@ where
     }
 
     pub fn retry_transcription(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
+        if self.active_job.is_some() {
+            return Err(DaemonError::AlreadyRecording);
+        }
         let result = self.runtime.retry_transcription(
             id,
             &mut self.transcriber,
@@ -396,6 +418,9 @@ where
     }
 
     pub fn retry_delivery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
+        if self.active_job.is_some() {
+            return Err(DaemonError::AlreadyRecording);
+        }
         let result = self
             .runtime
             .retry_delivery(id, &mut self.overlay, &mut self.deliverer)?;
@@ -608,6 +633,7 @@ where
     }
 
     fn recover_after_capture_checkpoint_failure(&mut self, id: JobId, primary: &RuntimeError) {
+        self.transcriber.cancel_recording(id);
         self.active_job = None;
         self.active_recording = None;
 
@@ -659,6 +685,7 @@ where
         reason: &'static str,
     ) -> Result<RecordingJob, DaemonError> {
         let id = self.active_job.ok_or(DaemonError::NotRecording)?;
+        self.transcriber.cancel_recording(id);
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,

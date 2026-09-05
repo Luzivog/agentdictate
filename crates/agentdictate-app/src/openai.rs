@@ -2,20 +2,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{
-    DEFAULT_CLEANUP_PROMPT, JobId, ReasoningEffort, Settings, TranscriptionProvider,
-};
+use agentdictate_core::{JobId, ReasoningEffort, Settings, TranscriptionProvider};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
 use crate::model_catalog::{TranscriptionProfile, transcription_profile};
 
-/// Opus bitrate for transcription uploads. Speech keeps full transcription
-/// accuracy at 16 kHz mono / 32 kbps while the payload shrinks ~30x versus
-/// raw PCM WAV, so upload time no longer dominates stop-to-paste latency on
-/// slow uplinks (measured 2026-09-01: 62 s recording, 14.7 s as 2.0 MB WAV vs
-/// 2.6 s as 186 KB Opus, identical transcript).
+/// 32 kbps Opus reduces the 256 kbps PCM payload by roughly 8x before container
+/// overhead. Recognition quality still depends on the audio and selected model.
 const UPLOAD_OPUS_BITRATE: &str = "32k";
 
 /// Audio payload actually sent to the transcription endpoint: the Opus/OGG
@@ -85,24 +80,8 @@ fn cleanup_reasoning_effort(value: &str) -> Option<&str> {
     ReasoningEffort::from_settings_value(value).and_then(ReasoningEffort::openai_value)
 }
 
-fn build_cleanup_instruction(style: &str, custom_prompt: &str) -> String {
-    let base = if custom_prompt.trim().is_empty() {
-        DEFAULT_CLEANUP_PROMPT
-    } else {
-        custom_prompt.trim()
-    };
-    if style == "Structured coding prompt" {
-        format!(
-            "{base}\n\nCleanup style: Structured coding prompt. Use short bullets and sections only when helpful. Possible sections: Goal, Requirements, Constraints, Testing, Notes."
-        )
-    } else {
-        format!(
-            "{base}\n\nCleanup style: Light cleanup. Keep wording and structure close to the transcript. Do not invent details."
-        )
-    }
-}
-
 pub struct TranscriptionRequest<'a> {
+    pub keywords: &'a [String],
     pub audio_path: &'a Path,
     pub provider: TranscriptionProvider,
     pub model: &'a str,
@@ -112,6 +91,7 @@ pub struct TranscriptionRequest<'a> {
 }
 
 pub struct CleanupRequest<'a> {
+    pub timeout: Duration,
     pub transcript: &'a str,
     pub model: &'a str,
     pub instruction: &'a str,
@@ -119,6 +99,17 @@ pub struct CleanupRequest<'a> {
 }
 
 pub trait SpeechTransport {
+    fn begin_recording(
+        &mut self,
+        _job: &RecordingJob,
+        _options: &agentdictate_core::DictationOptions,
+    ) {
+    }
+    fn cancel_recording(&mut self, _id: JobId) {}
+    fn actual_model(&self) -> Option<&str> {
+        None
+    }
+
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
@@ -146,6 +137,22 @@ impl<A, C> SpeechRouter<A, C> {
 }
 
 impl<A: SpeechTransport, C: SpeechTransport> SpeechTransport for SpeechRouter<A, C> {
+    fn begin_recording(
+        &mut self,
+        job: &RecordingJob,
+        options: &agentdictate_core::DictationOptions,
+    ) {
+        if job.transcription_provider == TranscriptionProvider::OpenAiApi {
+            self.openai.begin_recording(job, options);
+        }
+    }
+    fn cancel_recording(&mut self, id: JobId) {
+        self.openai.cancel_recording(id);
+    }
+    fn actual_model(&self) -> Option<&str> {
+        self.openai.actual_model()
+    }
+
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
@@ -195,42 +202,76 @@ impl<S, C> TranscriptionPipeline<S, C> {
 }
 
 impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipeline<S, C> {
+    fn begin_recording(&mut self, job: &RecordingJob) {
+        if let Some(options) = &job.options {
+            self.speech.begin_recording(job, options);
+        }
+    }
+    fn cancel_recording(&mut self, id: JobId) {
+        self.speech.cancel_recording(id);
+    }
+
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        let raw = self.speech.transcribe_audio(TranscriptionRequest {
-            audio_path: &job.audio_path,
-            provider: job.transcription_provider,
-            model: &job.transcription_model,
-            language: &self.settings.language,
-            prompt: &self.settings.transcription_prompt,
-            duration_seconds: job.duration_seconds,
-        })?;
+        self.transcribe_checkpointed(job, &mut |_, _| Ok(()))
+    }
+
+    fn transcribe_checkpointed(
+        &mut self,
+        job: &RecordingJob,
+        checkpoint: &mut agentdictate_runtime::TranscriptCheckpoint<'_>,
+    ) -> Result<Transcript, ExternalError> {
+        let options = job.options.clone().unwrap_or_else(|| {
+            agentdictate_core::DictationOptions::from_settings(&self.settings, Vec::new())
+        });
+        let keywords = options.keywords();
+        let raw = if !job.raw_transcript.trim().is_empty() {
+            job.raw_transcript.clone()
+        } else {
+            self.speech.transcribe_audio(TranscriptionRequest {
+                keywords: &keywords,
+                audio_path: &job.audio_path,
+                provider: job.transcription_provider,
+                model: &job.transcription_model,
+                language: &options.language,
+                prompt: &options.context,
+                duration_seconds: job.duration_seconds,
+            })?
+        };
         if raw.trim().is_empty() {
             return Err(ExternalError::new("Transcription returned an empty result"));
         }
-
-        let (final_text, cleaned_text, cleanup_error) = if self.settings.cleanup_enabled {
-            let effort = cleanup_reasoning_effort(&self.settings.cleanup_reasoning_effort);
-            let instruction = build_cleanup_instruction(
-                &self.settings.cleanup_style,
-                &self.settings.cleanup_prompt,
-            );
+        checkpoint(
+            &raw,
+            if job.raw_transcript.is_empty()
+                && job.transcription_provider == TranscriptionProvider::OpenAiApi
+            {
+                self.speech.actual_model()
+            } else {
+                None
+            },
+        )?;
+        let (final_text, cleaned_text, cleanup_error) = if options.cleanup_enabled {
             if let Some(observer) = &self.cleanup_started_observer {
                 observer(job.id);
             }
-            match self.cleanup.cleanup_text(CleanupRequest {
-                transcript: &raw,
-                model: self.settings.active_cleanup_model(),
-                instruction: &instruction,
-                reasoning_effort: effort,
-            }) {
-                Ok(cleaned) if !cleaned.trim().is_empty() => (cleaned.clone(), Some(cleaned), None),
-                Ok(_) => (
-                    raw.clone(),
-                    None,
-                    Some("Cleanup returned an empty response.".to_owned()),
-                ),
+            let cleaned = self
+                .cleanup
+                .cleanup_text(CleanupRequest {
+                    timeout: Duration::from_millis(u64::from(options.cleanup_timeout_ms)),
+                    transcript: &raw,
+                    model: &options.cleanup_model,
+                    instruction: &options.cleanup_instruction,
+                    reasoning_effort: cleanup_reasoning_effort(&options.cleanup_effort),
+                })
+                .and_then(|cleaned| {
+                    agentdictate_core::validate_cleanup(&raw, &cleaned)
+                        .map_err(ExternalError::new)?;
+                    Ok(cleaned)
+                });
+            match cleaned {
+                Ok(cleaned) => (cleaned.clone(), Some(cleaned), None),
                 Err(error) => {
-                    tracing::warn!(%error, "cleanup failed; using durable raw transcript");
+                    tracing::warn!(%error, "cleanup failed; using checkpointed raw transcript");
                     (raw.clone(), None, Some(error.to_string()))
                 }
             }
@@ -250,6 +291,8 @@ pub struct ReqwestOpenAiTransport {
     client: reqwest::blocking::Client,
     api_key: String,
     api_base: String,
+    live: Option<crate::live_transcription::LiveTranscription>,
+    actual_model: Option<String>,
 }
 
 impl ReqwestOpenAiTransport {
@@ -270,6 +313,8 @@ impl ReqwestOpenAiTransport {
                 .expect("the rustls HTTP client must be constructible"),
             api_key: api_key.into().trim().to_owned(),
             api_base: api_base.into().trim_end_matches('/').to_owned(),
+            actual_model: None,
+            live: None,
         }
     }
 
@@ -324,16 +369,79 @@ impl ReqwestOpenAiTransport {
 }
 
 impl SpeechTransport for ReqwestOpenAiTransport {
+    fn begin_recording(
+        &mut self,
+        job: &RecordingJob,
+        options: &agentdictate_core::DictationOptions,
+    ) {
+        self.live = None;
+        self.actual_model = None;
+        if options.streaming && job.transcription_provider == TranscriptionProvider::OpenAiApi {
+            let url = format!(
+                "{}/realtime?intent=transcription",
+                self.api_base
+                    .replacen("https://", "wss://", 1)
+                    .replacen("http://", "ws://", 1)
+            );
+            match crate::live_transcription::LiveTranscription::start(
+                job.id,
+                job.audio_path.clone(),
+                options.clone(),
+                self.api_key.clone(),
+                url,
+            ) {
+                Ok(live) => self.live = Some(live),
+                Err(error) => {
+                    tracing::warn!(%error, "live transcription startup failed; buffered audio remains available")
+                }
+            }
+        }
+    }
+    fn cancel_recording(&mut self, id: JobId) {
+        if self.live.as_ref().is_some_and(|live| live.job_id == id) {
+            self.live = None;
+        }
+    }
+    fn actual_model(&self) -> Option<&str> {
+        self.actual_model.as_deref()
+    }
+
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
+        if let Some(live) = self
+            .live
+            .take()
+            .filter(|live| live.audio_path == request.audio_path)
+        {
+            match live.finish() {
+                Ok(text) => {
+                    self.actual_model = Some("gpt-live-transcribe".into());
+                    tracing::info!(
+                        model = "gpt-live-transcribe",
+                        "live transcription completed"
+                    );
+                    return Ok(text);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "live transcription failed; falling back to file transcription")
+                }
+            }
+        }
+        self.actual_model = Some(request.model.to_owned());
         if request.model.trim().is_empty() {
             return Err(ExternalError::new(
                 "The selected transcription model could not be used. Choose another model or check the custom model name.",
             ));
         }
-        let profile = transcription_profile(request.model).unwrap_or(TranscriptionProfile::Standard);
+        let profile =
+            transcription_profile(request.model).unwrap_or(TranscriptionProfile::Standard);
+        if profile != TranscriptionProfile::AgentDictateGpt && request.language.contains(',') {
+            return Err(ExternalError::new(
+                "This model accepts one language hint; choose one language or automatic detection",
+            ));
+        }
         let upload = prepare_upload_audio(request.audio_path)?;
         let upload_bytes = upload.bytes.len();
         let file = reqwest::blocking::multipart::Part::bytes(upload.bytes)
@@ -349,7 +457,12 @@ impl SpeechTransport for ReqwestOpenAiTransport {
             TranscriptionProfile::AgentDictateGpt => {
                 form = form.text("response_format", "json");
                 if !language.is_empty() {
-                    form = form.text("languages[]", language.to_owned());
+                    for language in language.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        form = form.text("languages[]", language.to_owned());
+                    }
+                }
+                for keyword in request.keywords {
+                    form = form.text("keywords[]", keyword.clone());
                 }
             }
             TranscriptionProfile::OpenAiGpt => {
@@ -394,7 +507,9 @@ impl SpeechTransport for ReqwestOpenAiTransport {
                             .and_then(Value::as_str)
                             .map(str::to_owned)
                     })
-                    .unwrap_or_else(|| body.trim().to_owned())
+                    .ok_or_else(|| {
+                        ExternalError::new("OpenAI returned an invalid transcription response")
+                    })?
             } else {
                 body.trim().to_owned()
             };
@@ -435,6 +550,7 @@ impl CleanupTransport for ReqwestOpenAiTransport {
         let response = self
             .client
             .post(format!("{}/responses", self.api_base))
+            .timeout(request.timeout)
             .header("Authorization", self.authorization()?)
             .json(&payload)
             .send()
@@ -449,6 +565,24 @@ impl CleanupTransport for ReqwestOpenAiTransport {
         }
         let payload: Value = serde_json::from_str(&body)
             .map_err(|_| ExternalError::new("OpenAI returned an invalid cleanup response."))?;
+        if payload.get("status").and_then(Value::as_str) != Some("completed") {
+            return Err(ExternalError::new(
+                "Cleanup did not complete; using the transcript",
+            ));
+        }
+        if payload
+            .get("output")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("content").and_then(Value::as_array))
+            .flatten()
+            .any(|part| part.get("type").and_then(Value::as_str) == Some("refusal"))
+        {
+            return Err(ExternalError::new(
+                "Cleanup refused the edit; using the transcript",
+            ));
+        }
         let text = payload
             .get("output")
             .and_then(Value::as_array)
@@ -456,6 +590,7 @@ impl CleanupTransport for ReqwestOpenAiTransport {
             .flatten()
             .filter_map(|item| item.get("content").and_then(Value::as_array))
             .flatten()
+            .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
             .filter_map(|content| content.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join("")
@@ -485,9 +620,7 @@ impl CleanupTransport for ReqwestOpenAiTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_cleanup_instruction, cleanup_reasoning_effort, encode_ogg_opus, upload_file_name,
-    };
+    use super::{cleanup_reasoning_effort, encode_ogg_opus, upload_file_name};
 
     #[test]
     fn encoding_an_unreadable_recording_reports_an_error_instead_of_panicking() {
@@ -537,17 +670,6 @@ mod tests {
         bytes.extend_from_slice(&data_len.to_le_bytes());
         bytes.resize(bytes.len() + data_len as usize, 0);
         bytes
-    }
-
-    #[test]
-    fn cleanup_style_changes_the_instruction_sent_to_openai() {
-        let light = build_cleanup_instruction("Light cleanup", "Preserve my intent.");
-        let structured =
-            build_cleanup_instruction("Structured coding prompt", "Preserve my intent.");
-
-        assert!(light.contains("Keep wording and structure close"));
-        assert!(structured.contains("Goal, Requirements, Constraints, Testing, Notes"));
-        assert_ne!(light, structured);
     }
 
     #[test]

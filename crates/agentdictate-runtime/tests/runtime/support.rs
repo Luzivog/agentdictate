@@ -26,6 +26,7 @@ pub(crate) fn request_with_provider(
     transcription_model: &str,
 ) -> RecordingRequest {
     RecordingRequest {
+        options: None,
         audio_path: audio_path.to_owned(),
         started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
         transcription_provider,

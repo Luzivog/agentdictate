@@ -100,8 +100,8 @@ impl Runtime {
             r#"
             INSERT INTO dictation_jobs (
                 runtime_id, started_at, updated_at, state, stage, audio_path,
-                transcription_model, transcription_provider
-            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5, ?6)
+                transcription_model, transcription_provider, processing_options
+            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5, ?6, ?7)
             "#,
             params![
                 id.to_string(),
@@ -110,6 +110,11 @@ impl Runtime {
                 request.audio_path.to_string_lossy(),
                 request.transcription_model,
                 request.transcription_provider.as_str(),
+                request
+                    .options
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
             ],
         )?;
         let starting = self.job(id)?.expect("inserted job must be readable");
@@ -223,18 +228,39 @@ impl Runtime {
         }
         self.update_stage(id, JobStage::Transcribing, None)?;
         let transcribing = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        let transcript = match transcriber.transcribe(&transcribing) {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                self.update_stage(id, JobStage::Failed, Some(error.to_string()))?;
-                return Err(error.into());
-            }
+        let transcript =
+            match transcriber.transcribe_checkpointed(&transcribing, &mut |raw, model| {
+                self.connection
+                    .execute(
+                        "UPDATE dictation_jobs SET raw_transcript = ?1, updated_at = ?2,
+                 transcription_model = COALESCE(?4, transcription_model) WHERE runtime_id = ?3",
+                        params![raw, timestamp(Utc::now()), id.to_string(), model],
+                    )
+                    .map_err(RuntimeError::from)?;
+                Ok(())
+            }) {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    self.update_stage(id, JobStage::Failed, Some(error.to_string()))?;
+                    return Err(error.into());
+                }
+            };
+        let replacement_rules = match &transcribing.options {
+            Some(options) => options.replacements.clone(),
+            None => self.replacement_rules()?,
         };
-        let replacement_rules = self.replacement_rules()?;
-        let replacement_result = apply_replacements(&transcript.final_text, &replacement_rules)
+        let mut replacement_result = apply_replacements(&transcript.final_text, &replacement_rules)
             .map_err(|error| {
                 ExternalError::new(format!("replacement processing failed: {error}"))
             })?;
+        if let Some(options) = &transcribing.options {
+            let normalized = agentdictate_core::normalize_vocabulary(
+                &replacement_result.text,
+                &options.vocabulary,
+            );
+            replacement_result.text = normalized.text;
+            replacement_result.applied.extend(normalized.applied);
+        }
         let replacements_applied = serialize_replacements(&replacement_result.applied)?;
 
         self.connection.execute(
@@ -629,7 +655,7 @@ impl Runtime {
                        duration_seconds, transcription_model, transcription_provider,
                        raw_transcript,
                        final_text, copied_to_clipboard, paste_triggered,
-                       delivery_status, error_message, cleanup_error
+                       delivery_status, error_message, cleanup_error, processing_options
                 FROM dictation_jobs
                 WHERE runtime_id = ?1
                 "#,
@@ -647,7 +673,7 @@ impl Runtime {
                    duration_seconds, transcription_model, transcription_provider,
                    raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
-                   delivery_status, error_message, cleanup_error
+                   delivery_status, error_message, cleanup_error, processing_options
             FROM dictation_jobs
             WHERE state NOT IN ('delivered', 'deleted')
             ORDER BY updated_at DESC, id DESC
@@ -756,6 +782,7 @@ fn ensure_delivery_status_column(connection: &Connection) -> rusqlite::Result<()
 }
 
 fn ensure_history_columns(connection: &Connection) -> rusqlite::Result<()> {
+    ensure_column(connection, "dictation_jobs", "processing_options", "TEXT")?;
     ensure_column(
         connection,
         "dictation_jobs",

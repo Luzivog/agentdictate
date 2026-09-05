@@ -236,12 +236,25 @@ impl Runtime {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let replacements_applied = deserialize_replacements(&replacements_json)?;
-        let cleanup_enabled = settings.cleanup_enabled && stored_cleaned.is_some();
+        let cleanup_enabled = job
+            .options
+            .as_ref()
+            .map_or(settings.cleanup_enabled, |o| o.cleanup_enabled)
+            && stored_cleaned.is_some();
         let cleaned_transcript = cleanup_enabled.then_some(stored_cleaned).flatten();
         let cleanup_model = cleanup_enabled
-            .then(|| settings.active_cleanup_model().to_owned())
+            .then(|| {
+                job.options.as_ref().map_or_else(
+                    || settings.active_cleanup_model().to_owned(),
+                    |o| o.cleanup_model.clone(),
+                )
+            })
             .filter(|model| !model.is_empty());
-        let cleanup_style = cleanup_enabled.then(|| settings.cleanup_style.clone());
+        let cleanup_style = cleanup_enabled.then(|| {
+            job.options
+                .as_ref()
+                .map_or_else(|| settings.cleanup_style.clone(), |o| o.mode.to_string())
+        });
         let api_transcription_price = settings
             .transcription_prices
             .get(&job.transcription_model)

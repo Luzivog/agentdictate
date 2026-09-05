@@ -118,6 +118,7 @@ fn background_writer_open_does_not_reconcile_the_live_recording() {
     let job = runtime
         .start_recording(
             RecordingRequest {
+                options: None,
                 audio_path: directory.path().join("active.wav"),
                 started_at: Utc::now(),
                 transcription_provider: Default::default(),

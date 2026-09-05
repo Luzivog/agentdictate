@@ -7,6 +7,7 @@ mod codex_subscription;
 mod daemon;
 pub mod diagnostics;
 mod hotkey_dispatch;
+mod live_transcription;
 mod model_catalog;
 mod openai;
 mod overlay_process;

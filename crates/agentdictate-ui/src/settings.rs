@@ -7,6 +7,13 @@ macro_rules! settings_fields {
     ($callback:ident) => {
         $callback! {
             select {
+                dictation_mode: String {
+                    from: stringified,
+                    apply: validate_field(parsed_dictation_mode),
+                    options: plain(dictation_mode_options),
+                    searchable: false,
+                    read: string,
+                },
                 transcription_provider: TranscriptionProvider {
                     from: copied,
                     apply: value(copied),
@@ -78,6 +85,18 @@ macro_rules! settings_fields {
                 },
             }
             text_area {
+                vocabulary: String {
+                    from: vocabulary_display,
+                    apply: validate_field(parsed_vocabulary),
+                    placeholder: "Leadlord = lead lord\nClaude Code",
+                    rows: 3..=8,
+                },
+                project_context: String {
+                    from: cloned,
+                    apply: value(trimmed),
+                    placeholder: "Optional project or selected-code context for this work",
+                    rows: 2..=5,
+                },
                 transcription_prompt: String {
                     from: cloned,
                     apply: value(trimmed),
@@ -92,6 +111,12 @@ macro_rules! settings_fields {
                 },
             }
             number {
+                cleanup_timeout_ms: String {
+                    from: stringified,
+                    apply: validate_field(parsed_cleanup_timeout),
+                    placeholder: "3000",
+                    maximum: 30000,
+                },
                 max_recording_seconds: String {
                     from: stringified,
                     apply: validate_field(parsed_max_recording_seconds),
@@ -118,6 +143,10 @@ macro_rules! settings_fields {
                 },
             }
             draft_only {
+                streaming_enabled: bool {
+                    from: copied,
+                    apply: value(copied),
+                },
                 cleanup_enabled: bool {
                     from: copied,
                     apply: value(copied),
@@ -289,6 +318,8 @@ settings_fields!(define_settings_draft);
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SettingsDraftError {
+    #[error("{0}")]
+    InvalidDictation(String),
     #[error("{0} cannot be blank")]
     Required(&'static str),
     #[error("Recording mode must be toggle or hold")]
@@ -405,4 +436,31 @@ where
         .trim()
         .parse()
         .map_err(|_| SettingsDraftError::InvalidNumber { field })
+}
+
+fn vocabulary_display(value: &[agentdictate_core::VocabularyEntry]) -> String {
+    agentdictate_core::vocabulary_text(value)
+}
+fn parsed_vocabulary(
+    value: &str,
+) -> Result<Vec<agentdictate_core::VocabularyEntry>, SettingsDraftError> {
+    agentdictate_core::parse_vocabulary(value).map_err(SettingsDraftError::InvalidDictation)
+}
+fn parsed_dictation_mode(
+    value: &str,
+) -> Result<agentdictate_core::DictationMode, SettingsDraftError> {
+    value.parse().map_err(SettingsDraftError::InvalidDictation)
+}
+fn parsed_cleanup_timeout(value: &str) -> Result<u32, SettingsDraftError> {
+    let ms = value.parse::<u32>().map_err(|_| {
+        SettingsDraftError::InvalidDictation(
+            "Cleanup deadline must be 100–30000 milliseconds".into(),
+        )
+    })?;
+    if !(100..=30000).contains(&ms) {
+        return Err(SettingsDraftError::InvalidDictation(
+            "Cleanup deadline must be 100–30000 milliseconds".into(),
+        ));
+    }
+    Ok(ms)
 }

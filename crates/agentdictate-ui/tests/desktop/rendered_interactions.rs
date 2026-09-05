@@ -1530,7 +1530,7 @@ fn settings_scrollbar_keeps_the_viewport_height_while_content_moves(cx: &mut Tes
     let before = harness.bounds("route-scrollbar-settings");
     assert!((before.size.height - viewport.size.height).abs() <= px(1.));
 
-    harness.scroll_route_by(-700.);
+    harness.scroll_to("settings-group-recording-audio");
 
     let after = harness.bounds("route-scrollbar-settings");
     assert_eq!(after, before);
@@ -1617,7 +1617,7 @@ fn shortcut_capture_accepts_a_supported_chord_and_saves_it(cx: &mut TestAppConte
     let commands = Arc::new(Mutex::new(Vec::new()));
     let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
 
-    harness.scroll_route_by(-600.);
+    harness.scroll_to("settings-hotkey-change");
     harness.click("settings-hotkey-change");
     harness.bounds("settings-hotkey-capture");
     harness.bounds("settings-hotkey-cancel");
@@ -1635,6 +1635,24 @@ fn shortcut_capture_accepts_a_supported_chord_and_saves_it(cx: &mut TestAppConte
         ClientCommandKind::UpdateSettings { settings, .. }
             if settings.hotkey == "Ctrl+Alt+D"
     ));
+}
+
+#[gpui::test]
+fn vocabulary_editor_saves_hints_and_explicit_aliases(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
+    harness.scroll_to("settings-input-vocabulary");
+    harness.type_text(
+        "settings-input-vocabulary-control",
+        "AgentDictate = agent dictate\nCodex",
+    );
+    harness.bounds("settings-effective-cleanup");
+    harness.click("save-settings");
+    let commands = commands.lock().unwrap();
+    assert!(
+        matches!(&commands[0].kind, ClientCommandKind::UpdateSettings { settings, .. }
+        if settings.vocabulary == agentdictate_core::parse_vocabulary("AgentDictate = agent dictate\nCodex").unwrap())
+    );
 }
 
 #[gpui::test]

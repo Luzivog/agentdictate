@@ -605,6 +605,7 @@ fn language_options() -> Vec<SettingOption> {
     setting_options(&[
         ("Auto-detect", ""),
         ("English (en)", "en"),
+        ("English and French", "en,fr"),
         ("French (fr)", "fr"),
         ("Spanish (es)", "es"),
         ("German (de)", "de"),
@@ -636,5 +637,13 @@ fn paste_shortcut_options() -> Vec<SettingOption> {
         ("Automatic", "Automatic"),
         ("Standard (Ctrl+V)", "Standard (Ctrl+V)"),
         ("Terminal (Ctrl+Shift+V)", "Terminal (Ctrl+Shift+V)"),
+    ])
+}
+
+fn dictation_mode_options() -> Vec<SettingOption> {
+    setting_options(&[
+        ("Dictate", "Dictate"),
+        ("Literal", "Literal"),
+        ("Organize", "Organize"),
     ])
 }

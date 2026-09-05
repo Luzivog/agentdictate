@@ -12,6 +12,66 @@ use crate::support::{request, request_with_provider};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
+#[test]
+fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
+    struct CheckpointThenFail;
+    impl Transcriber for CheckpointThenFail {
+        fn transcribe(&mut self, _: &RecordingJob) -> Result<Transcript, ExternalError> {
+            unreachable!()
+        }
+        fn transcribe_checkpointed(
+            &mut self,
+            _: &RecordingJob,
+            checkpoint: &mut agentdictate_runtime::TranscriptCheckpoint<'_>,
+        ) -> Result<Transcript, ExternalError> {
+            checkpoint("Do not push.", Some("gpt-live-transcribe"))?;
+            Err(ExternalError::new("process failed after speech"))
+        }
+    }
+    let directory = TempDir::new().unwrap();
+    let db = directory.path().join("history.sqlite3");
+    let mut runtime = Runtime::open(&db).unwrap();
+    let mut request = request(&directory.path().join("audio.wav"), TRANSCRIPTION_MODEL);
+    let options = agentdictate_core::DictationOptions::from_settings(
+        &agentdictate_core::Settings {
+            project_context: "Original project".into(),
+            cleanup_timeout_ms: 1234,
+            openai_api_key: "must-not-persist".into(),
+            ..Default::default()
+        },
+        vec![],
+    );
+    request.options = Some(options.clone());
+    let job = runtime
+        .start_recording(request, &mut crate::support::ReadyRecorder)
+        .unwrap();
+    runtime.capture_recording(job.id, 2.0).unwrap();
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
+    assert!(
+        runtime
+            .process_captured(
+                job.id,
+                &mut CheckpointThenFail,
+                &mut HeadlessDeliveryGate,
+                &mut deliverer
+            )
+            .is_err()
+    );
+    assert_eq!(deliverer.attempts, 0);
+    drop(runtime);
+    let runtime = Runtime::open(&db).unwrap();
+    let recovered = runtime.job(job.id).unwrap().unwrap();
+    assert_eq!(recovered.raw_transcript, "Do not push.");
+    assert_eq!(recovered.transcription_model, "gpt-live-transcribe");
+    assert_eq!(recovered.options, Some(options));
+    assert!(
+        !std::fs::read(&db)
+            .unwrap()
+            .windows(16)
+            .any(|part| part == b"must-not-persist")
+    );
+}
+
 struct InspectingRecorder {
     database_path: PathBuf,
     saw_durable_starting_job: bool,

@@ -125,6 +125,10 @@ pub(crate) fn row_to_job(
     let stage: String = row.get(4)?;
     Ok((|| {
         Ok(RecordingJob {
+            options: row
+                .get::<_, Option<String>>(16)?
+                .map(|s| serde_json::from_str(&s))
+                .transpose()?,
             id: JobId::from_str(&runtime_id)
                 .map_err(|_| RuntimeError::InvalidJobId(runtime_id.clone()))?,
             legacy_id,

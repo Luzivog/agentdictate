@@ -7,7 +7,7 @@ use crate::snapshots::{
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -26,7 +26,18 @@ impl ClientCommand {
 
     #[must_use]
     pub const fn start_recording(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::StartRecording { request_id })
+        Self::with_kind(ClientCommandKind::StartRecording {
+            request_id,
+            mode: None,
+        })
+    }
+
+    /// Overrides output mode for this recording without changing saved settings.
+    pub const fn start_recording_in_mode(request_id: u64, mode: crate::DictationMode) -> Self {
+        Self::with_kind(ClientCommandKind::StartRecording {
+            request_id,
+            mode: Some(mode),
+        })
     }
 
     #[must_use]
@@ -258,6 +269,8 @@ pub enum ClientCommandKind {
     },
     StartRecording {
         request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<crate::DictationMode>,
     },
     StopRecording {
         request_id: u64,

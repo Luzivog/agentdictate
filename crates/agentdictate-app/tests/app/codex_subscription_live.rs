@@ -14,6 +14,7 @@ fn signed_in_codex_account_transcribes_the_system_fixture() {
 
     let transcript = transport
         .transcribe_audio(TranscriptionRequest {
+            keywords: &[],
             audio_path: fixture,
             provider: TranscriptionProvider::ChatGptSubscription,
             model: "gpt-transcribe",

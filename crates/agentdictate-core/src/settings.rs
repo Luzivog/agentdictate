@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_CLEANUP_PROMPT: &str = "Clean up this dictation into a clear prompt. Preserve intent and technical terms. Fix punctuation and obvious filler. Do not add new requirements.";
+pub const DEFAULT_CLEANUP_PROMPT: &str = crate::FAITHFUL_CLEANUP_INSTRUCTION;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TranscriptionProvider {
@@ -104,6 +104,11 @@ pub struct Settings {
     pub custom_transcription_model: String,
     pub language: String,
     pub transcription_prompt: String,
+    pub vocabulary: Vec<crate::VocabularyEntry>,
+    pub project_context: String,
+    pub dictation_mode: crate::DictationMode,
+    pub streaming_enabled: bool,
+    pub cleanup_timeout_ms: u32,
     pub cleanup_enabled: bool,
     pub cleanup_model: String,
     pub custom_cleanup_model: String,
@@ -209,6 +214,11 @@ impl Default for Settings {
             custom_transcription_model: String::new(),
             language: String::new(),
             transcription_prompt: String::new(),
+            vocabulary: Vec::new(),
+            project_context: String::new(),
+            dictation_mode: crate::DictationMode::Dictate,
+            streaming_enabled: false,
+            cleanup_timeout_ms: 3000,
             cleanup_enabled: true,
             cleanup_model: "gpt-5.4-nano".into(),
             custom_cleanup_model: String::new(),
@@ -263,6 +273,7 @@ impl From<&Settings> for SettingsSnapshot {
 fn default_transcription_prices() -> BTreeMap<String, TranscriptionPrice> {
     [
         ("gpt-transcribe", 0.0045),
+        ("gpt-live-transcribe", 0.017),
         ("gpt-4o-transcribe", 0.006),
         ("gpt-4o-mini-transcribe", 0.003),
         ("whisper-1", 0.006),

@@ -75,11 +75,12 @@ third-party clients may make it, which accounts can access it, or how requests
 are limited or billed. The route can stop working without notice.
 
 OpenAI API transcription uploads the recording with the selected model and any
-applicable language or prompt text. Cleanup uploads the transcript, cleanup
+applicable language, context, or vocabulary hints. Optional streaming sends audio
+while recording to `gpt-live-transcribe`. Cleanup uploads the transcript, cleanup
 instructions, selected model, and optional reasoning effort. Both require an
 OpenAI Platform API key, neither is included in a ChatGPT subscription, and both
-can incur Platform charges. API transcription may retry a suspiciously short
-result once with `whisper-1`, which can add a second transcription charge.
+can incur Platform charges. A failed live stream can use the selected file model,
+which can add a second transcription charge.
 Subscription failures never fall back to the paid API route.
 
 When a Platform API key is saved, daemon startup and model-catalog refreshes use
@@ -170,6 +171,9 @@ socket. The daemon runs as a user service for the current graphical session.
 | `agentdictate-app` | Process composition and both binaries |
 
 See the [full architecture overview](docs/architecture.md).
+
+See [dictation output and evaluation](docs/dictation-output.md) for vocabulary,
+Literal and Organize modes, streaming, cleanup fallback, and audio replay.
 
 For repository work, use the [development and verification workflow](docs/DEVELOPMENT.md).
 

@@ -27,7 +27,7 @@ impl IpcHandler for TestHandler {
     fn handle(&mut self, command: ClientCommand) -> ServerMessage {
         match command.kind {
             ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
-            ClientCommandKind::StartRecording { request_id } => {
+            ClientCommandKind::StartRecording { request_id, .. } => {
                 let mut snapshot = self.snapshot.lock().unwrap();
                 let job_id = agentdictate_runtime::JobId::new();
                 snapshot.workflow = self

@@ -190,6 +190,7 @@ fn maximum_recording_step_buttons_are_real_click_targets(cx: &mut TestAppContext
     let commands = Arc::new(Mutex::new(Vec::new()));
     let mut harness =
         SettingsHarness::open_with_size(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
+    harness.scroll_to("settings-input-max-recording-control");
     let control = harness.bounds("settings-input-max-recording-control");
 
     harness.click_at(point(control.right() - px(14.), control.center().y));

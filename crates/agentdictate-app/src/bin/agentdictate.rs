@@ -12,6 +12,25 @@ use agentdictate_ui::{
 
 fn main() -> anyhow::Result<()> {
     let paths = AppPaths::from_environment()?;
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        let command = match args.as_slice() {
+            [command] if command == "stop" => ClientCommand::stop_recording(1),
+            [command] if command == "cancel" => ClientCommand::cancel(1),
+            [command] if command == "start" => ClientCommand::start_recording(1),
+            [command, flag, mode] if command == "start" && flag == "--mode" => {
+                ClientCommand::start_recording_in_mode(1, mode.parse().map_err(anyhow::Error::msg)?)
+            }
+            _ => anyhow::bail!(
+                "Usage: agentdictate [start [--mode dictate|literal|organize] | stop | cancel]"
+            ),
+        };
+        let (mut client, _) = IpcClient::connect(&paths.runtime)?;
+        if let ServerMessageKind::CommandRejected { error, .. } = client.send(command)?.kind {
+            anyhow::bail!(error);
+        }
+        return Ok(());
+    }
     let _log_guard = init_file_logging(&paths.logs, "agentdictate.log")?;
     tracing::info!("native settings window starting");
     let (mut bootstrap_client, initial) = connect_or_start_daemon(&paths)?;

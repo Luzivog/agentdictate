@@ -9,6 +9,7 @@ license.workspace = true
 chrono.workspace = true
 regex = "1.12"
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

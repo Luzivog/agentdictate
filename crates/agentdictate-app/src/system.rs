@@ -603,6 +603,7 @@ mod tests {
         };
         let now = Utc::now();
         let job = RecordingJob {
+            options: None,
             id: JobId::new(),
             legacy_id: 1,
             started_at: now,
@@ -693,6 +694,7 @@ mod tests {
         };
         let now = Utc::now();
         let job = RecordingJob {
+            options: None,
             id: JobId::new(),
             legacy_id: 1,
             started_at: now,
@@ -800,6 +802,7 @@ mod tests {
         )));
         let now = Utc::now();
         let job = RecordingJob {
+            options: None,
             id: JobId::new(),
             legacy_id: 1,
             started_at: now,

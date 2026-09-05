@@ -10,6 +10,70 @@ use agentdictate_core::TranscriptionProvider;
 use tempfile::tempdir;
 
 #[test]
+fn incomplete_refused_or_malformed_cleanup_is_never_delivered() {
+    for body in [
+        r#"{"status":"incomplete","output":[{"content":[{"type":"output_text","text":"partial"}]}]}"#,
+        r#"{"status":"completed","output":[{"content":[{"type":"refusal","refusal":"no"},{"type":"output_text","text":"answer"}]}]}"#,
+        "not json",
+        r#"{"status":"completed","output":[]}"#,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let mut transport =
+            ReqwestOpenAiTransport::with_api_base("test", format!("http://{address}"));
+        assert!(
+            transport
+                .cleanup_text(CleanupRequest {
+                    timeout: std::time::Duration::from_secs(1),
+                    transcript: "Do not push.",
+                    model: "test",
+                    instruction: "test",
+                    reasoning_effort: None
+                })
+                .is_err()
+        );
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn cleanup_deadline_bounds_a_stalled_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_http_request(&mut stream);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    });
+    let mut transport = ReqwestOpenAiTransport::with_api_base("test", format!("http://{address}"));
+    let started = std::time::Instant::now();
+    assert!(
+        transport
+            .cleanup_text(CleanupRequest {
+                timeout: std::time::Duration::from_millis(50),
+                transcript: "Do not push.",
+                model: "test",
+                instruction: "test",
+                reasoning_effort: None
+            })
+            .is_err()
+    );
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    server.join().unwrap();
+}
+
+#[test]
 fn cleanup_uses_the_responses_endpoint_and_extracts_output_text() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -18,7 +82,7 @@ fn cleanup_uses_the_responses_endpoint_and_extracts_output_text() {
         let (mut stream, _) = listener.accept().unwrap();
         let request = read_http_request(&mut stream);
         request_sender.send(request).unwrap();
-        let body = r#"{"output":[{"content":[{"type":"output_text","text":"Clean result."}]}]}"#;
+        let body = r#"{"status":"completed","output":[{"content":[{"type":"output_text","text":"Clean result."}]}]}"#;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -32,6 +96,7 @@ fn cleanup_uses_the_responses_endpoint_and_extracts_output_text() {
 
     let text = transport
         .cleanup_text(CleanupRequest {
+            timeout: std::time::Duration::from_secs(3),
             transcript: "raw words",
             model: "gpt-5.4-nano",
             instruction: "Clean lightly",
@@ -59,8 +124,7 @@ fn every_explicit_reasoning_effort_is_serialized_to_the_responses_api() {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_http_request(&mut stream);
             request_sender.send(request).unwrap();
-            let body =
-                r#"{"output":[{"content":[{"type":"output_text","text":"Clean result."}]}]}"#;
+            let body = r#"{"status":"completed","output":[{"content":[{"type":"output_text","text":"Clean result."}]}]}"#;
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -74,6 +138,7 @@ fn every_explicit_reasoning_effort_is_serialized_to_the_responses_api() {
 
         transport
             .cleanup_text(CleanupRequest {
+                timeout: std::time::Duration::from_secs(3),
                 transcript: "raw words",
                 model: "gpt-reasoner",
                 instruction: "Clean lightly",
@@ -116,10 +181,11 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
 
     let text = transport
         .transcribe_audio(TranscriptionRequest {
+            keywords: &["AgentDictate".into(), "GPUI".into()],
             audio_path: &audio_path,
             provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-transcribe",
-            language: "en",
+            language: "en,fr",
             prompt: "AgentDictate and GPUI",
             duration_seconds: 300.0,
         })
@@ -134,6 +200,8 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
     assert!(request.contains("name=\"response_format\"\r\n\r\njson"));
     assert!(request.contains("name=\"languages[]\"\r\n\r\nen"));
     assert!(request.contains("name=\"prompt\"\r\n\r\nAgentDictate and GPUI"));
+    assert!(request.contains("name=\"languages[]\"\r\n\r\nfr"));
+    assert!(request.contains("name=\"keywords[]\"\r\n\r\nAgentDictate"));
     assert!(request.contains("filename=\"five minutes.wav\""));
     assert!(request.contains("RIFFrecorded speech"));
 }
@@ -164,6 +232,7 @@ fn openai_gpt_transcription_uses_its_json_response_and_language_profile() {
 
     let text = transport
         .transcribe_audio(TranscriptionRequest {
+            keywords: &[],
             audio_path: &audio_path,
             provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-4o-mini-transcribe",
@@ -207,6 +276,7 @@ fn a_future_unverified_transcription_model_is_sent_using_the_safe_standard_profi
 
     let text = transport
         .transcribe_audio(TranscriptionRequest {
+            keywords: &[],
             audio_path: &audio_path,
             provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-6-transcribe",

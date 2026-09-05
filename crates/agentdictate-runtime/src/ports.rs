@@ -90,6 +90,7 @@ impl DeliveryGateError {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordingJob {
+    pub options: Option<agentdictate_core::DictationOptions>,
     pub id: JobId,
     /// Stable SQLite identifier used by the legacy Python application.
     pub legacy_id: i64,
@@ -109,8 +110,9 @@ pub struct RecordingJob {
     pub cleanup_error: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecordingRequest {
+    pub options: Option<agentdictate_core::DictationOptions>,
     pub audio_path: PathBuf,
     pub started_at: DateTime<Utc>,
     pub transcription_provider: TranscriptionProvider,
@@ -138,7 +140,20 @@ pub struct Transcript {
     pub cleanup_error: Option<String>,
 }
 
+pub type TranscriptCheckpoint<'a> = dyn FnMut(&str, Option<&str>) -> Result<(), ExternalError> + 'a;
+
 pub trait Transcriber {
+    fn begin_recording(&mut self, _job: &RecordingJob) {}
+    fn cancel_recording(&mut self, _id: JobId) {}
+    fn transcribe_checkpointed(
+        &mut self,
+        job: &RecordingJob,
+        checkpoint: &mut TranscriptCheckpoint<'_>,
+    ) -> Result<Transcript, ExternalError> {
+        let result = self.transcribe(job)?;
+        checkpoint(&result.raw, None)?;
+        Ok(result)
+    }
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError>;
 }
 

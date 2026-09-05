@@ -1,6 +1,9 @@
 #![cfg(feature = "test-support")]
 
-use gpui::{Bounds, Modifiers, MouseButton, Pixels, VisualTestContext};
+use gpui::{
+    Bounds, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, VisualTestContext,
+    point, px,
+};
 
 pub(crate) trait DesktopHarness {
     fn visual_context(&mut self) -> &mut VisualTestContext;
@@ -15,6 +18,20 @@ pub(crate) trait DesktopHarness {
 
     fn click(&mut self, selector: &'static str) {
         click(self.visual_context(), selector);
+    }
+
+    /// Find the control in the current layout instead of assuming a fixed page height.
+    fn scroll_to(&mut self, selector: &'static str) {
+        let viewport = self.bounds("route-content");
+        let control = self.bounds(selector);
+        let cx = self.visual_context();
+        cx.simulate_mouse_move(viewport.center(), None::<MouseButton>, Modifiers::none());
+        cx.simulate_event(ScrollWheelEvent {
+            position: viewport.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), viewport.center().y - control.center().y)),
+            ..Default::default()
+        });
+        cx.run_until_parked();
     }
 }
 

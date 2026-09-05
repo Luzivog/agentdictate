@@ -124,7 +124,7 @@ pub(super) fn surface(
                 api_key_input,
                 api_key_feedback,
                 uses_chatgpt_subscription,
-                settings.cleanup_enabled,
+                settings.cleanup_enabled || settings.dictation_mode == "Organize",
                 theme,
                 cx,
             ))
@@ -435,7 +435,7 @@ fn dictation_section(
     .when(!uses_chatgpt_subscription, |section| {
         section.child(prompt_row(
             "Context prompt",
-            "Names and technical terms the model should recognize",
+            "Describe what you are talking about; spellings belong in Vocabulary",
             if settings.transcription_prompt.is_empty() {
                 "None"
             } else {
@@ -513,17 +513,18 @@ fn cleanup_section(
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
-    let disabled = !settings.cleanup_enabled;
+    let disabled = (!settings.cleanup_enabled && settings.dictation_mode != "Organize")
+        || settings.dictation_mode == "Literal";
     settings_section(
         "settings-group-cleanup",
-        "Cleanup",
-        "Optionally polish punctuation and filler after transcription.",
+        "Dictation output",
+        "Vocabulary, output mode, and optional cleanup.",
         true,
         theme,
     )
     .child(toggle_row(
         "Cleanup",
-        "Polish each transcript before delivery",
+        "Use cleanup in Dictate mode. Organize always rewrites; Literal always bypasses cleanup.",
         settings.cleanup_enabled,
         "toggle-cleanup",
         theme,
@@ -565,13 +566,14 @@ fn cleanup_section(
         theme,
     ))
     .child(select_row(
-        "Cleanup style",
-        "Short label for the selected cleanup behavior",
-        &settings.cleanup_style,
-        "settings-input-cleanup-style",
-        editor.map(|editor| editor.cleanup_style.clone()),
-        disabled,
-        theme,
+        "Output mode", "Literal bypasses cleanup and replacements; Organize rewrites structure",
+        &settings.dictation_mode, "settings-input-dictation-mode",
+        editor.map(|editor| editor.dictation_mode.clone()), false, theme,
+    ))
+    .child(number_row(
+        "Cleanup deadline", "Milliseconds before using the original transcript",
+        &settings.cleanup_timeout_ms, "settings-input-cleanup-timeout",
+        editor.map(|editor| editor.cleanup_timeout_ms.clone()), "ms", disabled, theme,
     ))
     .child(prompt_row(
         "Cleanup instructions",
@@ -581,6 +583,24 @@ fn cleanup_section(
         editor.map(|editor| editor.cleanup_prompt.clone()),
         disabled,
         theme,
+    ))
+    .child(prompt_row(
+        "Vocabulary", "One spelling per line. Add = spoken alias only for automatic corrections.",
+        &settings.vocabulary, "settings-input-vocabulary", editor.map(|editor| editor.vocabulary.clone()), false, theme,
+    ))
+    .child(prompt_row(
+        "Current work context", "Optional context you supply; clear it when changing projects",
+        &settings.project_context, "settings-input-project-context", editor.map(|editor| editor.project_context.clone()), false, theme,
+    ))
+    .child(prompt_row(
+        "Effective cleanup instructions", "Preview of these settings, including generated vocabulary",
+        &settings.apply_to(&agentdictate_core::Settings::default()).map(|s| agentdictate_core::DictationOptions::from_settings(&s, Vec::new()).cleanup_instruction).unwrap_or_else(|e| e.to_string()),
+        "settings-effective-cleanup", None, true, theme,
+    ))
+    .child(toggle_row(
+        "Stream speech", "OpenAI API only: uses gpt-live-transcribe ($0.017/min); the selected file model is the fallback. Ignored for ChatGPT subscription.",
+        settings.streaming_enabled, "toggle-streaming", theme, cx,
+        |draft| draft.streaming_enabled = !draft.streaming_enabled,
     ))
 }
 
