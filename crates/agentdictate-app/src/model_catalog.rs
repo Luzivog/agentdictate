@@ -376,14 +376,20 @@ fn snapshot_from_model_ids_with_origin(
             );
         }
         if is_cleanup_candidate(id) {
-            let support = if is_confirmed_cleanup_model(id) {
+            let efforts = cleanup_reasoning_efforts(id);
+            let support = if efforts.is_some() {
                 ModelCatalogSupport::Confirmed
             } else {
                 ModelCatalogSupport::Unverified
             };
             cleanup_models.insert(
                 id.to_owned(),
-                catalog_entry(id, origin, support, reasoning_efforts(id)),
+                catalog_entry(
+                    id,
+                    origin,
+                    support,
+                    efforts.unwrap_or(&[ReasoningEffort::Default]).to_vec(),
+                ),
             );
         }
     }
@@ -395,7 +401,9 @@ fn snapshot_from_model_ids_with_origin(
     preserve_current(
         &mut cleanup_models,
         current_cleanup_model,
-        reasoning_efforts(current_cleanup_model),
+        cleanup_reasoning_efforts(current_cleanup_model)
+            .unwrap_or(&[ReasoningEffort::Default])
+            .to_vec(),
     );
     ModelCatalogSnapshot {
         transcription_models: transcription_models.into_values().collect(),
@@ -522,16 +530,42 @@ fn is_cleanup_candidate(model: &str) -> bool {
             || model.starts_with("o4"))
 }
 
-fn is_confirmed_cleanup_model(model: &str) -> bool {
-    matches!(model, "gpt-5.4-nano" | "gpt-5.4-mini" | "gpt-5.5" | "gpt-5.6-luna")
-}
+/// /v1/models supplies IDs, not capabilities. Keep compatibility and effort
+/// choices together, using the public API model pages (checked 2026-09-05):
+/// https://developers.openai.com/api/docs/models/gpt-6-astra
+/// https://developers.openai.com/api/docs/models/gpt-5.6-sol (also terra and luna)
+/// https://developers.openai.com/api/docs/models/gpt-5.5
+/// https://developers.openai.com/api/docs/models/gpt-5.4-mini (also nano)
+fn cleanup_reasoning_efforts(model: &str) -> Option<&'static [ReasoningEffort]> {
+    use ReasoningEffort::{Default, High, Low, Max, Medium, Xhigh};
 
-fn reasoning_efforts(model: &str) -> Vec<ReasoningEffort> {
-    use ReasoningEffort::{Default, High, Low, Medium, Xhigh};
+    // Dated snapshots share their base model's capabilities. Do not strip
+    // arbitrary suffixes such as -pro or -codex, which can change support.
+    let model = model.trim();
+    let model = model
+        .len()
+        .checked_sub(11)
+        .and_then(|index| model.split_at_checked(index))
+        .filter(|(_, suffix)| {
+            suffix.starts_with('-')
+                && chrono::NaiveDate::parse_from_str(&suffix[1..], "%Y-%m-%d").is_ok()
+        })
+        .map_or(model, |(base, _)| base);
     match model {
-        "gpt-5.5" => vec![Default, Low, Medium, High, Xhigh],
-        "gpt-5.4-nano" | "gpt-5.4-mini" | "gpt-5.6-luna" => vec![Default, Low, Medium, High],
-        _ => vec![Default],
+        "gpt-6-astra" => Some(&[Default, Low, Medium, High, Xhigh, Max]),
+        "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" => Some(&[
+            Default,
+            ReasoningEffort::None,
+            Low,
+            Medium,
+            High,
+            Xhigh,
+            Max,
+        ]),
+        "gpt-5.5" | "gpt-5.4-nano" | "gpt-5.4-mini" => {
+            Some(&[Default, ReasoningEffort::None, Low, Medium, High, Xhigh])
+        }
+        _ => None,
     }
 }
 
@@ -556,6 +590,130 @@ mod tests {
     };
 
     struct NeverFetch;
+
+    #[test]
+    fn astra_reasoning_choices_reach_the_cleanup_dropdown() {
+        let snapshot = snapshot_from_model_ids(["gpt-6-astra"], "", "gpt-6-astra");
+        let view = agentdictate_ui::ModelCatalogViewModel::from(snapshot);
+        assert_eq!(
+            view.reasoning_options_for("gpt-6-astra")
+                .iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            ["default", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(view.cleanup_models[0].label, "gpt-6-astra");
+    }
+
+    #[test]
+    fn documented_cleanup_efforts_survive_refresh_cache_and_current_model_fallback() {
+        for (model, expected) in [
+            (
+                "gpt-6-astra",
+                &["default", "low", "medium", "high", "xhigh", "max"][..],
+            ),
+            (
+                "gpt-5.6-sol",
+                &["default", "none", "low", "medium", "high", "xhigh", "max"],
+            ),
+            (
+                "gpt-5.6-terra",
+                &["default", "none", "low", "medium", "high", "xhigh", "max"],
+            ),
+            (
+                "gpt-5.6-luna",
+                &["default", "none", "low", "medium", "high", "xhigh", "max"],
+            ),
+            (
+                "gpt-5.5",
+                &["default", "none", "low", "medium", "high", "xhigh"],
+            ),
+            (
+                "gpt-5.4-mini",
+                &["default", "none", "low", "medium", "high", "xhigh"],
+            ),
+            (
+                "gpt-5.4-nano",
+                &["default", "none", "low", "medium", "high", "xhigh"],
+            ),
+        ] {
+            let directory = tempdir().unwrap();
+            let cache_file = directory.path().join("model-catalog.json");
+            let dated = format!("{model}-2026-09-01");
+            let catalog = ModelCatalog::with_source(
+                cache_file.clone(),
+                Arc::new(FixedModels(&[
+                    "gpt-6-astra",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                    "gpt-5.5",
+                    "gpt-5.4-mini",
+                    "gpt-5.4-nano",
+                ])),
+                "sk-test",
+            );
+            let fallback = catalog.snapshot("", &dated);
+            catalog
+                .refresh_in_background("sk-test")
+                .unwrap()
+                .join()
+                .unwrap();
+            let live = catalog.snapshot("", model);
+            let cached = ModelCatalog::with_source(cache_file, Arc::new(NeverFetch), "sk-test")
+                .snapshot("", model);
+            let discovered_snapshot = snapshot_from_model_ids([&dated], "", &dated);
+            for (snapshot, selected) in [
+                (fallback, dated.as_str()),
+                (live, model),
+                (cached, model),
+                (discovered_snapshot, dated.as_str()),
+            ] {
+                let entry = snapshot
+                    .cleanup_models
+                    .iter()
+                    .find(|entry| entry.id == selected)
+                    .unwrap();
+                if entry.origin == ModelCatalogOrigin::Account {
+                    assert_eq!(entry.support, ModelCatalogSupport::Confirmed, "{selected}");
+                }
+                let view = agentdictate_ui::ModelCatalogViewModel::from(snapshot);
+                assert_eq!(
+                    view.reasoning_options_for(selected)
+                        .iter()
+                        .map(|option| option.value)
+                        .collect::<Vec<_>>(),
+                    expected,
+                    "{selected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_models_and_specialized_suffixes_do_not_inherit_reasoning_support() {
+        for model in [
+            "gpt-7",
+            "gpt-6-astra-pro",
+            "gpt-6-astra-codex",
+            "gpt-6-astra-preview",
+            "gpt-6-astra-2026-99-99",
+        ] {
+            let snapshot = snapshot_from_model_ids([model], "", model);
+            assert_eq!(
+                snapshot.cleanup_models[0].support,
+                ModelCatalogSupport::Unverified
+            );
+            let view = agentdictate_ui::ModelCatalogViewModel::from(snapshot);
+            assert_eq!(
+                view.reasoning_options_for(model)
+                    .iter()
+                    .map(|option| option.value)
+                    .collect::<Vec<_>>(),
+                ["default"]
+            );
+        }
+    }
 
     impl ModelCatalogSource for NeverFetch {
         fn list_model_ids(&self, _api_key: &str) -> Result<Vec<String>, ModelCatalogError> {
@@ -644,6 +802,7 @@ mod tests {
             snapshot.cleanup_models[0].reasoning_efforts,
             [
                 ReasoningEffort::Default,
+                ReasoningEffort::None,
                 ReasoningEffort::Low,
                 ReasoningEffort::Medium,
                 ReasoningEffort::High,

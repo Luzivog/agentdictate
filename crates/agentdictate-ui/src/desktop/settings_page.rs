@@ -527,7 +527,7 @@ fn cleanup_section(
     )
     .child(select_row(
         "Reasoning effort",
-        "Use default, low, medium, or high",
+        "Choose a supported effort, or use the model's default",
         &settings.cleanup_reasoning_effort,
         "settings-input-cleanup-reasoning",
         editor.map(|editor| editor.cleanup_reasoning_effort.clone()),
