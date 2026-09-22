@@ -39,6 +39,7 @@ impl SettingsShell {
             return;
         };
         let feedback_route = self.model.active_route;
+        let success_feedback = action.success_feedback();
         let sink = Arc::clone(sink);
         let closes_editor = matches!(
             action,
@@ -60,7 +61,12 @@ impl SettingsShell {
                                     workspace,
                                     &shell.settings.current.currency,
                                 );
-                                shell.clear_route_feedback_for(feedback_route);
+                                match success_feedback {
+                                    Some(message) => {
+                                        shell.set_route_feedback_for(feedback_route, message);
+                                    }
+                                    None => shell.clear_route_feedback_for(feedback_route),
+                                }
                                 if closes_editor {
                                     shell.routes.replacement_editor = None;
                                 }
@@ -214,6 +220,12 @@ impl SettingsShell {
 
     pub(super) fn clear_route_feedback_for(&mut self, route: Route) {
         self.routes.entry_mut(route).feedback = None;
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn route_feedback_for_test(&self, route: Route) -> Option<&str> {
+        self.routes.entry(route).feedback.as_deref()
     }
 }
 

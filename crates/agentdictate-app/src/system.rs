@@ -20,7 +20,9 @@ use agentdictate_linux::{
     recorder::{PwRecordRecorder, Recording, RecordingExitObserver},
 };
 use agentdictate_runtime::IpcClient;
-use agentdictate_runtime::{Deliverer, DeliveryDisposition, ExternalError, Recorder, RecordingJob};
+use agentdictate_runtime::{
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob,
+};
 
 use crate::{CapturedRecording, RecordingController};
 
@@ -376,12 +378,10 @@ impl SystemDeliverer {
             })
             .collect()
     }
-}
 
-impl Deliverer for SystemDeliverer {
     /// Pastes with exactly one injected shortcut. Every failure before that
     /// shortcut is `NotSent`, so the text can be delivered again safely.
-    fn deliver(&mut self, job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn paste(&mut self, job: &RecordingJob) -> DeliveryDisposition {
         let deadline = Instant::now() + DELIVERY_TIMEOUT;
         let mut delivery = PasteDelivery::new(self.shortcut_mode);
         let mut copied_this_attempt = false;
@@ -394,12 +394,12 @@ impl Deliverer for SystemDeliverer {
                         match self.observe_focus(deadline) {
                             Ok(target) => delivery.advance(DeliveryObservation::Focus(target)),
                             Err(error) => {
-                                return Ok(DeliveryDisposition::NotSent {
+                                return DeliveryDisposition::NotSent {
                                     copied_to_clipboard: copied_this_attempt,
                                     reason: format!(
                                         "could not find the focused window, so nothing was pasted: {error}"
                                     ),
-                                });
+                                };
                             }
                         }
                     }
@@ -412,12 +412,12 @@ impl Deliverer for SystemDeliverer {
                     ) {
                         Ok(publications) => publications,
                         Err(error) => {
-                            return Ok(DeliveryDisposition::NotSent {
+                            return DeliveryDisposition::NotSent {
                                 copied_to_clipboard: false,
                                 reason: format!(
                                     "could not copy the text, so nothing was pasted: {error}"
                                 ),
-                            });
+                            };
                         }
                     };
                     debug_assert!(
@@ -456,7 +456,7 @@ impl Deliverer for SystemDeliverer {
                     delivery.advance(DeliveryObservation::InjectionFinished(sent))
                 }
                 DeliveryAction::Finished(result) => {
-                    return Ok(match result.failure {
+                    return match result.failure {
                         None => DeliveryDisposition::Submitted {
                             copied_to_clipboard: result.copied,
                             paste_triggered: result.paste_triggered,
@@ -478,13 +478,35 @@ impl Deliverer for SystemDeliverer {
                                     .to_owned(),
                             }
                         }
-                    });
+                    };
                 }
             };
             if matches!(next, DeliveryAction::Finished(_)) {
                 continue;
             }
         }
+    }
+}
+
+impl Deliverer for SystemDeliverer {
+    fn deliver(
+        &mut self,
+        job: &RecordingJob,
+        method: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
+        Ok(match method {
+            DeliveryMethod::Paste => self.paste(job),
+            DeliveryMethod::CopyOnly => match self.copy_text(&job.final_text) {
+                Ok(()) => DeliveryDisposition::Submitted {
+                    copied_to_clipboard: true,
+                    paste_triggered: false,
+                },
+                Err(error) => DeliveryDisposition::NotSent {
+                    copied_to_clipboard: false,
+                    reason: format!("could not copy the text: {error}"),
+                },
+            },
+        })
     }
 }
 
@@ -655,7 +677,7 @@ mod tests {
             cleanup_error: None,
         };
 
-        let disposition = deliverer.deliver(&job).unwrap();
+        let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
 
         assert_eq!(
             disposition,
@@ -747,7 +769,7 @@ mod tests {
             cleanup_error: None,
         };
 
-        let disposition = deliverer.deliver(&job).unwrap();
+        let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
 
         assert_eq!(
             disposition,

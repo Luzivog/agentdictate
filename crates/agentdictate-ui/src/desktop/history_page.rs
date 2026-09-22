@@ -12,17 +12,21 @@ use crate::{
     HistoryViewModel, RecoveryItemViewModel, ThemeTokens, TranscriptViewModel, WorkspaceAction,
 };
 
-use super::{SettingsShell, gpui_color, single_line::single_line_clip};
+use super::{
+    SettingsShell, gpui_color, shell_render::workspace_feedback, single_line::single_line_clip,
+};
 
 const RECOVERY_ROW_HEIGHT: f32 = 58.0;
 const TRANSCRIPT_ROW_HEIGHT: f32 = 50.0;
 
 /// Renders recovery and transcript history as one dense, flat document.
 /// Scrolling belongs to the shell's route-content container; this page never
-/// introduces a competing scroll region.
+/// introduces a competing scroll region. Action feedback sits at the top, next
+/// to Recovery, rather than below a long transcript list.
 pub(super) fn surface(
     history: HistoryViewModel,
     search_input: Option<Entity<InputState>>,
+    feedback: Option<String>,
     pending_destructive_action: Option<WorkspaceAction>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
@@ -61,6 +65,9 @@ pub(super) fn surface(
                             .child(Input::new(&input).small().w_full()),
                     ),
             )
+        })
+        .when_some(feedback, |page, feedback| {
+            page.child(workspace_feedback(feedback, theme))
         })
         .when(has_recoveries, |page| {
             page.child(

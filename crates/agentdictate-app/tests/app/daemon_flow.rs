@@ -9,7 +9,8 @@ use agentdictate_app::{
 };
 use agentdictate_core::{HistoryPageRequest, HotkeyReadiness, JobStage, Settings, WorkflowPhase};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, ExternalError, HistoryQuery, Recorder, RecordingJob, Runtime,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HistoryQuery, Recorder,
+    RecordingJob, Runtime,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -101,7 +102,11 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
 }
 
 impl Deliverer for SubmittedDelivery {
-    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
@@ -116,7 +121,11 @@ struct ExitInspectingDelivery {
 }
 
 impl Deliverer for ExitInspectingDelivery {
-    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         self.delivered_after_exit = self.helper_exited.is_file();
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
@@ -320,6 +329,77 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
     let next = daemon.start_recording().unwrap();
     assert_ne!(next.id, started.id);
     daemon.discard_recording().unwrap();
+}
+
+/// Pastes never get through and copies always do. Records every request.
+#[derive(Default)]
+struct PasteFailsCopyWorks {
+    methods: Vec<DeliveryMethod>,
+}
+
+impl Deliverer for PasteFailsCopyWorks {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        method: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
+        self.methods.push(method);
+        Ok(match method {
+            DeliveryMethod::Paste => DeliveryDisposition::NotSent {
+                copied_to_clipboard: false,
+                reason: "could not find the focused window, so nothing was pasted".to_owned(),
+            },
+            DeliveryMethod::CopyOnly => DeliveryDisposition::Submitted {
+                copied_to_clipboard: true,
+                paste_triggered: false,
+            },
+        })
+    }
+}
+
+#[test]
+fn recovery_retries_copy_the_text_and_never_paste_into_the_focused_window() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let runtime = Runtime::open(&paths.database_file).unwrap();
+    let mut daemon = Daemon::new(
+        runtime,
+        Settings::default(),
+        paths.clone(),
+        PreservingRecorder::default(),
+        FixedTranscriber,
+        PasteFailsCopyWorks::default(),
+    );
+    daemon.start_recording().unwrap();
+    let unpasted = daemon.stop_recording().unwrap();
+    assert_eq!(unpasted.stage, JobStage::ReadyToDeliver);
+    let interrupted = daemon.start_recording().unwrap();
+    daemon.recorder_exited(interrupted.id).unwrap();
+
+    let copied = daemon.retry_delivery(unpasted.id).unwrap();
+    let transcribed = daemon.retry_transcription(interrupted.id).unwrap();
+
+    assert_eq!(
+        daemon.deliverer().methods,
+        [
+            DeliveryMethod::Paste,
+            DeliveryMethod::CopyOnly,
+            DeliveryMethod::CopyOnly
+        ]
+    );
+    assert_eq!(copied.stage, JobStage::Delivered);
+    assert_eq!(transcribed.stage, JobStage::Delivered);
+    assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
+    assert_eq!(daemon.snapshot().recoverable_count, 0);
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    let history = observer.list_history(HistoryQuery::default()).unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(
+        history
+            .iter()
+            .all(|entry| entry.copied_to_clipboard && !entry.paste_triggered)
+    );
 }
 
 #[test]

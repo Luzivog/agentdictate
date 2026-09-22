@@ -20,6 +20,24 @@ pub enum WorkspaceAction {
 }
 
 impl WorkspaceAction {
+    /// What to tell the user once this action succeeds, if anything.
+    pub const fn success_feedback(&self) -> Option<&'static str> {
+        match self {
+            // Recovery never pastes: its buttons sit in this window, which
+            // has the focus, so it only copies and the user pastes.
+            Self::RetryRecovery { .. } => Some("Copied — press Ctrl+V where you want it"),
+            Self::DeleteRecovery { .. }
+            | Self::CopyTranscript { .. }
+            | Self::SearchHistory { .. }
+            | Self::LoadMoreHistory
+            | Self::CreateReplacement { .. }
+            | Self::UpdateReplacement { .. }
+            | Self::SetReplacementEnabled { .. }
+            | Self::DeleteReplacement { .. }
+            | Self::SelectUsagePeriod(_) => None,
+        }
+    }
+
     pub fn selector(&self) -> String {
         match self {
             Self::RetryRecovery { id, .. } => format!("history-retry-recovery-{id}"),

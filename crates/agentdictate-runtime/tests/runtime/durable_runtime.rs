@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use agentdictate_core::{ReplacementRule, TranscriptionProvider};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, Runtime, RuntimeError,
-    Transcriber, Transcript,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
+    DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob,
+    Runtime, RuntimeError, Transcriber, Transcript,
 };
 use tempfile::TempDir;
 
@@ -108,7 +108,11 @@ struct AmbiguousDeliverer {
 }
 
 impl Deliverer for AmbiguousDeliverer {
-    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
         Ok(DeliveryDisposition::Ambiguous {
             copied_to_clipboard: true,
@@ -181,7 +185,11 @@ struct CountingSubmittedDeliverer {
 }
 
 impl Deliverer for CountingSubmittedDeliverer {
-    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
@@ -227,7 +235,11 @@ impl DeliveryGate for FailingDeliveryGate {
 }
 
 impl Deliverer for InspectingDeliverer {
-    fn deliver(&mut self, job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         let reader = Runtime::open_observer(&self.database_path)?;
         self.saw_persisted_transcript = reader.job(job.id)?.is_some_and(|persisted| {
             persisted.stage == JobStage::ReadyToDeliver
@@ -910,12 +922,7 @@ fn captured_checkpoint_can_be_retried_after_restart() {
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
     let delivered = runtime
-        .retry_transcription(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
+        .retry_transcription(job.id, &mut transcriber, &mut deliverer)
         .unwrap();
 
     assert_eq!(delivered.stage, JobStage::Delivered);
@@ -961,12 +968,7 @@ fn failed_transcription_can_be_retried_explicitly_without_a_duplicate_first_atte
     let mut retry = CountingTranscriber { attempts: 0 };
 
     let delivered = runtime
-        .retry_transcription(
-            job.id,
-            &mut retry,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
+        .retry_transcription(job.id, &mut retry, &mut deliverer)
         .unwrap();
 
     assert_eq!(failing.attempts, 1);
@@ -1006,9 +1008,7 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
         .unwrap();
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime
-        .retry_delivery(job.id, &mut HeadlessDeliveryGate, &mut submitted)
-        .unwrap();
+    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
 
     assert_eq!(transcriber.attempts, 1);
     assert_eq!(ambiguous.attempts, 1);
@@ -1021,7 +1021,11 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
 fn delivery_that_fails_before_any_paste_stays_ready_and_can_be_retried() {
     struct NotSentDeliverer;
     impl Deliverer for NotSentDeliverer {
-        fn deliver(&mut self, _: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+        fn deliver(
+            &mut self,
+            _: &RecordingJob,
+            _: DeliveryMethod,
+        ) -> Result<DeliveryDisposition, ExternalError> {
             Ok(DeliveryDisposition::NotSent {
                 copied_to_clipboard: false,
                 reason: "the clipboard was not ready, so nothing was pasted".to_owned(),
@@ -1058,9 +1062,7 @@ fn delivery_that_fails_before_any_paste_stays_ready_and_can_be_retried() {
         Some("the clipboard was not ready, so nothing was pasted")
     );
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
-    let delivered = runtime
-        .retry_delivery(job.id, &mut HeadlessDeliveryGate, &mut submitted)
-        .unwrap();
+    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert_eq!(submitted.attempts, 1);
 }
@@ -1154,9 +1156,7 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
         .unwrap();
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let error = runtime
-        .retry_delivery(job.id, &mut HeadlessDeliveryGate, &mut submitted)
-        .unwrap_err();
+    let error = runtime.retry_delivery(job.id, &mut submitted).unwrap_err();
 
     assert!(error.to_string().contains("no durable outcome"));
     assert_eq!(submitted.attempts, 0);

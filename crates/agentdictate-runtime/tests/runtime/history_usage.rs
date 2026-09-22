@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use agentdictate_core::{ReplacementRule, Settings, TranscriptionProvider};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, ExternalError, HeadlessDeliveryGate, HistoryQuery, JobStage,
-    RecordingJob, Runtime, Transcriber, Transcript, UsageMetric,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
+    HistoryQuery, JobStage, RecordingJob, Runtime, Transcriber, Transcript, UsageMetric,
 };
 use chrono::{Datelike, Days, Utc};
 use tempfile::TempDir;
@@ -28,7 +28,11 @@ impl Transcriber for CleaningTranscriber {
 struct SubmittedDeliverer;
 
 impl Deliverer for SubmittedDeliverer {
-    fn deliver(&mut self, _job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        _: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,

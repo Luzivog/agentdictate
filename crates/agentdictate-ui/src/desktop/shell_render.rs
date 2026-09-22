@@ -47,6 +47,7 @@ enum RoutePageModel {
     History {
         history: HistoryViewModel,
         search_input: Option<Entity<InputState>>,
+        feedback: Option<String>,
         pending_destructive_action: Option<WorkspaceAction>,
     },
     Replacements {
@@ -71,6 +72,7 @@ impl RoutePageModel {
             Route::History => Self::History {
                 history: workspace.history.clone(),
                 search_input: shell.routes.history_search_input.clone(),
+                feedback: shell.routes.entry(Route::History).feedback.clone(),
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
             },
             Route::Replacements => Self::Replacements {
@@ -108,9 +110,9 @@ impl RoutePageModel {
 
     fn embeds_feedback(&self) -> bool {
         match self {
-            Self::Settings(_) => true,
+            Self::Settings(_) | Self::History { .. } => true,
             Self::Replacements { editor, .. } => editor.is_some(),
-            Self::Overview { .. } | Self::History { .. } => false,
+            Self::Overview { .. } => false,
         }
     }
 
@@ -132,10 +134,16 @@ impl RoutePageModel {
             Self::History {
                 history,
                 search_input,
+                feedback,
                 pending_destructive_action,
-            } => {
-                history_page::surface(history, search_input, pending_destructive_action, theme, cx)
-            }
+            } => history_page::surface(
+                history,
+                search_input,
+                feedback,
+                pending_destructive_action,
+                theme,
+                cx,
+            ),
             Self::Replacements {
                 replacements,
                 editor,
@@ -305,17 +313,7 @@ fn route_viewport(
                 .child(surface)
                 .when(!embeds_feedback, |content| {
                     content.when_some(feedback, |content, feedback| {
-                        content.child(
-                            gpui::div()
-                                .debug_selector(|| "workspace-feedback".to_owned())
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(gpui_color(theme.border))
-                                .p_3()
-                                .text_xs()
-                                .text_color(gpui_color(theme.text_muted))
-                                .child(feedback),
-                        )
+                        content.child(workspace_feedback(feedback, theme))
                     })
                 })
                 .track_scroll(&scroll)
@@ -370,4 +368,17 @@ fn compact_sidebar_layers(
         .shadow_xl()
         .child(sidebar_view(chrome.navigation, true, chrome.theme, cx));
     [dismiss.into_any_element(), panel.into_any_element()]
+}
+
+/// The notice that reports a workspace action's outcome on its route.
+pub(super) fn workspace_feedback(feedback: String, theme: ThemeTokens) -> gpui::Div {
+    gpui::div()
+        .debug_selector(|| "workspace-feedback".to_owned())
+        .rounded_lg()
+        .border_1()
+        .border_color(gpui_color(theme.border))
+        .p_3()
+        .text_xs()
+        .text_color(gpui_color(theme.text_muted))
+        .child(feedback)
 }

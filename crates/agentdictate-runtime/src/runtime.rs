@@ -14,9 +14,9 @@ use crate::history_search;
 use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
-    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryStatus, ExternalError, JobId, JobStage,
-    Recorder, RecordingJob, RecordingRequest, ReplacementRule, RuntimeError, RuntimeEvent,
-    Transcriber,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, ExternalError,
+    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, RecordingRequest,
+    ReplacementRule, RuntimeError, RuntimeEvent, Transcriber,
 };
 
 pub struct Runtime {
@@ -212,9 +212,27 @@ impl Runtime {
         self.delete_recovery(id)
     }
 
+    /// Transcribes a captured recording and pastes the result.
     pub fn process_captured(
         &mut self,
         id: JobId,
+        transcriber: &mut impl Transcriber,
+        delivery_gate: &mut impl DeliveryGate,
+        deliverer: &mut impl Deliverer,
+    ) -> Result<RecordingJob, RuntimeError> {
+        self.process(
+            id,
+            DeliveryMethod::Paste,
+            transcriber,
+            delivery_gate,
+            deliverer,
+        )
+    }
+
+    fn process(
+        &mut self,
+        id: JobId,
+        method: DeliveryMethod,
         transcriber: &mut impl Transcriber,
         delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
@@ -228,7 +246,7 @@ impl Runtime {
             });
         }
         self.update_stage(id, JobStage::Transcribing, None)?;
-        self.transcribe_and_deliver(id, transcriber, delivery_gate, deliverer)
+        self.transcribe_and_deliver(id, method, transcriber, delivery_gate, deliverer)
             .map_err(|error| self.fail_job(id, error))
     }
 
@@ -237,6 +255,7 @@ impl Runtime {
     fn transcribe_and_deliver(
         &mut self,
         id: JobId,
+        method: DeliveryMethod,
         transcriber: &mut impl Transcriber,
         delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
@@ -315,7 +334,7 @@ impl Runtime {
         let ready = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(ready.clone()));
 
-        self.deliver_ready(ready, delivery_gate, deliverer)
+        self.deliver_ready(ready, method, delivery_gate, deliverer)
     }
 
     pub fn replacement_rules(&self) -> Result<Vec<ReplacementRule>, RuntimeError> {
@@ -409,11 +428,13 @@ impl Runtime {
             > 0)
     }
 
+    /// Transcribes a Recovery item again after an explicit user action and
+    /// copies the result. Like `retry_delivery`, it never pastes: the user
+    /// asked from AgentDictate's own window, which has the focus.
     pub fn retry_transcription(
         &mut self,
         id: JobId,
         transcriber: &mut impl Transcriber,
-        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -447,17 +468,24 @@ impl Runtime {
         )?;
         let captured = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(captured));
-        self.process_captured(id, transcriber, delivery_gate, deliverer)
+        // Copying cannot reach transient AgentDictate UI, so no gate is needed.
+        self.process(
+            id,
+            DeliveryMethod::CopyOnly,
+            transcriber,
+            &mut HeadlessDeliveryGate,
+            deliverer,
+        )
     }
 
-    /// Re-attempts only the delivery step after an explicit user action. This
-    /// is intentionally separate from startup recovery: an ambiguous prior
-    /// injection is never retried automatically because doing so could paste
-    /// duplicate text.
+    /// Re-attempts only the delivery step after an explicit user action, by
+    /// copying the stored transcript. It never pastes: the user asked from
+    /// AgentDictate's own window, which has the focus. This is intentionally
+    /// separate from startup recovery: an ambiguous prior injection is never
+    /// retried automatically because doing so could paste duplicate text.
     pub fn retry_delivery(
         &mut self,
         id: JobId,
-        delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -500,8 +528,13 @@ impl Runtime {
         )?;
         let ready = self.job(id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(ready.clone()));
-        self.deliver_ready(ready, delivery_gate, deliverer)
-            .map_err(|error| self.fail_job(id, error))
+        self.deliver_ready(
+            ready,
+            DeliveryMethod::CopyOnly,
+            &mut HeadlessDeliveryGate,
+            deliverer,
+        )
+        .map_err(|error| self.fail_job(id, error))
     }
 
     /// Deletes explicit recovery data, text and audio, without exposing a
@@ -582,7 +615,12 @@ impl Runtime {
             let id =
                 JobId::from_str(&value).map_err(|_| RuntimeError::InvalidJobId(value.clone()))?;
             let ready = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-            results.push(self.deliver_ready(ready, delivery_gate, deliverer)?);
+            results.push(self.deliver_ready(
+                ready,
+                DeliveryMethod::Paste,
+                delivery_gate,
+                deliverer,
+            )?);
         }
         Ok(results)
     }
@@ -590,6 +628,7 @@ impl Runtime {
     fn deliver_ready(
         &mut self,
         ready: RecordingJob,
+        method: DeliveryMethod,
         delivery_gate: &mut impl DeliveryGate,
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
@@ -619,7 +658,7 @@ impl Runtime {
             params![timestamp(Utc::now()), ready.id.to_string()],
         )?;
 
-        let disposition = match deliverer.deliver(&ready) {
+        let disposition = match deliverer.deliver(&ready, method) {
             Ok(disposition) => disposition,
             Err(error) => {
                 self.mark_delivery_ambiguous(

@@ -466,6 +466,17 @@ fn recovery_rows_emit_typed_retry_actions(cx: &mut TestAppContext) {
             stage: RecoveryStage::Delivery,
         }]
     );
+    // Recovery copies instead of pasting into this window, so say so.
+    harness.bounds("workspace-feedback");
+    let feedback = harness.shell.read_with(harness.cx, |shell, _| {
+        shell
+            .route_feedback_for_test(Route::History)
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        feedback.as_deref(),
+        Some("Copied — press Ctrl+V where you want it")
+    );
 }
 
 #[gpui::test]

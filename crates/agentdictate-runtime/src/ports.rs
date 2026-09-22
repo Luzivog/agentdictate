@@ -190,8 +190,22 @@ pub enum DeliveryStatus {
     Ambiguous,
 }
 
+/// How a ready transcript reaches the user.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryMethod {
+    /// Publish to the clipboard, then send exactly one paste shortcut to the
+    /// focused application.
+    Paste,
+    /// Publish to the clipboard only; the user pastes where they want it.
+    CopyOnly,
+}
+
 pub trait Deliverer {
-    fn deliver(&mut self, job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError>;
+    fn deliver(
+        &mut self,
+        job: &RecordingJob,
+        method: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError>;
 }
 
 /// Confirms that transient AgentDictate UI cannot receive the upcoming paste.

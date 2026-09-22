@@ -58,6 +58,10 @@ pub enum DaemonError {
     AlreadyRecording,
     #[error("no recording is active")]
     NotRecording,
+    #[error("no speech was found in this recording")]
+    NoSpeech,
+    #[error("{reason}")]
+    NotCopied { reason: String },
 }
 
 pub struct Daemon<R, T, D> {
@@ -395,57 +399,26 @@ where
         Ok(())
     }
 
+    /// "Transcribe again" from Recovery: transcribes the item again and
+    /// copies the result to the clipboard.
     pub fn retry_transcription(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
-        let result = self.runtime.retry_transcription(
-            id,
-            &mut self.transcriber,
-            &mut self.overlay,
-            &mut self.deliverer,
-        )?;
-        self.workflow = Workflow::new();
-        if result.stage == JobStage::Delivered
-            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
-        {
-            tracing::error!(job_id = %id, %error, "could not complete retried transcription");
-        }
-        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
-            self.cleanup_completed_audio(&result);
-        }
-        if result.stage != JobStage::NoSpeech {
-            self.last_transcript = Some(result.final_text.clone());
-        }
-        self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
-        self.publish_overlay_update();
-        Ok(result)
+        let result =
+            self.runtime
+                .retry_transcription(id, &mut self.transcriber, &mut self.deliverer)?;
+        self.finish_retry(result)
     }
 
+    /// "Paste again" from Recovery: copies the stored transcript to the
+    /// clipboard.
     pub fn retry_delivery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
-        let result = self
-            .runtime
-            .retry_delivery(id, &mut self.overlay, &mut self.deliverer)?;
-        self.workflow = Workflow::new();
-        if result.stage == JobStage::Delivered
-            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
-        {
-            tracing::error!(job_id = %id, %error, "could not complete retried delivery");
-        }
-        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
-            self.cleanup_completed_audio(&result);
-        }
-        if result.stage != JobStage::NoSpeech {
-            self.last_transcript = Some(result.final_text.clone());
-        }
-        self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
-        self.publish_overlay_update();
-        Ok(result)
+        let result = self.runtime.retry_delivery(id, &mut self.deliverer)?;
+        self.finish_retry(result)
     }
 
     /// Deletes one Recovery item. The workflow returns to Ready only when no
@@ -712,6 +685,38 @@ where
             },
         );
         interrupted.map_err(Into::into)
+    }
+
+    /// Records a finished Recovery retry. Retries only copy, because their
+    /// button sits in AgentDictate's own window, which has the focus. Any
+    /// outcome other than copied text is an error, so the window never tells
+    /// the user to paste text that is not on the clipboard.
+    fn finish_retry(&mut self, result: RecordingJob) -> Result<RecordingJob, DaemonError> {
+        let id = result.id;
+        self.workflow = Workflow::new();
+        if result.stage == JobStage::Delivered
+            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
+        {
+            tracing::error!(job_id = %id, %error, "could not complete retried dictation");
+        }
+        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
+            self.cleanup_completed_audio(&result);
+        }
+        if result.stage != JobStage::NoSpeech {
+            self.last_transcript = Some(result.final_text.clone());
+        }
+        self.recoverable_count = self.attention_recovery_count()?;
+        self.sequence += 1;
+        self.publish_overlay_update();
+        match result.stage {
+            JobStage::Delivered => Ok(result),
+            JobStage::NoSpeech => Err(DaemonError::NoSpeech),
+            _ => Err(DaemonError::NotCopied {
+                reason: result
+                    .error_message
+                    .unwrap_or_else(|| "the text was not copied".to_owned()),
+            }),
+        }
     }
 
     /// Ends the active dictation session with its final workflow transition:
