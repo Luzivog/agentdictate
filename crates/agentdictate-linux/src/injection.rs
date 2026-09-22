@@ -46,7 +46,10 @@ impl fmt::Display for InjectionError {
                 write!(formatter, "paste chord emission failed: {source}")
             }
             Self::DeadlineBeforeInjection => {
-                write!(formatter, "delivery deadline expired before the paste chord started")
+                write!(
+                    formatter,
+                    "delivery deadline expired before the paste chord started"
+                )
             }
         }
     }
@@ -272,9 +275,11 @@ mod tests {
         while events.len() < expected && Instant::now() < deadline {
             match reader.fetch_events() {
                 Ok(batch) => {
-                    events.extend(batch.filter(|event| event.event_type() == EventType::KEY).map(
-                        |event| (KeyCode::new(event.code()), event.value()),
-                    ));
+                    events.extend(
+                        batch
+                            .filter(|event| event.event_type() == EventType::KEY)
+                            .map(|event| (KeyCode::new(event.code()), event.value())),
+                    );
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(5));
@@ -314,7 +319,10 @@ mod tests {
         };
 
         injector
-            .inject(PasteShortcut::Universal, Instant::now() + Duration::from_secs(5))
+            .inject(
+                PasteShortcut::Universal,
+                Instant::now() + Duration::from_secs(5),
+            )
             .expect("universal chord is injected");
 
         assert_eq!(
@@ -338,7 +346,10 @@ mod tests {
         };
 
         injector
-            .inject(PasteShortcut::Terminal, Instant::now() + Duration::from_secs(5))
+            .inject(
+                PasteShortcut::Terminal,
+                Instant::now() + Duration::from_secs(5),
+            )
             .expect("terminal chord is injected");
 
         assert_eq!(
@@ -368,7 +379,10 @@ mod tests {
             Instant::now() - Duration::from_secs(1),
         );
 
-        assert!(matches!(result, Err(InjectionError::DeadlineBeforeInjection)));
+        assert!(matches!(
+            result,
+            Err(InjectionError::DeadlineBeforeInjection)
+        ));
         assert_eq!(key_events(&mut reader, 1), vec![]);
         assert_nothing_pressed(&reader);
     }

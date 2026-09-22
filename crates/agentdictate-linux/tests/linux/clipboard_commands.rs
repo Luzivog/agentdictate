@@ -12,7 +12,11 @@ use agentdictate_linux::{
 };
 use support::TestDirectory;
 
-fn fake_xsel(directory: &TestDirectory, state: &std::path::Path, log: &std::path::Path) -> std::path::PathBuf {
+fn fake_xsel(
+    directory: &TestDirectory,
+    state: &std::path::Path,
+    log: &std::path::Path,
+) -> std::path::PathBuf {
     directory.executable(
         "xsel",
         &format!(

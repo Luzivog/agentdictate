@@ -2,8 +2,8 @@ use std::sync::{Arc, RwLock};
 use std::{io, path::PathBuf};
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
-    ProcessingStage, WorkflowPhase, WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ProcessingStage,
+    ServerMessage, Settings, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -13,9 +13,10 @@ use agentdictate_runtime::{
 
 use crate::model_catalog::ModelCatalog;
 use crate::{
-    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, OverlayUpdate, ReqwestOpenAiTransport,
-    SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
-    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_startup_with_systemctl,
+    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, OverlayUpdate,
+    ReqwestOpenAiTransport, SpeechRouter, SystemDeliverer, SystemRecordingController,
+    TranscriptionPipeline, chatgpt_dictation_import::start_chatgpt_dictation_importer,
+    sync_startup_with_systemctl,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<
