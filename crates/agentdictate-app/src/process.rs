@@ -343,7 +343,9 @@ fn run_post_listener_maintenance(
         }
         Err(error) => tracing::warn!(%error, "could not locate daemon for autostart"),
     }
-    let mut runtime = match Runtime::open(database_file) {
+    // The listener is already live, so a recording may have started. The
+    // reconciling `Runtime::open` would mark it interrupted.
+    let mut runtime = match Runtime::open_background_writer(database_file) {
         Ok(runtime) => runtime,
         Err(error) => {
             tracing::warn!(%error, "could not open maintenance database connection");
@@ -578,8 +580,10 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use agentdictate_core::{ClientCommand, ServerMessageKind};
-    use agentdictate_runtime::IpcHandler;
+    use agentdictate_core::{ClientCommand, JobStage, ServerMessageKind, TranscriptionProvider};
+    use agentdictate_runtime::{
+        ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
+    };
     use tempfile::tempdir;
 
     use super::*;
@@ -721,6 +725,48 @@ mod tests {
             .unwrap();
         assert!(paths.autostart_file.exists());
         assert!(paths.daemon_service_file.exists());
+    }
+
+    struct StartedRecorder;
+
+    impl Recorder for StartedRecorder {
+        fn start(&mut self, _job: &RecordingJob) -> Result<(), ExternalError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn startup_maintenance_leaves_a_recording_that_started_before_it_alone() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        process.systemctl_command = PathBuf::from("/bin/true");
+        // A hotkey press lands between the listener going live and maintenance.
+        let recording = Runtime::open_background_writer(&paths.database_file)
+            .unwrap()
+            .start_recording(
+                RecordingRequest {
+                    options: None,
+                    audio_path: directory.path().join("recording.wav"),
+                    started_at: chrono::Utc::now(),
+                    transcription_provider: TranscriptionProvider::OpenAiApi,
+                    transcription_model: "test".into(),
+                },
+                &mut StartedRecorder,
+            )
+            .unwrap();
+
+        process
+            .start_post_listener_maintenance()
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let observer = Runtime::open_observer(&paths.database_file).unwrap();
+        assert_eq!(
+            observer.job(recording.id).unwrap().unwrap().stage,
+            JobStage::Recording
+        );
     }
 
     fn app_paths(root: &Path) -> AppPaths {
