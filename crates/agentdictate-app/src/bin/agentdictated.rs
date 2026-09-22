@@ -1,6 +1,6 @@
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use agentdictate_app::{
@@ -73,24 +73,31 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     };
     let show_tray_icon = process.show_tray_icon();
     let process = Arc::new(Mutex::new(process));
+    let shutdown_failed = Arc::new(AtomicBool::new(false));
+    // Serves IPC until a graceful Quit. It ends with an error when the daemon
+    // can no longer work, so the process exits non-zero and systemd's
+    // Restart=on-failure brings it back.
     let ipc_thread = std::thread::Builder::new()
         .name("agentdictate-ipc".into())
-        .spawn(move || {
-            loop {
-                match process.lock() {
-                    Ok(process) if process.should_quit() => break,
-                    Ok(_) => {}
-                    Err(_) => {
-                        tracing::error!("daemon process lock is poisoned");
-                        break;
+        .spawn({
+            let shutdown_failed = Arc::clone(&shutdown_failed);
+            move || -> anyhow::Result<()> {
+                loop {
+                    if shutdown_failed.load(Ordering::Acquire) {
+                        anyhow::bail!("graceful shutdown failed after a termination signal");
                     }
-                }
-                if let Err(error) = server.serve_next_concurrent(Arc::clone(&process)) {
-                    tracing::warn!(%error, "could not accept IPC session");
+                    match process.lock() {
+                        Ok(process) if process.should_quit() => return Ok(()),
+                        Ok(_) => {}
+                        Err(_) => anyhow::bail!("daemon process lock is poisoned"),
+                    }
+                    if let Err(error) = server.serve_next_concurrent(Arc::clone(&process)) {
+                        tracing::warn!(%error, "could not accept IPC session");
+                    }
                 }
             }
         })?;
-    if let Err(error) = start_signal_listener(runtime.clone()) {
+    if let Err(error) = start_signal_listener(runtime.clone(), shutdown_failed) {
         tracing::warn!(%error, "signal listener is unavailable; daemon will continue");
     }
     let _tray_handle = if show_tray_icon {
@@ -112,7 +119,7 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     };
     ipc_thread
         .join()
-        .map_err(|_| anyhow::anyhow!("daemon IPC thread panicked"))?;
+        .map_err(|_| anyhow::anyhow!("daemon IPC thread panicked"))??;
     if let Some(thread) = overlay_presenter {
         thread
             .join()
@@ -121,28 +128,40 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn start_signal_listener(runtime: std::path::PathBuf) -> anyhow::Result<()> {
+/// Turns the first SIGINT or SIGTERM into a graceful Quit. If Quit fails, it
+/// sets `shutdown_failed` and wakes the IPC loop, which then ends the daemon
+/// with an error: later signals would be ignored, and an exit is safer than
+/// waiting for systemd's SIGKILL. The recorder's parent-death signal
+/// finalizes any WAV, and startup reconciliation keeps its job.
+fn start_signal_listener(
+    runtime: std::path::PathBuf,
+    shutdown_failed: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
     ])?;
-    let request_shutdown = move || -> anyhow::Result<()> {
-        let (mut client, _) = IpcClient::connect(&runtime)?;
-        let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let response = client.send(ClientCommand::quit(request_id))?;
-        if let ServerMessageKind::CommandRejected { error, .. } = response.kind {
-            anyhow::bail!(error)
-        }
-        Ok(())
-    };
     std::thread::Builder::new()
         .name("agentdictate-signals".into())
         .spawn(move || {
             if signals.forever().next().is_some()
-                && let Err(error) = request_shutdown()
+                && let Err(error) = request_shutdown(&runtime)
             {
-                tracing::error!(%error, "graceful shutdown request failed");
+                tracing::error!(%error, "graceful shutdown request failed; exiting");
+                shutdown_failed.store(true, Ordering::Release);
+                // Fails harmlessly when the daemon is already shutting down.
+                let _ = IpcClient::wake(&runtime);
             }
         })?;
+    Ok(())
+}
+
+fn request_shutdown(runtime: &std::path::Path) -> anyhow::Result<()> {
+    let (mut client, _) = IpcClient::connect(runtime)?;
+    let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let response = client.send(ClientCommand::quit(request_id))?;
+    if let ServerMessageKind::CommandRejected { error, .. } = response.kind {
+        anyhow::bail!(error)
+    }
     Ok(())
 }
