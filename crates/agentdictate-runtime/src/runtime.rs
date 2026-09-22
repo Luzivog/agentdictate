@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use agentdictate_core::apply_replacements;
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::history::serialize_replacements;
 use crate::history_search;
@@ -29,6 +29,7 @@ impl Runtime {
         let path = path.as_ref();
         let mut connection = Connection::open(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        configure_writer(&mut connection)?;
         connection.execute_batch(SCHEMA)?;
         ensure_runtime_id_column(&connection)?;
         ensure_delivery_status_column(&connection)?;
@@ -65,8 +66,8 @@ impl Runtime {
     /// daemon. Unlike `open`, this never performs crash reconciliation that
     /// could reinterpret the live daemon's active recording as abandoned.
     pub fn open_background_writer(path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
-        let connection = Connection::open(path)?;
-        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let mut connection = Connection::open(path)?;
+        configure_writer(&mut connection)?;
         Ok(Self {
             connection,
             subscribers: Vec::new(),
@@ -718,6 +719,20 @@ impl Runtime {
         self.subscribers
             .retain(|subscriber| subscriber.send(event.clone()).is_ok());
     }
+}
+
+/// Configures every connection that writes. WAL lets readers proceed while
+/// another connection writes, and `synchronous = NORMAL` drops the per-commit
+/// fsync: a process crash loses nothing, and a power cut can only lose the
+/// most recent commits, in order. Transactions begin IMMEDIATE so one that
+/// reads before it writes waits for a concurrent writer instead of failing
+/// with "database is locked".
+fn configure_writer(connection: &mut Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;",
+    )?;
+    connection.set_transaction_behavior(TransactionBehavior::Immediate);
+    Ok(())
 }
 
 fn ensure_runtime_id_column(connection: &Connection) -> rusqlite::Result<()> {
