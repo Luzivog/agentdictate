@@ -560,6 +560,39 @@ impl HotkeyDispatchGate {
     }
 }
 
+/// Reports a hotkey action's completion to the dispatch loop when dropped,
+/// so exactly one `ActionFinished` arrives even if the action panics. The
+/// gate would otherwise stay in flight and ignore every later press.
+struct ActionCompletion {
+    events: std::sync::mpsc::Sender<DispatchLoopEvent>,
+    outcome: HotkeyActionOutcome,
+}
+
+impl ActionCompletion {
+    const fn new(events: std::sync::mpsc::Sender<DispatchLoopEvent>) -> Self {
+        Self {
+            events,
+            outcome: HotkeyActionOutcome::Other,
+        }
+    }
+
+    /// Completes the action with `outcome`; dropping sends the report.
+    fn finish(mut self, outcome: HotkeyActionOutcome) {
+        self.outcome = outcome;
+    }
+}
+
+impl Drop for ActionCompletion {
+    fn drop(&mut self) {
+        let _ = self
+            .events
+            .send(DispatchLoopEvent::ActionFinished(HotkeyActionCompletion {
+                outcome: self.outcome,
+                completed_at: Instant::now(),
+            }));
+    }
+}
+
 fn spawn_hotkey_action(
     runtime: &Path,
     mode: &str,
@@ -568,10 +601,11 @@ fn spawn_hotkey_action(
 ) {
     let runtime = runtime.to_owned();
     let mode = mode.to_owned();
-    std::thread::Builder::new()
+    let completion = ActionCompletion::new(events);
+    let spawned = std::thread::Builder::new()
         .name("agentdictate-hotkey-action".into())
         .spawn(move || {
-            let outcome = match dispatch_hotkey(&runtime, &mode, &event) {
+            completion.finish(match dispatch_hotkey(&runtime, &mode, &event) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     tracing::error!(
@@ -584,13 +618,13 @@ fn spawn_hotkey_action(
                     );
                     HotkeyActionOutcome::Other
                 }
-            };
-            let _ = events.send(DispatchLoopEvent::ActionFinished(HotkeyActionCompletion {
-                outcome,
-                completed_at: Instant::now(),
-            }));
-        })
-        .expect("hotkey action worker should start");
+            });
+        });
+    if let Err(error) = spawned {
+        // A failed spawn drops the closure, and with it the completion, so
+        // the gate still completes and the next press is accepted.
+        tracing::error!(%error, "could not start the hotkey action");
+    }
 }
 
 fn dispatch_hotkey(
@@ -672,7 +706,7 @@ fn dispatch_hotkey(
 }
 
 fn spawn_maximum_duration_stop(runtime: std::path::PathBuf, job_id: JobId, seconds: u32) {
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("agentdictate-maximum-duration".into())
         .spawn(move || {
             std::thread::park_timeout(Duration::from_secs(u64::from(seconds)));
@@ -694,8 +728,14 @@ fn spawn_maximum_duration_stop(runtime: std::path::PathBuf, job_id: JobId, secon
             if let Err(error) = result {
                 tracing::error!(job_id = %job_id, %error, "maximum-duration stop failed");
             }
-        })
-        .expect("maximum duration worker should start");
+        });
+    if let Err(error) = spawned {
+        tracing::error!(
+            job_id = %job_id,
+            %error,
+            "could not start the maximum-duration timer; this recording runs until stopped"
+        );
+    }
 }
 
 fn maximum_duration_command(
@@ -748,6 +788,26 @@ mod tests {
             trigger: NativeHotkeySignalTrigger::Input(input),
             observed_at,
         }
+    }
+
+    #[test]
+    fn a_panicking_hotkey_action_still_completes_the_gate_exactly_once() {
+        let (events, incoming) = std::sync::mpsc::channel();
+        let completion = ActionCompletion::new(events);
+        let action = std::thread::spawn(move || {
+            let dispatch = || -> HotkeyActionOutcome { panic!("hotkey action panicked") };
+            completion.finish(dispatch());
+        });
+
+        assert!(action.join().is_err());
+        let completions = incoming.try_iter().collect::<Vec<_>>();
+        assert!(matches!(
+            completions.as_slice(),
+            [DispatchLoopEvent::ActionFinished(HotkeyActionCompletion {
+                outcome: HotkeyActionOutcome::Other,
+                ..
+            })]
+        ));
     }
 
     #[test]
