@@ -658,6 +658,26 @@ impl Runtime {
                 copied_to_clipboard,
                 "delivery may have reached the focused application".to_owned(),
             )?,
+            DeliveryDisposition::NotSent {
+                copied_to_clipboard,
+                reason,
+            } => {
+                // The job stays ready to deliver, so the user can try again.
+                self.connection.execute(
+                    r#"
+                    UPDATE dictation_jobs
+                    SET updated_at = ?1, copied_to_clipboard = ?2,
+                        delivery_status = 'not_attempted', error_message = ?3
+                    WHERE runtime_id = ?4
+                    "#,
+                    params![
+                        timestamp(Utc::now()),
+                        copied_to_clipboard,
+                        reason,
+                        ready.id.to_string(),
+                    ],
+                )?;
+            }
         }
         let result = self.job(ready.id)?.expect("updated job must be readable");
         self.publish(RuntimeEvent::JobUpdated(result.clone()));

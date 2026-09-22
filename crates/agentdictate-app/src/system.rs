@@ -379,6 +379,8 @@ impl SystemDeliverer {
 }
 
 impl Deliverer for SystemDeliverer {
+    /// Pastes with exactly one injected shortcut. Every failure before that
+    /// shortcut is `NotSent`, so the text can be delivered again safely.
     fn deliver(&mut self, job: &RecordingJob) -> Result<DeliveryDisposition, ExternalError> {
         let deadline = Instant::now() + DELIVERY_TIMEOUT;
         let mut delivery = PasteDelivery::new(self.shortcut_mode);
@@ -391,19 +393,33 @@ impl Deliverer for SystemDeliverer {
                     } else {
                         match self.observe_focus(deadline) {
                             Ok(target) => delivery.advance(DeliveryObservation::Focus(target)),
-                            Err(_) if copied_this_attempt => {
-                                return Ok(DeliveryDisposition::Ambiguous {
-                                    copied_to_clipboard: true,
+                            Err(error) => {
+                                return Ok(DeliveryDisposition::NotSent {
+                                    copied_to_clipboard: copied_this_attempt,
+                                    reason: format!(
+                                        "could not find the focused window, so nothing was pasted: {error}"
+                                    ),
                                 });
                             }
-                            Err(error) => return Err(error),
                         }
                     }
                 }
                 DeliveryAction::PublishClipboard(protocol) => {
-                    let publications = self
-                        .publish_delivery_text(protocol, job.final_text.as_bytes(), deadline)
-                        .map_err(|error| ExternalError::new(error.to_string()))?;
+                    let publications = match self.publish_delivery_text(
+                        protocol,
+                        job.final_text.as_bytes(),
+                        deadline,
+                    ) {
+                        Ok(publications) => publications,
+                        Err(error) => {
+                            return Ok(DeliveryDisposition::NotSent {
+                                copied_to_clipboard: false,
+                                reason: format!(
+                                    "could not copy the text, so nothing was pasted: {error}"
+                                ),
+                            });
+                        }
+                    };
                     debug_assert!(
                         publications
                             .iter()
@@ -440,20 +456,29 @@ impl Deliverer for SystemDeliverer {
                     delivery.advance(DeliveryObservation::InjectionFinished(sent))
                 }
                 DeliveryAction::Finished(result) => {
-                    return match result.failure {
-                        None => Ok(DeliveryDisposition::Submitted {
+                    return Ok(match result.failure {
+                        None => DeliveryDisposition::Submitted {
                             copied_to_clipboard: result.copied,
                             paste_triggered: result.paste_triggered,
-                        }),
-                        Some(
-                            DeliveryFailure::FocusUnstable | DeliveryFailure::InjectionAmbiguous,
-                        ) if result.copied => Ok(DeliveryDisposition::Ambiguous {
-                            copied_to_clipboard: true,
-                        }),
-                        Some(failure) => Err(ExternalError::new(format!(
-                            "text delivery failed: {failure:?}"
-                        ))),
-                    };
+                        },
+                        Some(DeliveryFailure::InjectionAmbiguous) => {
+                            DeliveryDisposition::Ambiguous {
+                                copied_to_clipboard: result.copied,
+                            }
+                        }
+                        Some(DeliveryFailure::FocusUnstable) => DeliveryDisposition::NotSent {
+                            copied_to_clipboard: result.copied,
+                            reason: "the focused window kept changing, so nothing was pasted"
+                                .to_owned(),
+                        },
+                        Some(DeliveryFailure::ClipboardUnavailable) => {
+                            DeliveryDisposition::NotSent {
+                                copied_to_clipboard: result.copied,
+                                reason: "the clipboard was not ready, so nothing was pasted"
+                                    .to_owned(),
+                            }
+                        }
+                    });
                 }
             };
             if matches!(next, DeliveryAction::Finished(_)) {
