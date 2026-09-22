@@ -60,12 +60,15 @@ undocumented route can stop working without notice.
 ## Transcription Upload
 
 The daemon captures 16 kHz mono s16 WAV. Before the OpenAI transcription
-request, the app transport encodes the capture to Opus/OGG (ffmpeg, 32 kbps)
-so upload time does not dominate stop-to-paste latency on slow uplinks; if
-ffmpeg is unavailable or encoding fails, it falls back to uploading the raw
-WAV. The durable on-disk artifact stays WAV — recovery and retry are
-unaffected. Each transcription and cleanup request logs its payload size,
-encode time, and request time, and the daemon logs total stop-to-paste time
+request, the app transport encodes the capture to Opus in WebM (ffmpeg,
+32 kbps, speech mode) so upload time does not dominate stop-to-paste latency on
+slow uplinks; if ffmpeg is unavailable or encoding fails, it falls back to
+uploading the raw WAV. If OpenAI answers HTTP 400 about the uploaded file or
+its format, the WAV is sent once more. A connection failure before OpenAI
+returns any status is retried once on a fresh connection; nothing is retried
+after a status arrives. The durable on-disk artifact stays WAV — recovery and
+retry are unaffected. Each transcription and cleanup request logs its payload
+size, encode time, and request time, and the daemon logs total stop-to-paste time
 per dictation.
 
 ## Daemon And Settings App Communication

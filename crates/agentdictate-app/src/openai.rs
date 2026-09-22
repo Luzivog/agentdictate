@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -13,30 +13,48 @@ use crate::model_catalog::{TranscriptionProfile, transcription_profile};
 /// overhead. Recognition quality still depends on the audio and selected model.
 const UPLOAD_OPUS_BITRATE: &str = "32k";
 
-/// Audio payload actually sent to the transcription endpoint: the Opus/OGG
+/// Container of the audio sent to the transcription endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UploadFormat {
+    /// Opus in WebM, a format OpenAI documents for transcription uploads.
+    WebmOpus,
+    /// The captured recording itself, about 8x larger.
+    Wav,
+}
+
+impl UploadFormat {
+    const fn file_name(self) -> &'static str {
+        match self {
+            Self::WebmOpus => "recording.webm",
+            Self::Wav => "recording.wav",
+        }
+    }
+
+    const fn mime(self) -> &'static str {
+        match self {
+            Self::WebmOpus => "audio/webm",
+            Self::Wav => "audio/wav",
+        }
+    }
+}
+
+/// Audio payload actually sent to the transcription endpoint: the WebM/Opus
 /// encoding of the captured WAV when ffmpeg is available, or the raw WAV
 /// bytes as a fallback so a missing encoder can never lose a dictation.
 struct UploadAudio {
     bytes: Vec<u8>,
-    file_name: String,
-    mime: &'static str,
+    format: UploadFormat,
     encode_ms: Option<u64>,
 }
 
-fn upload_file_name(audio_path: &Path, extension: &str) -> String {
-    let stem = audio_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("recording");
-    format!("{stem}.{extension}")
-}
-
-fn encode_ogg_opus(audio_path: &Path) -> Result<Vec<u8>, ExternalError> {
-    let output = Command::new("ffmpeg")
+fn encode_webm_opus(ffmpeg: &Path, audio_path: &Path) -> Result<Vec<u8>, ExternalError> {
+    // `-application voip` keeps libopus in its speech-optimized mode.
+    let output = Command::new(ffmpeg)
         .args(["-loglevel", "error", "-i"])
         .arg(audio_path)
         .args(["-ac", "1", "-ar", "16000", "-c:a", "libopus"])
-        .args(["-b:a", UPLOAD_OPUS_BITRATE, "-f", "ogg", "pipe:1"])
+        .args(["-b:a", UPLOAD_OPUS_BITRATE, "-application", "voip"])
+        .args(["-f", "webm", "pipe:1"])
         .output()
         .map_err(|error| ExternalError::new(format!("could not run ffmpeg: {error}")))?;
     if !output.status.success() {
@@ -52,28 +70,51 @@ fn encode_ogg_opus(audio_path: &Path) -> Result<Vec<u8>, ExternalError> {
     Ok(output.stdout)
 }
 
-fn prepare_upload_audio(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
+fn prepare_upload_audio(ffmpeg: &Path, audio_path: &Path) -> Result<UploadAudio, ExternalError> {
     let encode_started = Instant::now();
-    match encode_ogg_opus(audio_path) {
+    match encode_webm_opus(ffmpeg, audio_path) {
         Ok(bytes) => Ok(UploadAudio {
             bytes,
-            file_name: upload_file_name(audio_path, "ogg"),
-            mime: "audio/ogg",
+            format: UploadFormat::WebmOpus,
             encode_ms: Some(encode_started.elapsed().as_millis() as u64),
         }),
         Err(error) => {
             tracing::warn!(%error, "audio compression unavailable; uploading raw WAV");
-            let bytes = std::fs::read(audio_path).map_err(|error| {
-                ExternalError::new(format!("Could not read the captured recording: {error}"))
-            })?;
-            Ok(UploadAudio {
-                bytes,
-                file_name: upload_file_name(audio_path, "wav"),
-                mime: "audio/wav",
-                encode_ms: None,
-            })
+            wav_upload(audio_path)
         }
     }
+}
+
+fn wav_upload(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
+    let bytes = std::fs::read(audio_path).map_err(|error| {
+        ExternalError::new(format!("Could not read the captured recording: {error}"))
+    })?;
+    Ok(UploadAudio {
+        bytes,
+        format: UploadFormat::Wav,
+        encode_ms: None,
+    })
+}
+
+/// True when OpenAI answered HTTP 400 with an error about the uploaded file
+/// or its format. The WAV original is then worth one more attempt.
+fn rejects_upload_format(status: StatusCode, body: &str) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.to_owned())
+        .to_ascii_lowercase();
+    ["file", "format", "audio"]
+        .iter()
+        .any(|word| message.contains(word))
 }
 
 /// Builds the multipart body for one transcription attempt. A multipart form
@@ -84,8 +125,8 @@ fn transcription_form(
     upload: &UploadAudio,
 ) -> Result<reqwest::blocking::multipart::Form, ExternalError> {
     let file = reqwest::blocking::multipart::Part::bytes(upload.bytes.clone())
-        .file_name(upload.file_name.clone())
-        .mime_str(upload.mime)
+        .file_name(upload.format.file_name())
+        .mime_str(upload.format.mime())
         .map_err(|error| ExternalError::new(format!("Invalid audio upload: {error}")))?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("model", request.model.to_owned())
@@ -368,6 +409,7 @@ pub struct ReqwestOpenAiTransport {
     api_base: String,
     live: Option<crate::live_transcription::LiveTranscription>,
     actual_model: Option<String>,
+    ffmpeg: PathBuf,
 }
 
 impl ReqwestOpenAiTransport {
@@ -386,7 +428,16 @@ impl ReqwestOpenAiTransport {
             api_base: api_base.into().trim_end_matches('/').to_owned(),
             actual_model: None,
             live: None,
+            ffmpeg: PathBuf::from("ffmpeg"),
         }
+    }
+
+    /// Uses `program` instead of the `ffmpeg` found on `PATH` to compress
+    /// uploads, so tests can exercise the encoder boundary with a fake.
+    #[must_use]
+    pub fn with_audio_encoder(mut self, program: impl Into<PathBuf>) -> Self {
+        self.ffmpeg = program.into();
+        self
     }
 
     pub fn set_api_key(&mut self, api_key: impl Into<String>) {
@@ -554,11 +605,19 @@ impl SpeechTransport for ReqwestOpenAiTransport {
                 "This model accepts one language hint; choose one language or automatic detection",
             ));
         }
-        let upload = prepare_upload_audio(request.audio_path)?;
-        let upload_bytes = upload.bytes.len();
+        let mut upload = prepare_upload_audio(&self.ffmpeg, request.audio_path)?;
         let request_started = Instant::now();
-        let (status, body) =
+        let (mut status, mut body) =
             self.send_transcription(|| transcription_form(&request, profile, &upload))?;
+        if upload.format == UploadFormat::WebmOpus && rejects_upload_format(status, &body) {
+            tracing::warn!(
+                error = %Self::response_error(status, &body),
+                "OpenAI rejected the compressed audio; retrying with the original WAV"
+            );
+            upload = wav_upload(request.audio_path)?;
+            (status, body) =
+                self.send_transcription(|| transcription_form(&request, profile, &upload))?;
+        }
         let request_ms = request_started.elapsed().as_millis() as u64;
         if !status.is_success() {
             return Err(Self::response_error(status, &body));
@@ -583,7 +642,8 @@ impl SpeechTransport for ReqwestOpenAiTransport {
         tracing::info!(
             model = request.model,
             audio_seconds = request.duration_seconds,
-            upload_bytes,
+            upload_format = ?upload.format,
+            upload_bytes = upload.bytes.len(),
             encode_ms = upload.encode_ms,
             request_ms,
             transcript_chars = text.chars().count(),
@@ -686,7 +746,9 @@ impl CleanupTransport for ReqwestOpenAiTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_reasoning_effort, encode_ogg_opus, upload_file_name};
+    use std::path::Path;
+
+    use super::{cleanup_reasoning_effort, encode_webm_opus};
 
     #[test]
     fn encoding_an_unreadable_recording_reports_an_error_instead_of_panicking() {
@@ -694,11 +756,11 @@ mod tests {
         let audio_path = directory.path().join("recording.wav");
         std::fs::write(&audio_path, b"not a wav file").unwrap();
 
-        assert!(encode_ogg_opus(&audio_path).is_err());
+        assert!(encode_webm_opus(Path::new("ffmpeg"), &audio_path).is_err());
     }
 
     #[test]
-    fn a_valid_wav_encodes_to_an_ogg_opus_payload() {
+    fn a_valid_wav_encodes_to_a_webm_opus_payload() {
         if !std::process::Command::new("ffmpeg")
             .arg("-version")
             .output()
@@ -711,10 +773,10 @@ mod tests {
         let audio_path = directory.path().join("recording.wav");
         std::fs::write(&audio_path, tiny_wav()).unwrap();
 
-        let encoded = encode_ogg_opus(&audio_path).unwrap();
+        let encoded = encode_webm_opus(Path::new("ffmpeg"), &audio_path).unwrap();
 
-        assert!(encoded.starts_with(b"OggS"));
-        assert_eq!(upload_file_name(&audio_path, "ogg"), "recording.ogg");
+        // Every WebM file starts with the EBML magic number.
+        assert!(encoded.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]));
     }
 
     /// 100 ms of 16 kHz mono s16 silence with a canonical 44-byte header.

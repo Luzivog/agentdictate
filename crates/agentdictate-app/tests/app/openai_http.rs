@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc;
 use std::thread;
 
@@ -202,7 +203,7 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
     assert!(request.contains("name=\"prompt\"\r\n\r\nAgentDictate and GPUI"));
     assert!(request.contains("name=\"languages[]\"\r\n\r\nfr"));
     assert!(request.contains("name=\"keywords[]\"\r\n\r\nAgentDictate"));
-    assert!(request.contains("filename=\"five minutes.wav\""));
+    assert!(request.contains("filename=\"recording.wav\""));
     assert!(request.contains("RIFFrecorded speech"));
 }
 
@@ -364,6 +365,59 @@ fn an_http_error_status_is_never_retried() {
         !server.join().unwrap(),
         "a status error must not be sent again"
     );
+}
+
+#[test]
+fn compressed_audio_rejected_as_a_bad_file_is_sent_again_as_the_original_wav() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_sender, request_receiver) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        request_sender.send(read_http_request(&mut stream)).unwrap();
+        let body = r#"{"error":{"message":"Invalid file format. Supported formats: ['mp3', 'wav']","param":"file"}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        request_sender.send(read_http_request(&mut stream)).unwrap();
+        let body = r#"{"text":"Every spoken word."}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let directory = tempdir().unwrap();
+    let audio_path = directory.path().join("recording.wav");
+    std::fs::write(&audio_path, b"RIFFrecorded speech").unwrap();
+    let encoder = directory.path().join("ffmpeg");
+    std::fs::write(&encoder, "#!/bin/sh\nprintf 'WEBM-OPUS'\n").unwrap();
+    std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut transport =
+        ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{address}/v1"))
+            .with_audio_encoder(&encoder);
+
+    let text = transport
+        .transcribe_audio(transcription_request(&audio_path))
+        .unwrap();
+
+    server.join().unwrap();
+    let compressed = request_receiver.recv().unwrap();
+    let original = request_receiver.recv().unwrap();
+    assert_eq!(text, "Every spoken word.");
+    assert!(compressed.contains("filename=\"recording.webm\""));
+    assert!(compressed.contains("Content-Type: audio/webm"));
+    assert!(compressed.contains("WEBM-OPUS"));
+    assert!(original.contains("filename=\"recording.wav\""));
+    assert!(original.contains("Content-Type: audio/wav"));
+    assert!(original.contains("RIFFrecorded speech"));
 }
 
 fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'_> {
