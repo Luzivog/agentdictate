@@ -78,10 +78,11 @@ variant, so avoid uncontrolled full rebuilds while an oversized target remains.
 
 ## Final Test Gate
 
-`./run-tests.sh` is the one final comprehensive local gate. It runs the locked
-Rust workspace with every target and feature, the native-readiness packaging
-checks, and `cargo deny check` when `cargo-deny` is installed. The gate is
-local-only by design; CI runs tag-gated packaging only. For application code or
+`./run-tests.sh` is the one final comprehensive local gate. It checks
+formatting (`cargo fmt --all --check`), then runs the locked Rust workspace with
+every target and feature, the native-readiness packaging checks, and
+`cargo deny check` when `cargo-deny` is installed. The gate is local-only by
+design; CI runs tag-gated packaging only. For application code or
 packaging changes, run it after focused checks pass and disk-heavy coordination
 says it is safe. Repeat only after a relevant fix or new failure. Documentation-only
 changes do not require this gate. Do not use it as an inner loop command.
@@ -98,9 +99,9 @@ desktop during automated verification.
 Use idiomatic Rust 2024, explicit domain types, exhaustive matching, and small
 interfaces between crates. Keep modules and functions in `snake_case`, types
 and traits in `PascalCase`, and constants in `SCREAMING_SNAKE_CASE`. Run
-`cargo fmt` on changed Rust files and keep comments concise and synchronized
-with behavior. Avoid `unsafe` unless a Linux integration requires it and its
-safety contract is documented next to the boundary.
+`cargo fmt --all` before committing Rust changes and keep comments concise and
+synchronized with behavior. Avoid `unsafe` unless a Linux integration requires
+it and its safety contract is documented next to the boundary.
 
 ## Packaging and Installation
 

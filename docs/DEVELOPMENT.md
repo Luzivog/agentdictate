@@ -100,9 +100,10 @@ Do not attach to or restart the active daemon just to debug a unit test.
 
 ## Complete the change
 
-After focused checks pass, run `./run-tests.sh` exactly once. It checks the developer
-runner, all Rust targets and features, native-readiness packaging fixtures, and
-`cargo deny` when installed. Preserve its output and inspect skipped checks.
+After focused checks pass, run `./run-tests.sh` exactly once. It checks formatting,
+the developer runner, all Rust targets and features, native-readiness packaging
+fixtures, and `cargo deny` when installed. Preserve its output and inspect skipped
+checks.
 
 The automated layers prove domain behavior, SQLite and IPC contracts, mocked
 provider responses, and headless GPUI interactions. They do not prove compositor
