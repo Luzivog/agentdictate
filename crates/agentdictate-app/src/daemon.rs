@@ -168,13 +168,13 @@ where
                 {
                     self.workflow
                         .apply(WorkflowSignal::StartRequested { job_id: failed.id })?;
-                    self.workflow.apply(WorkflowSignal::Interrupted {
-                        job_id: failed.id,
-                        at: failed.stage,
-                    })?;
-                    self.recoverable_count = self.attention_recovery_count()?;
-                    self.sequence += 1;
-                    self.publish_overlay_update();
+                    self.settle(
+                        failed.id,
+                        WorkflowSignal::Interrupted {
+                            job_id: failed.id,
+                            at: failed.stage,
+                        },
+                    );
                 }
                 return Err(error.into());
             }
@@ -211,20 +211,19 @@ where
             Err(error) => {
                 self.transcriber.cancel_recording(id);
                 tracing::error!(job_id = %id, %error, "recording finalization failed");
-                self.runtime.interrupt_job(
+                let persisted = self.runtime.interrupt_job(
                     id,
                     JobStage::Recording,
                     format!("recording could not be finalized: {error}"),
-                )?;
-                self.workflow.apply(WorkflowSignal::Interrupted {
-                    job_id: id,
-                    at: JobStage::Interrupted,
-                })?;
-                self.active_job = None;
-                self.active_recording = None;
-                self.recoverable_count = self.attention_recovery_count()?;
-                self.sequence += 1;
-                self.publish_overlay_update();
+                );
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: JobStage::Interrupted,
+                    },
+                );
+                persisted?;
                 return Err(error.into());
             }
         };
@@ -264,37 +263,28 @@ where
                     .runtime
                     .job(id)?
                     .map_or(JobStage::Failed, |job| job.stage);
-                self.workflow.apply(WorkflowSignal::Interrupted {
-                    job_id: id,
-                    at: persisted_stage,
-                })?;
-                self.active_job = None;
-                self.active_recording = None;
-                self.recoverable_count = self.attention_recovery_count()?;
-                self.sequence += 1;
-                self.publish_overlay_update();
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: persisted_stage,
+                    },
+                );
                 return Err(error.into());
             }
         };
         if result.stage == JobStage::NoSpeech {
-            self.workflow
-                .apply(WorkflowSignal::NoSpeechDetected { job_id: id })?;
-            self.active_job = None;
-            self.active_recording = None;
             self.cleanup_completed_audio(&result);
-            self.recoverable_count = self.attention_recovery_count()?;
-            self.sequence += 1;
-            self.publish_overlay_update();
+            self.settle(id, WorkflowSignal::NoSpeechDetected { job_id: id });
             tracing::info!(job_id = %id, "empty dictation finished quietly");
             return Ok(result);
         }
+        // Processing ran synchronously, so these steps only record what it did.
         self.workflow
             .apply(WorkflowSignal::TranscriptStored { job_id: id })?;
         self.workflow
             .apply(WorkflowSignal::DeliveryStarted { job_id: id })?;
-        if result.stage == JobStage::Delivered {
-            self.workflow
-                .apply(WorkflowSignal::DeliverySubmitted { job_id: id })?;
+        let end = if result.stage == JobStage::Delivered {
             if let Err(error) = self.runtime.complete_delivered(id, &self.settings) {
                 // The paste command was already submitted. A bookkeeping failure
                 // must never make it retryable and risk a duplicate paste; the
@@ -302,21 +292,15 @@ where
                 tracing::error!(job_id = %id, %error, "could not complete delivered dictation");
             }
             self.cleanup_completed_audio(&result);
-            self.workflow = Workflow::new();
+            WorkflowSignal::DeliverySubmitted { job_id: id }
         } else {
-            self.workflow.apply(WorkflowSignal::Interrupted {
+            WorkflowSignal::Interrupted {
                 job_id: id,
                 at: result.stage,
-            })?;
-        }
-        self.active_job = None;
-        self.active_recording = None;
-        if result.stage != JobStage::NoSpeech {
-            self.last_transcript = Some(result.final_text.clone());
-        }
-        self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
-        self.publish_overlay_update();
+            }
+        };
+        self.last_transcript = Some(result.final_text.clone());
+        self.settle(id, end);
         tracing::info!(
             job_id = %id,
             stage = ?result.stage,
@@ -341,17 +325,15 @@ where
                     id,
                     JobStage::Recording,
                     format!("recording could not be finalized while discarding: {error}"),
-                )?;
-                self.workflow.apply(WorkflowSignal::Interrupted {
-                    job_id: id,
-                    at: JobStage::Interrupted,
-                })?;
-                self.active_job = None;
-                self.active_recording = None;
-                self.recoverable_count = self.attention_recovery_count()?;
-                self.sequence += 1;
-                self.publish_overlay_update();
-                return Ok(interrupted);
+                );
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: JobStage::Interrupted,
+                    },
+                );
+                return interrupted.map_err(Into::into);
             }
         };
         if let Err(error) = self.runtime.capture_recording(id, capture.duration_seconds) {
@@ -363,30 +345,23 @@ where
             self.recover_after_capture_checkpoint_failure(id, &error);
             return Err(error.into());
         }
-        let discarded = match self.runtime.discard_recording(id) {
-            Ok(discarded) => discarded,
-            Err(error) => {
-                self.workflow.apply(WorkflowSignal::Interrupted {
-                    job_id: id,
-                    at: JobStage::Captured,
-                })?;
-                self.active_job = None;
-                self.active_recording = None;
-                self.recoverable_count = self.attention_recovery_count()?;
-                self.sequence += 1;
-                self.publish_overlay_update();
-                return Err(error.into());
+        match self.runtime.discard_recording(id) {
+            Ok(discarded) => {
+                self.settle(id, WorkflowSignal::DiscardCommitted { job_id: id });
+                tracing::info!(job_id = %id, "dictation discarded");
+                Ok(discarded)
             }
-        };
-        self.workflow
-            .apply(WorkflowSignal::DiscardCommitted { job_id: id })?;
-        self.active_job = None;
-        self.active_recording = None;
-        self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
-        self.publish_overlay_update();
-        tracing::info!(job_id = %id, "dictation discarded");
-        Ok(discarded)
+            Err(error) => {
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: JobStage::Captured,
+                    },
+                );
+                Err(error.into())
+            }
+        }
     }
 
     /// Handles a kernel-observed recorder exit. A stale notification from a
@@ -469,9 +444,14 @@ where
         Ok(result)
     }
 
+    /// Deletes one Recovery item. The workflow returns to Ready only when no
+    /// dictation is active: deleting an older item mid-recording must leave
+    /// the live recording, and every way to stop it, untouched.
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         let result = self.runtime.delete_recovery(id)?;
-        self.workflow = Workflow::new();
+        if self.active_job.is_none() {
+            self.workflow = Workflow::new();
+        }
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
@@ -663,9 +643,6 @@ where
 
     fn recover_after_capture_checkpoint_failure(&mut self, id: JobId, primary: &RuntimeError) {
         self.transcriber.cancel_recording(id);
-        self.active_job = None;
-        self.active_recording = None;
-
         if let Err(recovery_error) = self.runtime.interrupt_job(
             id,
             JobStage::Recording,
@@ -677,36 +654,13 @@ where
                 "could not persist capture-checkpoint recovery state"
             );
         }
-
-        let interrupted = WorkflowSignal::Interrupted {
-            job_id: id,
-            at: JobStage::Interrupted,
-        };
-        if let Err(workflow_error) = self.workflow.apply(interrupted) {
-            tracing::warn!(
-                job_id = %id,
-                %workflow_error,
-                "rebuilding workflow after capture-checkpoint failure"
-            );
-            self.workflow = Workflow::new();
-            let _ = self
-                .workflow
-                .apply(WorkflowSignal::StartRequested { job_id: id });
-            let _ = self.workflow.apply(interrupted);
-        }
-        self.recoverable_count = self.runtime.recovery_entries().map_or_else(
-            |recovery_error| {
-                tracing::error!(
-                    job_id = %id,
-                    %recovery_error,
-                    "could not recount recoverable recordings"
-                );
-                self.recoverable_count.max(1)
+        self.settle(
+            id,
+            WorkflowSignal::Interrupted {
+                job_id: id,
+                at: JobStage::Interrupted,
             },
-            |jobs| jobs.len(),
         );
-        self.sequence += 1;
-        self.publish_overlay_update();
     }
 
     fn preserve_active_recording(
@@ -723,17 +677,15 @@ where
                     id,
                     JobStage::Recording,
                     format!("{reason}; recording could not be finalized: {error}"),
-                )?;
-                self.workflow.apply(WorkflowSignal::Interrupted {
-                    job_id: id,
-                    at: JobStage::Interrupted,
-                })?;
-                self.active_job = None;
-                self.active_recording = None;
-                self.recoverable_count = self.attention_recovery_count()?;
-                self.sequence += 1;
-                self.publish_overlay_update();
-                return Ok(interrupted);
+                );
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: JobStage::Interrupted,
+                    },
+                );
+                return interrupted.map_err(Into::into);
             }
         };
         if let Err(error) = self.runtime.capture_recording(id, capture.duration_seconds) {
@@ -747,17 +699,52 @@ where
         }
         let interrupted = self
             .runtime
-            .interrupt_job(id, JobStage::Captured, reason.to_owned())?;
-        self.workflow.apply(WorkflowSignal::Interrupted {
-            job_id: id,
-            at: JobStage::Interrupted,
-        })?;
+            .interrupt_job(id, JobStage::Captured, reason.to_owned());
+        self.settle(
+            id,
+            WorkflowSignal::Interrupted {
+                job_id: id,
+                at: JobStage::Interrupted,
+            },
+        );
+        interrupted.map_err(Into::into)
+    }
+
+    /// Ends the active dictation session with its final workflow transition:
+    /// `Interrupted` keeps the job in Recovery, any other signal returns to
+    /// Ready. This never fails. It clears the active job and recording
+    /// first, rebuilds the workflow when the transition is out of order, and
+    /// recounts Recovery best-effort, so a failed bookkeeping step can never
+    /// leave a stale active job that rejects every later command.
+    fn settle(&mut self, id: JobId, end: WorkflowSignal) {
         self.active_job = None;
         self.active_recording = None;
-        self.recoverable_count = self.attention_recovery_count()?;
+        let needs_attention = matches!(end, WorkflowSignal::Interrupted { .. });
+        if let Err(workflow_error) = self.workflow.apply(end) {
+            tracing::warn!(job_id = %id, %workflow_error, ?end, "rebuilding the workflow");
+            self.workflow = Workflow::new();
+            if needs_attention {
+                let _ = self
+                    .workflow
+                    .apply(WorkflowSignal::StartRequested { job_id: id });
+                let _ = self.workflow.apply(end);
+            }
+        }
+        match self.attention_recovery_count() {
+            Ok(count) => self.recoverable_count = count,
+            Err(recovery_error) => {
+                tracing::error!(
+                    job_id = %id,
+                    %recovery_error,
+                    "could not recount recoverable recordings"
+                );
+                if needs_attention {
+                    self.recoverable_count = self.recoverable_count.max(1);
+                }
+            }
+        }
         self.sequence += 1;
         self.publish_overlay_update();
-        Ok(interrupted)
     }
 
     fn attention_recovery_count(&self) -> Result<usize, RuntimeError> {

@@ -323,6 +323,38 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
 }
 
 #[test]
+fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let runtime = Runtime::open(&paths.database_file).unwrap();
+    let mut daemon = Daemon::new(
+        runtime,
+        Settings::default(),
+        paths,
+        PreservingRecorder::default(),
+        FixedTranscriber,
+        SubmittedDelivery::default(),
+    );
+    let older = daemon.start_recording().unwrap();
+    daemon.recorder_exited(older.id).unwrap();
+    let recording = daemon.start_recording().unwrap();
+
+    daemon.delete_recovery(older.id).unwrap();
+
+    assert!(matches!(
+        daemon.snapshot().workflow.phase,
+        WorkflowPhase::Recording { job_id } if job_id == recording.id
+    ));
+    let delivered = daemon.stop_recording().unwrap();
+    assert_eq!(delivered.id, recording.id);
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    // Once for the older recording, once for the stop.
+    assert_eq!(daemon.recorder().finish_attempts, 2);
+    assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
+}
+
+#[test]
 fn escape_discards_audio_and_returns_ready_even_when_audio_retention_is_enabled() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());
