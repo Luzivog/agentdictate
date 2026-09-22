@@ -323,6 +323,62 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
 }
 
 #[test]
+fn failure_after_transcription_keeps_the_raw_transcript_in_recovery_and_the_next_start_works() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let runtime = Runtime::open(&paths.database_file).unwrap();
+    let mut daemon = Daemon::new(
+        runtime,
+        Settings::default(),
+        paths.clone(),
+        PreservingRecorder::default(),
+        FixedTranscriber,
+        SubmittedDelivery::default(),
+    );
+    let started = daemon.start_recording().unwrap();
+    let connection = rusqlite::Connection::open(&paths.database_file).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TRIGGER reject_ready_checkpoint
+            BEFORE UPDATE OF stage ON dictation_jobs
+            WHEN NEW.stage = 'ready_to_deliver'
+            BEGIN
+                SELECT RAISE(FAIL, 'ready checkpoint unavailable');
+            END;
+            "#,
+        )
+        .unwrap();
+
+    let error = daemon.stop_recording().unwrap_err();
+
+    assert!(error.to_string().contains("ready checkpoint unavailable"));
+    assert_eq!(daemon.deliverer().attempts, 0);
+    assert!(matches!(
+        daemon.snapshot().workflow.phase,
+        WorkflowPhase::NeedsAttention {
+            job_id,
+            at: JobStage::Failed,
+        } if job_id == started.id
+    ));
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    let failed = observer.job(started.id).unwrap().unwrap();
+    assert_eq!(failed.stage, JobStage::Failed);
+    assert_eq!(failed.raw_transcript, "raw transcript");
+    assert!(
+        observer
+            .recovery_entries()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.job_id == started.id)
+    );
+    drop(observer);
+    let next = daemon.start_recording().unwrap();
+    assert_ne!(next.id, started.id);
+}
+
+#[test]
 fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());

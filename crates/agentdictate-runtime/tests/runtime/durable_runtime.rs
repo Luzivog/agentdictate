@@ -1018,6 +1018,57 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
 }
 
 #[test]
+fn failed_write_after_a_paste_attempt_marks_it_ambiguous_instead_of_stranding_it() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let job = runtime
+        .start_recording(
+            request(
+                &directory.path().join("recordings/submitted.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
+            &mut crate::support::ReadyRecorder,
+        )
+        .unwrap();
+    runtime.capture_recording(job.id, 2.0).unwrap();
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute_batch(
+            r#"
+            CREATE TRIGGER reject_delivered_checkpoint
+            BEFORE UPDATE OF stage ON dictation_jobs
+            WHEN NEW.stage = 'delivered'
+            BEGIN
+                SELECT RAISE(FAIL, 'delivered checkpoint unavailable');
+            END;
+            "#,
+        )
+        .unwrap();
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
+
+    let error = runtime
+        .process_captured(
+            job.id,
+            &mut FixedTranscriber,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("delivered checkpoint unavailable")
+    );
+    assert_eq!(deliverer.attempts, 1);
+    let failed = runtime.job(job.id).unwrap().unwrap();
+    assert_eq!(failed.stage, JobStage::Failed);
+    assert_eq!(failed.delivery_status, DeliveryStatus::Ambiguous);
+    assert_eq!(failed.final_text, "Durable final words.");
+}
+
+#[test]
 fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");

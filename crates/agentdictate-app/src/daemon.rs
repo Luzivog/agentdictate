@@ -259,9 +259,13 @@ where
             Ok(result) => result,
             Err(error) => {
                 tracing::error!(job_id = %id, %error, "dictation processing failed");
+                // The runtime marks the job failed. Even if this read fails
+                // too, the session must end so the next dictation can start.
                 let persisted_stage = self
                     .runtime
-                    .job(id)?
+                    .job(id)
+                    .ok()
+                    .flatten()
                     .map_or(JobStage::Failed, |job| job.stage);
                 self.settle(
                     id,
