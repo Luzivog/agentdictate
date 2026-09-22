@@ -841,7 +841,7 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
         .unwrap();
     runtime.capture_recording(job.id, 12.0).unwrap();
 
-    let discarded = runtime.discard_recording(job.id).unwrap();
+    let discarded = runtime.discard_recording(job.id, false).unwrap();
 
     assert_eq!(discarded.stage, JobStage::Deleted);
     assert!(!discarded.audio_path.exists());

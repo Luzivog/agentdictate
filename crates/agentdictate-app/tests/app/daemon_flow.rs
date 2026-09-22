@@ -491,32 +491,36 @@ fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable
 }
 
 #[test]
-fn escape_discards_audio_and_returns_ready_even_when_audio_retention_is_enabled() {
-    let directory = tempdir().unwrap();
-    let paths = app_paths(directory.path());
-    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
-    let runtime = Runtime::open(&paths.database_file).unwrap();
-    let settings = Settings {
-        preserve_temp_audio: true,
-        ..Settings::default()
-    };
-    let mut daemon = Daemon::new(
-        runtime,
-        settings,
-        paths.clone(),
-        PreservingRecorder::default(),
-        FixedTranscriber,
-        SubmittedDelivery::default(),
-    );
-    let started = daemon.start_recording().unwrap();
+fn escape_discards_the_dictation_and_keeps_its_audio_only_when_retention_is_enabled() {
+    for preserve_temp_audio in [false, true] {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+        let runtime = Runtime::open(&paths.database_file).unwrap();
+        let settings = Settings {
+            preserve_temp_audio,
+            ..Settings::default()
+        };
+        let mut daemon = Daemon::new(
+            runtime,
+            settings,
+            paths.clone(),
+            PreservingRecorder::default(),
+            FixedTranscriber,
+            SubmittedDelivery::default(),
+        );
+        let started = daemon.start_recording().unwrap();
 
-    let discarded = daemon.discard_recording().unwrap();
+        let discarded = daemon.discard_recording().unwrap();
 
-    assert_eq!(discarded.stage, JobStage::Deleted);
-    assert!(!started.audio_path.exists());
-    assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
-    assert_eq!(daemon.snapshot().recoverable_count, 0);
-    assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+        assert_eq!(discarded.stage, JobStage::Deleted);
+        assert_eq!(started.audio_path.exists(), preserve_temp_audio);
+        assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
+        assert_eq!(daemon.snapshot().recoverable_count, 0);
+        assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+        let observer = Runtime::open_observer(&paths.database_file).unwrap();
+        assert!(observer.job(started.id).unwrap().is_none());
+    }
 }
 
 #[test]

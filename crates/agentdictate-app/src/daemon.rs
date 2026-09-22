@@ -319,7 +319,8 @@ where
     }
 
     /// Discards the active recording because the user explicitly pressed
-    /// Escape. Shutdown and platform failures must use the separate recovery
+    /// Escape. Its audio is deleted too, unless "Preserve temporary audio"
+    /// is on. Shutdown and platform failures must use the separate recovery
     /// preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
         let id = self.active_job.ok_or(DaemonError::NotRecording)?;
@@ -353,7 +354,10 @@ where
             self.recover_after_capture_checkpoint_failure(id, &error);
             return Err(error.into());
         }
-        match self.runtime.discard_recording(id) {
+        match self
+            .runtime
+            .discard_recording(id, self.settings.preserve_temp_audio)
+        {
             Ok(discarded) => {
                 self.settle(id, WorkflowSignal::DiscardCommitted { job_id: id });
                 tracing::info!(job_id = %id, "dictation discarded");

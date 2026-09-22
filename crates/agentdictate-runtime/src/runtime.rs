@@ -197,10 +197,17 @@ impl Runtime {
     }
 
     /// Permanently discards a recording after its audio has reached the
-    /// durable captured checkpoint. The shared recovery deletion path moves
-    /// the audio into quarantine before deleting the job row, so a failed
-    /// delete never strands a retryable row without its only audio copy.
-    pub fn discard_recording(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
+    /// durable captured checkpoint. With `keep_audio` (the "Preserve
+    /// temporary audio" setting) only the job is deleted and the WAV stays,
+    /// like the audio of a completed dictation. Otherwise the shared recovery
+    /// deletion path moves the audio into quarantine before deleting the job
+    /// row, so a failed delete never strands a retryable row without its
+    /// only audio copy.
+    pub fn discard_recording(
+        &mut self,
+        id: JobId,
+        keep_audio: bool,
+    ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if current.stage != JobStage::Captured {
             return Err(RuntimeError::InvalidStage {
@@ -209,7 +216,21 @@ impl Runtime {
                 actual: current.stage,
             });
         }
-        self.delete_recovery(id)
+        if !keep_audio {
+            return self.delete_recovery(id);
+        }
+        self.connection.execute(
+            "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+            [id.to_string()],
+        )?;
+        let deleted = RecordingJob {
+            stage: JobStage::Deleted,
+            updated_at: Utc::now(),
+            error_message: None,
+            ..current
+        };
+        self.publish(RuntimeEvent::JobUpdated(deleted.clone()));
+        Ok(deleted)
     }
 
     /// Transcribes a captured recording and pastes the result.
