@@ -190,7 +190,33 @@ pub(super) fn open_initial_devices<'a>(
 }
 
 pub(super) fn open_keyboard(path: &Path, id: DeviceId) -> io::Result<OpenKeyboard> {
-    let device = Device::open(path)?;
+    #[cfg_attr(not(test), expect(unused_mut))]
+    let mut device = Device::open(path)?;
+    #[cfg(test)]
+    grab_test_keyboard(&mut device)?;
     device.set_nonblocking(true)?;
     Ok(OpenKeyboard { id, device })
+}
+
+/// Tests read their virtual keyboard through this listener. Grabbing it keeps
+/// their key presses away from the compositor and the focused app while the
+/// listener still receives them. A reconfiguration opens the new handle
+/// before closing the old one, which still holds the grab, so `EBUSY` is
+/// accepted here and `regrab_test_keyboards` grabs again after the swap.
+#[cfg(test)]
+fn grab_test_keyboard(device: &mut Device) -> io::Result<()> {
+    if device.name() != Some(crate::hotkey::AGENTDICTATE_TEST_DEVICE_NAME) {
+        return Ok(());
+    }
+    match device.grab() {
+        Err(error) if error.raw_os_error() == Some(libc::EBUSY) => Ok(()),
+        result => result,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn regrab_test_keyboards(devices: &mut HashMap<PathBuf, OpenKeyboard>) {
+    for keyboard in devices.values_mut() {
+        let _ = grab_test_keyboard(&mut keyboard.device);
+    }
 }

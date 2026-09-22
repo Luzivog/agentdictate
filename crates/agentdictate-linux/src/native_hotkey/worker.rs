@@ -227,6 +227,8 @@ fn reconfigure_listener(
     *current_spec = requested;
     *session = candidate_session;
     *devices = candidate_devices;
+    #[cfg(test)]
+    super::listener::regrab_test_keyboards(devices);
     *next_device_id = candidate_next_device_id;
     let _ = events.send(NativeHotkeyEvent::Reconfigured { hotkey });
     let _ = events.send(NativeHotkeyEvent::Status(candidate_status));

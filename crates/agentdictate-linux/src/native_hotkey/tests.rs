@@ -243,10 +243,10 @@ fn test_keyboard_or_skip(test: &str) -> Option<(VirtualDevice, PathBuf)> {
         .ok()
 }
 
-/// The listener must read this keyboard, so it cannot be grabbed and its keys
-/// also reach the desktop. It stays harmless there: running daemons ignore its
-/// name (`AGENTDICTATE_TEST_DEVICE_NAME`), and its only key, F24, is bound by
-/// nothing (xkb maps F20–F23 to mic and touchpad toggles, so avoid those).
+/// The listener under test grabs this keyboard when it opens it (see
+/// `open_keyboard`), so its presses never reach the desktop. Running daemons
+/// also ignore its name (`AGENTDICTATE_TEST_DEVICE_NAME`), and its only key,
+/// F24, is bound by nothing (xkb maps F20–F23 to mic and touchpad toggles).
 fn virtual_keyboard() -> io::Result<(VirtualDevice, PathBuf)> {
     let mut keys = AttributeSet::<KeyCode>::new();
     keys.insert(KeyCode::KEY_F24);
