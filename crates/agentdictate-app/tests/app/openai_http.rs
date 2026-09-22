@@ -297,6 +297,87 @@ fn a_future_unverified_transcription_model_is_sent_using_the_safe_standard_profi
     assert!(!request.contains("Transcribe the entire recording"));
 }
 
+#[test]
+fn a_connection_dropped_before_any_status_is_retried_once_on_a_fresh_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut dropped, _) = listener.accept().unwrap();
+        read_http_request(&mut dropped);
+        drop(dropped);
+        let (mut stream, _) = listener.accept().unwrap();
+        read_http_request(&mut stream);
+        let body = r#"{"text":"Recovered words."}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let directory = tempdir().unwrap();
+    let audio_path = directory.path().join("recording.wav");
+    std::fs::write(&audio_path, b"RIFFrecorded speech").unwrap();
+    let mut transport =
+        ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{address}/v1"));
+
+    let text = transport
+        .transcribe_audio(transcription_request(&audio_path))
+        .unwrap();
+
+    server.join().unwrap();
+    assert_eq!(text, "Recovered words.");
+}
+
+#[test]
+fn an_http_error_status_is_never_retried() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_http_request(&mut stream);
+        let body = r#"{"error":{"message":"overloaded"}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        listener.accept().is_ok()
+    });
+    let directory = tempdir().unwrap();
+    let audio_path = directory.path().join("recording.wav");
+    std::fs::write(&audio_path, b"RIFFrecorded speech").unwrap();
+    let mut transport =
+        ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{address}/v1"));
+
+    let error = transport
+        .transcribe_audio(transcription_request(&audio_path))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("overloaded"), "{error}");
+    assert!(
+        !server.join().unwrap(),
+        "a status error must not be sent again"
+    );
+}
+
+fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'_> {
+    TranscriptionRequest {
+        keywords: &[],
+        audio_path,
+        provider: TranscriptionProvider::OpenAiApi,
+        model: "gpt-transcribe",
+        language: "en",
+        prompt: "",
+        duration_seconds: 1.0,
+    }
+}
+
 fn read_http_request(stream: &mut impl Read) -> String {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 4096];

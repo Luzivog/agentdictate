@@ -76,6 +76,68 @@ fn prepare_upload_audio(audio_path: &Path) -> Result<UploadAudio, ExternalError>
     }
 }
 
+/// Builds the multipart body for one transcription attempt. A multipart form
+/// is consumed by sending, so every attempt builds its own.
+fn transcription_form(
+    request: &TranscriptionRequest<'_>,
+    profile: TranscriptionProfile,
+    upload: &UploadAudio,
+) -> Result<reqwest::blocking::multipart::Form, ExternalError> {
+    let file = reqwest::blocking::multipart::Part::bytes(upload.bytes.clone())
+        .file_name(upload.file_name.clone())
+        .mime_str(upload.mime)
+        .map_err(|error| ExternalError::new(format!("Invalid audio upload: {error}")))?;
+    let mut form = reqwest::blocking::multipart::Form::new()
+        .text("model", request.model.to_owned())
+        .part("file", file);
+    let language = request.language.trim();
+    let prompt = request.prompt.trim();
+    match profile {
+        TranscriptionProfile::AgentDictateGpt => {
+            form = form.text("response_format", "json");
+            for language in language.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                form = form.text("languages[]", language.to_owned());
+            }
+            for keyword in request.keywords {
+                form = form.text("keywords[]", keyword.clone());
+            }
+        }
+        TranscriptionProfile::OpenAiGpt => {
+            form = form.text("response_format", "json");
+            if !language.is_empty() {
+                form = form.text("language", language.to_owned());
+            }
+        }
+        TranscriptionProfile::Standard => {
+            form = form.text("response_format", "text");
+            if !language.is_empty() {
+                form = form.text("language", language.to_owned());
+            }
+        }
+    }
+    if !prompt.is_empty() {
+        form = form.text("prompt", prompt.to_owned());
+    }
+    Ok(form)
+}
+
+/// The shared HTTP client configuration for OpenAI requests.
+fn http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .expect("the rustls HTTP client must be constructible")
+}
+
+/// True when a request failed before OpenAI returned any status, so OpenAI
+/// cannot have answered it. The total 180 s timeout is excluded: the upload
+/// may already be processing, and a second full wait is worse than handing
+/// the audio to Recovery.
+fn failed_before_status(error: &reqwest::Error) -> bool {
+    (error.is_request() || error.is_body()) && (error.is_connect() || !error.is_timeout())
+}
+
 fn cleanup_reasoning_effort(value: &str) -> Option<&str> {
     ReasoningEffort::from_settings_value(value).and_then(ReasoningEffort::openai_value)
 }
@@ -319,11 +381,7 @@ impl ReqwestOpenAiTransport {
     #[must_use]
     pub fn with_api_base(api_key: impl Into<String>, api_base: impl Into<String>) -> Self {
         Self {
-            client: reqwest::blocking::Client::builder()
-                .connect_timeout(Duration::from_secs(20))
-                .timeout(Duration::from_secs(180))
-                .build()
-                .expect("the rustls HTTP client must be constructible"),
+            client: http_client(),
             api_key: api_key.into().trim().to_owned(),
             api_base: api_base.into().trim_end_matches('/').to_owned(),
             actual_model: None,
@@ -342,6 +400,47 @@ impl ReqwestOpenAiTransport {
             ));
         }
         Ok(format!("Bearer {}", self.api_key))
+    }
+
+    /// Posts one transcription form and returns OpenAI's status and body.
+    /// A failure before any status arrives (connecting, sending the request,
+    /// or streaming its body) is retried once, immediately, on a fresh
+    /// connection pool; the classic cause is a pooled keep-alive connection
+    /// that the network silently dropped. Nothing is retried once a status
+    /// arrives, so an HTTP error is never repeated here.
+    fn send_transcription(
+        &mut self,
+        form: impl Fn() -> Result<reqwest::blocking::multipart::Form, ExternalError>,
+    ) -> Result<(StatusCode, String), ExternalError> {
+        let url = format!("{}/audio/transcriptions", self.api_base);
+        let authorization = self.authorization()?;
+        let send = |client: &reqwest::blocking::Client, form| {
+            client
+                .post(&url)
+                .header("Authorization", &authorization)
+                .multipart(form)
+                .send()
+        };
+        let response = match send(&self.client, form()?) {
+            Ok(response) => response,
+            Err(error) if failed_before_status(&error) => {
+                tracing::warn!(%error, "transcription request retried");
+                self.client = http_client();
+                send(&self.client, form()?).map_err(|error| {
+                    ExternalError::new(format!("Could not reach OpenAI: {error}"))
+                })?
+            }
+            Err(error) => {
+                return Err(ExternalError::new(format!(
+                    "Could not reach OpenAI: {error}"
+                )));
+            }
+        };
+        let status = response.status();
+        let body = response.text().map_err(|error| {
+            ExternalError::new(format!("Could not read OpenAI's response: {error}"))
+        })?;
+        Ok((status, body))
     }
 
     fn response_error(status: StatusCode, body: &str) -> ExternalError {
@@ -457,55 +556,9 @@ impl SpeechTransport for ReqwestOpenAiTransport {
         }
         let upload = prepare_upload_audio(request.audio_path)?;
         let upload_bytes = upload.bytes.len();
-        let file = reqwest::blocking::multipart::Part::bytes(upload.bytes)
-            .file_name(upload.file_name)
-            .mime_str(upload.mime)
-            .map_err(|error| ExternalError::new(format!("Invalid audio upload: {error}")))?;
-        let mut form = reqwest::blocking::multipart::Form::new()
-            .text("model", request.model.to_owned())
-            .part("file", file);
-        let language = request.language.trim();
-        let prompt = request.prompt.trim();
-        match profile {
-            TranscriptionProfile::AgentDictateGpt => {
-                form = form.text("response_format", "json");
-                if !language.is_empty() {
-                    for language in language.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                        form = form.text("languages[]", language.to_owned());
-                    }
-                }
-                for keyword in request.keywords {
-                    form = form.text("keywords[]", keyword.clone());
-                }
-            }
-            TranscriptionProfile::OpenAiGpt => {
-                form = form.text("response_format", "json");
-                if !language.is_empty() {
-                    form = form.text("language", language.to_owned());
-                }
-            }
-            TranscriptionProfile::Standard => {
-                form = form.text("response_format", "text");
-                if !language.is_empty() {
-                    form = form.text("language", language.to_owned());
-                }
-            }
-        }
-        if !prompt.is_empty() {
-            form = form.text("prompt", prompt.to_owned());
-        }
         let request_started = Instant::now();
-        let response = self
-            .client
-            .post(format!("{}/audio/transcriptions", self.api_base))
-            .header("Authorization", self.authorization()?)
-            .multipart(form)
-            .send()
-            .map_err(|error| ExternalError::new(format!("Could not reach OpenAI: {error}")))?;
-        let status = response.status();
-        let body = response.text().map_err(|error| {
-            ExternalError::new(format!("Could not read OpenAI's response: {error}"))
-        })?;
+        let (status, body) =
+            self.send_transcription(|| transcription_form(&request, profile, &upload))?;
         let request_ms = request_started.elapsed().as_millis() as u64;
         if !status.is_success() {
             return Err(Self::response_error(status, &body));
