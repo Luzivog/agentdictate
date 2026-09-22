@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use agentdictate_core::{ReplacementRule, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, JobStage, Recorder, RecordingJob, Runtime, RuntimeError, Transcriber,
-    Transcript,
+    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, Runtime, RuntimeError,
+    Transcriber, Transcript,
 };
 use tempfile::TempDir;
 
@@ -837,10 +837,7 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
     assert!(runtime.recovery_entries().unwrap().is_empty());
     drop(runtime);
     let restarted = Runtime::open(&database_path).unwrap();
-    assert_eq!(
-        restarted.job(job.id).unwrap().unwrap().stage,
-        JobStage::Deleted
-    );
+    assert!(restarted.job(job.id).unwrap().is_none());
     assert!(restarted.recovery_entries().unwrap().is_empty());
 }
 
@@ -1116,8 +1113,7 @@ fn failed_recovery_delete_restores_the_only_audio_copy() {
         .execute_batch(
             r#"
             CREATE TRIGGER reject_recovery_delete
-            BEFORE UPDATE OF stage ON dictation_jobs
-            WHEN NEW.stage = 'deleted'
+            BEFORE DELETE ON dictation_jobs
             BEGIN
                 SELECT RAISE(ABORT, 'forced delete failure');
             END;
@@ -1164,6 +1160,9 @@ fn startup_restores_audio_quarantined_before_the_delete_checkpoint() {
     std::fs::rename(&audio_path, &quarantine).unwrap();
 
     let restarted = Runtime::open(&database_path).unwrap();
+    restarted
+        .reconcile_recovery_deletions(audio_path.parent().unwrap())
+        .unwrap();
 
     assert_eq!(std::fs::read(&audio_path).unwrap(), audio);
     assert!(!quarantine.exists());
@@ -1171,6 +1170,21 @@ fn startup_restores_audio_quarantined_before_the_delete_checkpoint() {
         restarted.job(job.id).unwrap().unwrap().stage,
         JobStage::Interrupted
     );
+}
+
+#[test]
+fn startup_removes_audio_left_in_quarantine_by_a_committed_delete() {
+    let directory = TempDir::new().unwrap();
+    let recordings = directory.path().join("recordings");
+    std::fs::create_dir_all(&recordings).unwrap();
+    let runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
+    // The job row is gone, so the delete committed before the unlink.
+    let quarantine = recordings.join(format!(".agentdictate-delete-{}.pending", JobId::new()));
+    std::fs::write(&quarantine, b"RIFFaudio the user deleted").unwrap();
+
+    runtime.reconcile_recovery_deletions(&recordings).unwrap();
+
+    assert!(!quarantine.exists());
 }
 
 #[test]

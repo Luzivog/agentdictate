@@ -7,8 +7,8 @@ use agentdictate_core::{
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
-    HistoryIndexMaintenance, IpcClient, IpcHandler, RecordingPriorityGuard, Runtime, RuntimeError,
-    load_settings, save_settings,
+    FinishedJobCleanup, HistoryIndexMaintenance, IpcClient, IpcHandler, RecordingPriorityGuard,
+    Runtime, RuntimeError, load_settings, save_settings,
 };
 
 use crate::model_catalog::ModelCatalog;
@@ -39,6 +39,7 @@ pub struct AgentProcess {
     daemon_service_file: PathBuf,
     systemctl_command: PathBuf,
     database_file: PathBuf,
+    recordings_directory: PathBuf,
     runtime_directory: PathBuf,
     model_catalog: ModelCatalog,
     history_index_maintenance: HistoryIndexMaintenance,
@@ -53,6 +54,7 @@ impl AgentProcess {
         paths.ensure_directories()?;
         let settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
+        runtime.reconcile_recovery_deletions(&paths.recordings)?;
         let model_catalog = ModelCatalog::open(&paths.cache, &settings.openai_api_key);
         let speech = SpeechRouter::new(
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
@@ -77,6 +79,7 @@ impl AgentProcess {
             daemon_service_file: paths.daemon_service_file,
             systemctl_command: PathBuf::from("systemctl"),
             database_file: paths.database_file,
+            recordings_directory: paths.recordings,
             runtime_directory: paths.runtime,
             model_catalog,
             history_index_maintenance,
@@ -156,6 +159,7 @@ impl AgentProcess {
         let daemon_service_file = self.daemon_service_file.clone();
         let systemctl_command = self.systemctl_command.clone();
         let database_file = self.database_file.clone();
+        let recordings_directory = self.recordings_directory.clone();
         let history_index_maintenance = self.history_index_maintenance.clone();
         std::thread::Builder::new()
             .name("agentdictate-maintenance".into())
@@ -166,6 +170,7 @@ impl AgentProcess {
                     &daemon_service_file,
                     &systemctl_command,
                     &database_file,
+                    &recordings_directory,
                     &history_index_maintenance,
                 );
             })
@@ -326,6 +331,7 @@ fn run_post_listener_maintenance(
     daemon_service_file: &std::path::Path,
     systemctl_command: &std::path::Path,
     database_file: &std::path::Path,
+    recordings_directory: &std::path::Path,
     history_index_maintenance: &HistoryIndexMaintenance,
 ) {
     match std::env::current_exe() {
@@ -355,12 +361,16 @@ fn run_post_listener_maintenance(
     if let Err(error) = runtime.sync_pricing(settings) {
         tracing::warn!(%error, "could not synchronize pricing cache");
     }
-    match runtime.backfill_delivered_sessions(settings) {
-        Ok(0) => {}
-        Ok(repaired_history) => {
-            tracing::info!(repaired_history, "repaired delivered session history");
-        }
-        Err(error) => tracing::warn!(%error, "could not repair delivered session history"),
+    match runtime.clean_up_finished_jobs(settings, recordings_directory) {
+        Ok(cleanup) if cleanup == FinishedJobCleanup::default() => {}
+        Ok(cleanup) => tracing::info!(
+            recorded_deliveries = cleanup.recorded_deliveries,
+            removed_jobs = cleanup.removed_jobs,
+            removed_recordings = cleanup.removed_recordings,
+            failed_removals = cleanup.failed_removals,
+            "cleaned up finished dictations"
+        ),
+        Err(error) => tracing::warn!(%error, "could not clean up finished dictations"),
     }
     if let Err(error) = history_index_maintenance.prepare_history_search(&mut runtime) {
         tracing::warn!(%error, "could not prepare indexed transcript search");

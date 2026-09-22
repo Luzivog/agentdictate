@@ -139,15 +139,13 @@ the returned model IDs and a key fingerprint in its XDG cache directory.
 
 The Platform API key is stored unencrypted in the XDG config directory with
 user-only `0600` permissions. The SQLite database and retained WAV files are
-also unencrypted and protected by local Unix permissions. Once transcription
-succeeds, raw and final text, plus cleaned text when available, remain in
-durable SQLite job rows after successful shortcut submission or delivery
-failure. Deleting an item from Recovery removes its recording and marks the job
-deleted. It does not remove the transcript. **Save history** controls additional
-History and usage rows, not the durable job rows. While it is off, those
-additional rows are skipped. If it is later enabled, restarting the daemon
-backfills them from submitted durable jobs. There is no in-app purge for the
-durable job rows.
+also unencrypted and protected by local Unix permissions. While a dictation is
+in progress, its text is kept in a SQLite job row. After the paste, AgentDictate
+deletes that row. It keeps the usage numbers (no text) and, only when **Save
+history** is on, the transcript in History. Deleting a History item, or
+clearing History, removes it, and it stays deleted after a restart. A dictation
+that fails keeps its text and recording in Recovery until you retry or delete
+it. Deleting it from Recovery removes both.
 
 While the daemon runs, AgentDictate imports existing and new completed ChatGPT
 desktop dictation records that contain a duration and a nonblank transcript.
@@ -164,7 +162,8 @@ start imports it again.
 Recordings are created in the XDG data directory. Audio is normally deleted
 after paste submission. Failed or interrupted recordings remain for recovery,
 and **Preserve temporary audio** also keeps recordings after successful shortcut
-submission.
+submission. Unless that setting is on, each daemon start also deletes leftover
+recordings that no dictation needs.
 The default local paths are:
 
 - `~/.config/agentdictate/`

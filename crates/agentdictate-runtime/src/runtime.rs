@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -12,6 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use crate::history::serialize_replacements;
 use crate::history_search;
 use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
+use crate::startup_cleanup::recovery_delete_path;
 use crate::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryStatus, ExternalError, JobId, JobStage,
     Recorder, RecordingJob, RecordingRequest, ReplacementRule, RuntimeError, RuntimeEvent,
@@ -44,7 +45,6 @@ impl Runtime {
         reconcile_legacy_python_stages(&connection)?;
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
-        reconcile_recovery_deletions(&connection)?;
         Ok(Self {
             connection,
             subscribers: Vec::new(),
@@ -198,8 +198,8 @@ impl Runtime {
 
     /// Permanently discards a recording after its audio has reached the
     /// durable captured checkpoint. The shared recovery deletion path moves
-    /// the audio into quarantine before committing `Deleted`, so a failed
-    /// checkpoint never strands a retryable row without its only audio copy.
+    /// the audio into quarantine before deleting the job row, so a failed
+    /// delete never strands a retryable row without its only audio copy.
     pub fn discard_recording(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if current.stage != JobStage::Captured {
@@ -242,8 +242,17 @@ impl Runtime {
             }) {
                 Ok(transcript) => transcript,
                 Err(ExternalError::NoSpeech) => {
-                    self.update_stage(id, JobStage::NoSpeech, None)?;
-                    let finished = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
+                    // Nothing to deliver or recover, so the job leaves the
+                    // in-flight table. The caller removes its audio.
+                    self.connection.execute(
+                        "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+                        [id.to_string()],
+                    )?;
+                    let finished = RecordingJob {
+                        stage: JobStage::NoSpeech,
+                        updated_at: Utc::now(),
+                        ..transcribing
+                    };
                     self.publish(RuntimeEvent::JobUpdated(finished.clone()));
                     return Ok(finished);
                 }
@@ -480,8 +489,10 @@ impl Runtime {
         self.deliver_ready(ready, delivery_gate, deliverer)
     }
 
-    /// Deletes explicit recovery data without exposing a crash window where
-    /// the database still offers a retry after the only audio copy is gone.
+    /// Deletes explicit recovery data, text and audio, without exposing a
+    /// crash window where the database still offers a retry after the only
+    /// audio copy is gone: the audio moves to quarantine, then the job row is
+    /// deleted, then the quarantine file is unlinked.
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if matches!(
@@ -507,18 +518,26 @@ impl Runtime {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => quarantine_path.exists(),
             Err(error) => return Err(error.into()),
         };
-        if let Err(error) = self.update_stage(id, JobStage::Deleted, None) {
+        if let Err(error) = self.connection.execute(
+            "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+            [id.to_string()],
+        ) {
             if quarantined && !current.audio_path.exists() {
                 fs::rename(&quarantine_path, &current.audio_path)?;
             }
-            return Err(error);
+            return Err(error.into());
         }
-        let deleted = self.job(id)?.expect("updated job must be readable");
+        let deleted = RecordingJob {
+            stage: JobStage::Deleted,
+            updated_at: Utc::now(),
+            error_message: None,
+            ..current
+        };
         self.publish(RuntimeEvent::JobUpdated(deleted.clone()));
         if quarantined {
-            // The durable row is already deleted. A rare unlink failure leaves
-            // a deterministic quarantine file that startup reconciliation can
-            // finish, never a falsely retryable job without audio.
+            // The job row is already gone. A rare unlink failure leaves a
+            // deterministic quarantine file that startup reconciliation
+            // removes, never a falsely retryable job without audio.
             let _ = fs::remove_file(quarantine_path);
         }
         Ok(deleted)
@@ -655,22 +674,7 @@ impl Runtime {
     }
 
     pub fn job(&self, id: JobId) -> Result<Option<RecordingJob>, RuntimeError> {
-        self.connection
-            .query_row(
-                r#"
-                SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
-                       duration_seconds, transcription_model, transcription_provider,
-                       raw_transcript,
-                       final_text, copied_to_clipboard, paste_triggered,
-                       delivery_status, error_message, cleanup_error, processing_options
-                FROM dictation_jobs
-                WHERE runtime_id = ?1
-                "#,
-                [id.to_string()],
-                row_to_job,
-            )
-            .optional()?
-            .map_or(Ok(None), |job| job.map(Some))
+        load_job(&self.connection, id)
     }
 
     pub fn recoverable_jobs(&self) -> Result<Vec<RecordingJob>, RuntimeError> {
@@ -750,42 +754,27 @@ fn ensure_runtime_id_column(connection: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn recovery_delete_path(audio_path: &Path, id: JobId) -> PathBuf {
-    audio_path.with_file_name(format!(".agentdictate-delete-{id}.pending"))
-}
-
-fn reconcile_recovery_deletions(connection: &Connection) -> Result<(), RuntimeError> {
-    let mut statement = connection.prepare(
-        "SELECT runtime_id, audio_path, stage FROM dictation_jobs WHERE audio_path != ''",
-    )?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                PathBuf::from(row.get::<_, String>(1)?),
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
-    for (runtime_id, audio_path, stage) in rows {
-        let id = JobId::from_str(&runtime_id)
-            .map_err(|_| RuntimeError::InvalidJobId(runtime_id.clone()))?;
-        let quarantine_path = recovery_delete_path(&audio_path, id);
-        if !quarantine_path.exists() {
-            continue;
-        }
-        if stage == "deleted" || audio_path.exists() {
-            match fs::remove_file(&quarantine_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        } else {
-            fs::rename(quarantine_path, audio_path)?;
-        }
-    }
-    Ok(())
+/// Reads one job row. Takes a connection so a transaction can use it too.
+pub(crate) fn load_job(
+    connection: &Connection,
+    id: JobId,
+) -> Result<Option<RecordingJob>, RuntimeError> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
+                   duration_seconds, transcription_model, transcription_provider,
+                   raw_transcript,
+                   final_text, copied_to_clipboard, paste_triggered,
+                   delivery_status, error_message, cleanup_error, processing_options
+            FROM dictation_jobs
+            WHERE runtime_id = ?1
+            "#,
+            [id.to_string()],
+            row_to_job,
+        )
+        .optional()?
+        .map_or(Ok(None), |job| job.map(Some))
 }
 
 fn ensure_delivery_status_column(connection: &Connection) -> rusqlite::Result<()> {

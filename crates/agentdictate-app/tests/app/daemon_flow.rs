@@ -96,10 +96,7 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
             .is_empty()
     );
     assert!(observer.recoverable_jobs().unwrap().is_empty());
-    assert_eq!(
-        observer.job(finished.id).unwrap().unwrap().stage,
-        JobStage::NoSpeech
-    );
+    assert!(observer.job(finished.id).unwrap().is_none());
     daemon.start_recording().unwrap();
 }
 
@@ -175,6 +172,8 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].job_id, Some(delivered.id));
     assert_eq!(history[0].final_text, "Final transcript.");
+    // The transcript now lives only in History.
+    assert!(observer.job(delivered.id).unwrap().is_none());
 }
 
 #[test]
@@ -372,8 +371,7 @@ fn failed_escape_delete_restores_audio_and_surfaces_recovery_attention() {
         .execute_batch(
             r#"
             CREATE TRIGGER reject_escape_delete
-            BEFORE UPDATE OF stage ON dictation_jobs
-            WHEN NEW.stage = 'deleted'
+            BEFORE DELETE ON dictation_jobs
             BEGIN
                 SELECT RAISE(ABORT, 'forced discard failure');
             END;

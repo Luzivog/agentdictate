@@ -93,7 +93,7 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         TranscriptionProvider::ChatGptSubscription
     );
     let recorded = runtime
-        .record_delivered_session(
+        .complete_delivered(
             delivered.id,
             &Settings {
                 cleanup_enabled: true,
@@ -144,11 +144,11 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     };
 
     let first = runtime
-        .record_delivered_session(delivered.id, &settings)
+        .complete_delivered(delivered.id, &settings)
         .unwrap()
         .unwrap();
     let duplicate = runtime
-        .record_delivered_session(delivered.id, &settings)
+        .complete_delivered(delivered.id, &settings)
         .unwrap()
         .unwrap();
 
@@ -238,28 +238,60 @@ fn all_time_usage_is_aggregated_into_complete_monday_based_weeks() {
 }
 
 #[test]
-fn startup_backfill_repairs_a_delivered_job_missing_from_history() {
+fn delivery_interrupted_before_completion_is_recorded_exactly_once() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    // The paste committed, then the daemon died before completing the job.
+    let delivered = delivered_job(&mut runtime, &directory);
+    drop(runtime);
+
+    for _ in 0..2 {
+        let mut restarted = Runtime::open(&database_path).unwrap();
+        restarted
+            .clean_up_finished_jobs(&Settings::default(), &directory.path().join("recordings"))
+            .unwrap();
+    }
+
+    let runtime = Runtime::open(&database_path).unwrap();
+    let history = runtime.list_history(HistoryQuery::default()).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].job_id, Some(delivered.id));
+    assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 1);
+    assert!(runtime.job(delivered.id).unwrap().is_none());
+}
+
+#[test]
+fn deleted_history_stays_deleted_after_a_restart() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
+    let entry = runtime
+        .complete_delivered(delivered.id, &Settings::default())
+        .unwrap()
+        .unwrap();
+    assert!(runtime.delete_history(entry.id).unwrap());
     drop(runtime);
-    let mut runtime = Runtime::open(&database_path).unwrap();
 
-    let repaired = runtime
-        .backfill_delivered_sessions(&Settings::default())
+    let mut restarted = Runtime::open(&database_path).unwrap();
+    restarted
+        .clean_up_finished_jobs(&Settings::default(), &directory.path().join("recordings"))
         .unwrap();
 
-    assert_eq!(repaired, 1);
-    let history = runtime.list_history(HistoryQuery::default()).unwrap();
-    assert_eq!(history.len(), 1);
-    assert_eq!(history[0].job_id, Some(delivered.id));
+    assert!(
+        restarted
+            .list_history(HistoryQuery::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
-fn disabled_history_does_not_create_a_session() {
+fn history_off_keeps_usage_numbers_but_no_transcript_after_delivery() {
     let directory = TempDir::new().unwrap();
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     let settings = Settings {
         save_history: false,
@@ -268,16 +300,27 @@ fn disabled_history_does_not_create_a_session() {
 
     assert!(
         runtime
-            .record_delivered_session(delivered.id, &settings)
+            .complete_delivered(delivered.id, &settings)
             .unwrap()
             .is_none()
     );
-    assert!(
-        runtime
-            .list_history(HistoryQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+
+    let usage = runtime.usage_summary().unwrap();
+    assert_eq!(usage.all_time.total_sessions, 1);
+    assert_eq!(usage.all_time.total_words, 4);
+    // Job rows and History are the only tables that hold transcript text.
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    for table in ["dictation_jobs", "transcript_history"] {
+        assert_eq!(
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "{table} still holds a row"
+        );
+    }
 }
 
 #[test]
@@ -287,7 +330,7 @@ fn history_query_and_delete_keep_daily_usage_consistent() {
     let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     let entry = runtime
-        .record_delivered_session(delivered.id, &Settings::default())
+        .complete_delivered(delivered.id, &Settings::default())
         .unwrap()
         .unwrap();
 
@@ -673,7 +716,7 @@ fn recording_history_invalidates_the_fuzzy_vocabulary_cache() {
 
     let delivered = delivered_job(&mut runtime, &directory);
     let entry = runtime
-        .record_delivered_session(delivered.id, &Settings::default())
+        .complete_delivered(delivered.id, &Settings::default())
         .unwrap()
         .unwrap();
     let found = runtime
@@ -881,7 +924,7 @@ fn deleting_cross_midnight_history_repairs_the_session_start_day() {
     let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     let entry = runtime
-        .record_delivered_session(delivered.id, &Settings::default())
+        .complete_delivered(delivered.id, &Settings::default())
         .unwrap()
         .unwrap();
     let connection = rusqlite::Connection::open(&database_path).unwrap();
@@ -917,7 +960,7 @@ fn pricing_sync_reprices_existing_history_and_usage() {
     let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     runtime
-        .record_delivered_session(
+        .complete_delivered(
             delivered.id,
             &Settings {
                 cleanup_enabled: true,

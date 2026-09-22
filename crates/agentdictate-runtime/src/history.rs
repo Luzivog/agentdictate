@@ -3,9 +3,10 @@ use agentdictate_core::{
     count_words_ascii_history, estimate_session_cost,
 };
 use chrono::{DateTime, NaiveDate, Utc};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
-use crate::{Runtime, RuntimeError, parse_timestamp, timestamp};
+use crate::runtime::load_job;
+use crate::{RecordingJob, Runtime, RuntimeError, parse_timestamp, timestamp};
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct HistoryEntry {
@@ -174,47 +175,32 @@ mod tests {
 }
 
 impl Runtime {
-    pub fn backfill_delivered_sessions(
-        &mut self,
-        settings: &Settings,
-    ) -> Result<usize, RuntimeError> {
-        if !settings.save_history {
-            return Ok(0);
-        }
-        let mut statement = self.connection.prepare(
-            "SELECT runtime_id FROM dictation_jobs WHERE stage = 'delivered' ORDER BY id ASC",
-        )?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let mut inserted = 0;
-        for value in ids {
-            let id = value
-                .parse::<JobId>()
-                .map_err(|_| RuntimeError::InvalidJobId(value.clone()))?;
-            let existed = self.history_for_job(id)?.is_some();
-            if self.record_delivered_session(id, settings)?.is_some() && !existed {
-                inserted += 1;
-            }
-        }
-        Ok(inserted)
-    }
-
-    /// Adds one Python-compatible history row for a submitted delivery.
-    /// The persisted job id is unique, making repeated calls crash-safe.
-    pub fn record_delivered_session(
+    /// Moves a delivered job out of the in-flight job table. One transaction
+    /// records its usage session (numbers only, always), saves the transcript
+    /// to History when `save_history` is on, and deletes the job row, so the
+    /// text survives only where History keeps it. Returns the History entry,
+    /// if any. Completing an already completed job changes nothing.
+    pub fn complete_delivered(
         &mut self,
         job_id: JobId,
         settings: &Settings,
     ) -> Result<Option<HistoryEntry>, RuntimeError> {
-        if !settings.save_history {
-            return Ok(None);
-        }
-        if let Some(existing) = self.history_for_job(job_id)? {
-            return Ok(Some(existing));
-        }
-        let job = self.job(job_id)?.ok_or(RuntimeError::JobNotFound(job_id))?;
+        self.complete_delivered_job(job_id, settings)?;
+        self.history_for_job(job_id)
+    }
+
+    /// Returns whether this call recorded the job's usage session. It is
+    /// false when the job was already completed, or when its session was
+    /// recorded before completed job rows were deleted.
+    pub(crate) fn complete_delivered_job(
+        &mut self,
+        job_id: JobId,
+        settings: &Settings,
+    ) -> Result<bool, RuntimeError> {
+        let transaction = self.connection.transaction()?;
+        let Some(job) = load_job(&transaction, job_id)? else {
+            return Ok(false);
+        };
         if job.stage != JobStage::Delivered {
             return Err(RuntimeError::InvalidStage {
                 job_id,
@@ -222,118 +208,26 @@ impl Runtime {
                 actual: job.stage,
             });
         }
-        let (stored_cleaned, replacements_json, cleanup_error): (
-            Option<String>,
-            String,
-            Option<String>,
-        ) = self.connection.query_row(
-            r#"
-                SELECT cleaned_transcript, replacements_applied, cleanup_error
-                FROM dictation_jobs
-                WHERE runtime_id = ?1
-                "#,
-            [job_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
-        let replacements_applied = deserialize_replacements(&replacements_json)?;
-        let cleanup_enabled = job
-            .options
-            .as_ref()
-            .map_or(settings.cleanup_enabled, |o| o.cleanup_enabled)
-            && stored_cleaned.is_some();
-        let cleaned_transcript = cleanup_enabled.then_some(stored_cleaned).flatten();
-        let cleanup_model = cleanup_enabled
-            .then(|| {
-                job.options.as_ref().map_or_else(
-                    || settings.active_cleanup_model().to_owned(),
-                    |o| o.cleanup_model.clone(),
-                )
-            })
-            .filter(|model| !model.is_empty());
-        let cleanup_style = cleanup_enabled.then(|| {
-            job.options
-                .as_ref()
-                .map_or_else(|| settings.cleanup_style.clone(), |o| o.mode.to_string())
-        });
-        let api_transcription_price = settings
-            .transcription_prices
-            .get(&job.transcription_model)
-            .map_or(0.0, |price| price.price_per_audio_minute);
-        let transcription_price = job
-            .transcription_provider
-            .marginal_price_per_audio_minute(api_transcription_price);
-        let cleanup_price = cleanup_model
-            .as_ref()
-            .and_then(|model| settings.cleanup_prices.get(model));
-        let cost = estimate_session_cost(
-            job.duration_seconds,
-            &job.raw_transcript,
-            cleaned_transcript.as_deref(),
-            cleanup_enabled,
-            transcription_price,
-            cleanup_price.map_or(0.0, |price| price.input_price_per_1m_tokens),
-            cleanup_price.map_or(0.0, |price| price.output_price_per_1m_tokens),
-        );
-        let day = job.started_at.date_naive();
-        let replacements_json = serialize_replacements(&replacements_applied)?;
-        let transaction = self.connection.transaction()?;
-        transaction.execute(
-            r#"
-            INSERT INTO dictation_sessions (
-                started_at, ended_at, duration_seconds, transcription_model,
-                transcription_provider,
-                cleanup_enabled, cleanup_model, cleanup_style, raw_word_count,
-                final_word_count, final_character_count,
-                estimated_transcription_cost, estimated_cleanup_cost,
-                estimated_total_cost, success, error_message, runtime_job_id
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, 1, NULL, ?15
+        let already_recorded = transaction
+            .query_row(
+                "SELECT 1 FROM dictation_sessions WHERE runtime_job_id = ?1",
+                [job_id.to_string()],
+                |_| Ok(()),
             )
-            "#,
-            params![
-                timestamp(job.started_at),
-                timestamp(job.updated_at),
-                job.duration_seconds,
-                job.transcription_model,
-                job.transcription_provider.as_str(),
-                cleanup_enabled,
-                cleanup_model,
-                cleanup_style,
-                count_words_ascii_history(&job.raw_transcript),
-                count_words_ascii_history(&job.final_text),
-                job.final_text.chars().count() as u64,
-                cost.transcription_cost,
-                cost.cleanup_cost,
-                cost.total_cost,
-                job_id.to_string(),
-            ],
-        )?;
-        let session_id = transaction.last_insert_rowid();
+            .optional()?
+            .is_some();
+        if !already_recorded {
+            record_session(&transaction, &job, settings)?;
+        }
         transaction.execute(
-            r#"
-            INSERT INTO transcript_history (
-                session_id, created_at, raw_transcript, cleaned_transcript,
-                final_text, replacements_applied, copied_to_clipboard,
-                paste_triggered, cleanup_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            "#,
-            params![
-                session_id,
-                timestamp(job.updated_at),
-                job.raw_transcript,
-                cleaned_transcript,
-                job.final_text,
-                replacements_json,
-                job.copied_to_clipboard,
-                job.paste_triggered,
-                cleanup_error,
-            ],
+            "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+            [job_id.to_string()],
         )?;
-        recompute_daily_stats(&transaction, day)?;
         transaction.commit()?;
-        self.history_search_cache.borrow_mut().invalidate();
-        self.history_for_job(job_id)
+        if !already_recorded {
+            self.history_search_cache.borrow_mut().invalidate();
+        }
+        Ok(!already_recorded)
     }
 
     pub fn list_history(&self, query: HistoryQuery) -> Result<Vec<HistoryEntry>, RuntimeError> {
@@ -424,6 +318,123 @@ impl Runtime {
             .optional()?
             .map_or(Ok(None), |entry| entry.map(Some))
     }
+}
+
+/// Inserts the usage session for a delivered job, plus its History row when
+/// `save_history` is on. Sessions hold numbers only, never transcript text.
+fn record_session(
+    transaction: &Transaction<'_>,
+    job: &RecordingJob,
+    settings: &Settings,
+) -> Result<(), RuntimeError> {
+    let (stored_cleaned, replacements_json, cleanup_error): (
+        Option<String>,
+        String,
+        Option<String>,
+    ) = transaction.query_row(
+        r#"
+        SELECT cleaned_transcript, replacements_applied, cleanup_error
+        FROM dictation_jobs
+        WHERE runtime_id = ?1
+        "#,
+        [job.id.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let replacements_applied = deserialize_replacements(&replacements_json)?;
+    let cleanup_enabled = job
+        .options
+        .as_ref()
+        .map_or(settings.cleanup_enabled, |o| o.cleanup_enabled)
+        && stored_cleaned.is_some();
+    let cleaned_transcript = cleanup_enabled.then_some(stored_cleaned).flatten();
+    let cleanup_model = cleanup_enabled
+        .then(|| {
+            job.options.as_ref().map_or_else(
+                || settings.active_cleanup_model().to_owned(),
+                |o| o.cleanup_model.clone(),
+            )
+        })
+        .filter(|model| !model.is_empty());
+    let cleanup_style = cleanup_enabled.then(|| {
+        job.options
+            .as_ref()
+            .map_or_else(|| settings.cleanup_style.clone(), |o| o.mode.to_string())
+    });
+    let api_transcription_price = settings
+        .transcription_prices
+        .get(&job.transcription_model)
+        .map_or(0.0, |price| price.price_per_audio_minute);
+    let transcription_price = job
+        .transcription_provider
+        .marginal_price_per_audio_minute(api_transcription_price);
+    let cleanup_price = cleanup_model
+        .as_ref()
+        .and_then(|model| settings.cleanup_prices.get(model));
+    let cost = estimate_session_cost(
+        job.duration_seconds,
+        &job.raw_transcript,
+        cleaned_transcript.as_deref(),
+        cleanup_enabled,
+        transcription_price,
+        cleanup_price.map_or(0.0, |price| price.input_price_per_1m_tokens),
+        cleanup_price.map_or(0.0, |price| price.output_price_per_1m_tokens),
+    );
+    transaction.execute(
+        r#"
+        INSERT INTO dictation_sessions (
+            started_at, ended_at, duration_seconds, transcription_model,
+            transcription_provider,
+            cleanup_enabled, cleanup_model, cleanup_style, raw_word_count,
+            final_word_count, final_character_count,
+            estimated_transcription_cost, estimated_cleanup_cost,
+            estimated_total_cost, success, error_message, runtime_job_id
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            ?14, 1, NULL, ?15
+        )
+        "#,
+        params![
+            timestamp(job.started_at),
+            timestamp(job.updated_at),
+            job.duration_seconds,
+            job.transcription_model,
+            job.transcription_provider.as_str(),
+            cleanup_enabled,
+            cleanup_model,
+            cleanup_style,
+            count_words_ascii_history(&job.raw_transcript),
+            count_words_ascii_history(&job.final_text),
+            job.final_text.chars().count() as u64,
+            cost.transcription_cost,
+            cost.cleanup_cost,
+            cost.total_cost,
+            job.id.to_string(),
+        ],
+    )?;
+    let session_id = transaction.last_insert_rowid();
+    if settings.save_history {
+        transaction.execute(
+            r#"
+            INSERT INTO transcript_history (
+                session_id, created_at, raw_transcript, cleaned_transcript,
+                final_text, replacements_applied, copied_to_clipboard,
+                paste_triggered, cleanup_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                session_id,
+                timestamp(job.updated_at),
+                job.raw_transcript,
+                cleaned_transcript,
+                job.final_text,
+                serialize_replacements(&replacements_applied)?,
+                job.copied_to_clipboard,
+                job.paste_triggered,
+                cleanup_error,
+            ],
+        )?;
+    }
+    recompute_daily_stats(transaction, job.started_at.date_naive())
 }
 
 fn history_query_parameters(query: &HistoryQuery) -> (String, String) {

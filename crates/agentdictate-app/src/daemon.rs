@@ -295,10 +295,11 @@ where
         if result.stage == JobStage::Delivered {
             self.workflow
                 .apply(WorkflowSignal::DeliverySubmitted { job_id: id })?;
-            if let Err(error) = self.runtime.record_delivered_session(id, &self.settings) {
-                // The paste command was already submitted. A secondary analytics
-                // failure must never make it retryable and risk a duplicate paste.
-                tracing::error!(job_id = %id, %error, "could not record delivered session history");
+            if let Err(error) = self.runtime.complete_delivered(id, &self.settings) {
+                // The paste command was already submitted. A bookkeeping failure
+                // must never make it retryable and risk a duplicate paste; the
+                // next daemon start completes the job instead.
+                tracing::error!(job_id = %id, %error, "could not complete delivered dictation");
             }
             self.cleanup_completed_audio(&result);
             self.workflow = Workflow::new();
@@ -427,9 +428,9 @@ where
         )?;
         self.workflow = Workflow::new();
         if result.stage == JobStage::Delivered
-            && let Err(error) = self.runtime.record_delivered_session(id, &self.settings)
+            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
         {
-            tracing::error!(job_id = %id, %error, "could not record retried transcription history");
+            tracing::error!(job_id = %id, %error, "could not complete retried transcription");
         }
         if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
             self.cleanup_completed_audio(&result);
@@ -452,9 +453,9 @@ where
             .retry_delivery(id, &mut self.overlay, &mut self.deliverer)?;
         self.workflow = Workflow::new();
         if result.stage == JobStage::Delivered
-            && let Err(error) = self.runtime.record_delivered_session(id, &self.settings)
+            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
         {
-            tracing::error!(job_id = %id, %error, "could not record retried delivery history");
+            tracing::error!(job_id = %id, %error, "could not complete retried delivery");
         }
         if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
             self.cleanup_completed_audio(&result);

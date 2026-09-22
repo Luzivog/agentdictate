@@ -97,16 +97,15 @@ The Platform API key is stored unencrypted in
 The SQLite database and retained WAV files are also unencrypted. Local Unix
 permissions restrict their access.
 
-Once transcription succeeds, raw and final text, plus cleaned text when
-available, remain in durable job rows inside
+While a dictation is in progress, its text is kept in a job row in
 `$XDG_DATA_HOME/agentdictate/agentdictate.sqlite` (default
-`~/.local/share/agentdictate/agentdictate.sqlite`). The rows remain after
-successful shortcut submission or delivery failure. Deleting an item from
-Recovery removes its recording and marks the job deleted. It does not remove
-the transcript from SQLite. **Save history** controls additional History and
-usage rows, not the durable job rows. While it is off, those additional rows are
-skipped. If it is later enabled, restarting the daemon backfills them from
-submitted durable jobs. There is no in-app purge for the durable job rows.
+`~/.local/share/agentdictate/agentdictate.sqlite`). After the paste,
+AgentDictate deletes that row. It keeps the usage numbers (length, word count,
+model, and estimated cost, but no text) and, only when **Save history** is on,
+the transcript in History. Deleting a History item, or clearing History,
+removes it, and it stays deleted after a restart. A dictation that fails keeps
+its text and recording in Recovery until you retry or delete it. Deleting it
+from Recovery removes both.
 
 While the daemon runs, AgentDictate imports existing and new completed ChatGPT
 desktop dictation records that contain a duration and a nonblank transcript.
@@ -124,7 +123,8 @@ Recordings are created under `$XDG_DATA_HOME/agentdictate/recordings` (default
 `~/.local/share/agentdictate/recordings`). Audio is normally deleted after paste
 submission. Failed or interrupted recordings remain for recovery, and
 **Preserve temporary audio** also keeps recordings after successful shortcut
-submission.
+submission. Unless that setting is on, each daemon start also deletes leftover
+recordings that no dictation needs.
 
 Development, packaging, and local data paths are in the
 [installation and development guide](docs/INSTALL.md).
