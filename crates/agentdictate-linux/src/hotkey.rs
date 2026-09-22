@@ -26,6 +26,19 @@ pub const KEY_F8: KeyCode = 66;
 pub const KEY_F9: KeyCode = 67;
 pub const AGENTDICTATE_INJECTION_DEVICE_NAME: &str = "AgentDictate virtual keyboard";
 pub const YDOTOOL_INJECTION_DEVICE_NAME: &str = "ydotoold virtual device";
+/// Name of the uinput keyboard the native listener tests type on. It is
+/// ignored by discovery so a test run can never reach a running daemon.
+pub const AGENTDICTATE_TEST_DEVICE_NAME: &str = "AgentDictate hotkey test keyboard";
+
+/// Virtual keyboards the hotkey listener never reads: AgentDictate's own paste
+/// injector (current and legacy names), ydotool's injector, and the listener
+/// tests' keyboard. Injected keys must never trigger the hotkey.
+const IGNORED_KEYBOARD_NAMES: [&str; 4] = [
+    AGENTDICTATE_INJECTION_DEVICE_NAME,
+    "AgentDictate paste device",
+    YDOTOOL_INJECTION_DEVICE_NAME,
+    AGENTDICTATE_TEST_DEVICE_NAME,
+];
 
 pub type DeviceId = u64;
 
@@ -33,7 +46,8 @@ pub type DeviceId = u64;
 pub struct DeviceFacts {
     pub supports_hotkey: bool,
     /// Virtual origin is diagnostic data only. Accessibility and remoting
-    /// keyboards remain eligible unless their exact identity is self-injection.
+    /// keyboards remain eligible unless their exact name is ignored
+    /// (`IGNORED_KEYBOARD_NAMES`).
     pub is_virtual: bool,
 }
 
@@ -83,7 +97,7 @@ pub fn discover_keyboard_devices(
             .and_then(|name| name.strip_suffix('"'))
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if is_self_injection_keyboard(&name) {
+        if is_ignored_keyboard(&name) {
             continue;
         }
         let Some(handlers) = block
@@ -108,10 +122,10 @@ pub fn discover_keyboard_devices(
     devices.into_iter().collect()
 }
 
-fn is_self_injection_keyboard(name: &str) -> bool {
-    name.eq_ignore_ascii_case(YDOTOOL_INJECTION_DEVICE_NAME)
-        || name.eq_ignore_ascii_case(AGENTDICTATE_INJECTION_DEVICE_NAME)
-        || name.eq_ignore_ascii_case("AgentDictate paste device")
+fn is_ignored_keyboard(name: &str) -> bool {
+    IGNORED_KEYBOARD_NAMES
+        .iter()
+        .any(|ignored| name.eq_ignore_ascii_case(ignored))
 }
 
 fn is_event_handler(handler: &str) -> bool {
@@ -363,6 +377,18 @@ fn captured_key_code(key: &str) -> Option<KeyCode> {
         "f10" => 68,
         "f11" => 87,
         "f12" => 88,
+        "f13" => 183,
+        "f14" => 184,
+        "f15" => 185,
+        "f16" => 186,
+        "f17" => 187,
+        "f18" => 188,
+        "f19" => 189,
+        "f20" => 190,
+        "f21" => 191,
+        "f22" => 192,
+        "f23" => 193,
+        "f24" => 194,
         _ => return None,
     })
 }

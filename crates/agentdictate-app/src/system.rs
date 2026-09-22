@@ -479,6 +479,7 @@ mod tests {
     use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
     use std::{
         fs,
+        io::Write,
         os::unix::fs::PermissionsExt,
         sync::{Arc, Mutex},
         thread,
@@ -521,6 +522,12 @@ mod tests {
         reader
     }
 
+    /// Written straight to stderr because libtest hides `eprintln!` output of
+    /// passing tests.
+    fn skip(test: &str) {
+        let _ = writeln!(std::io::stderr(), "SKIPPED {test}: /dev/uinput is missing");
+    }
+
     fn injected_key_events(reader: &mut EvdevReader, expected: usize) -> Vec<(EvdevKeyCode, i32)> {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut events = Vec::new();
@@ -543,6 +550,7 @@ mod tests {
     #[test]
     fn successful_paste_command_is_reported_as_submitted() {
         if !std::path::Path::new("/dev/uinput").exists() {
+            skip("successful_paste_command_is_reported_as_submitted");
             return;
         }
         let mut injector = PasteInjector::new();
@@ -645,6 +653,7 @@ mod tests {
     #[test]
     fn automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste() {
         if !std::path::Path::new("/dev/uinput").exists() {
+            skip("automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste");
             return;
         }
         let mut injector = PasteInjector::new();

@@ -3,12 +3,12 @@ use super::events::{
     NativeHotkeySignalTrigger, ReconfigurationFailure,
 };
 use super::listener::{DiscoverDevices, NativeHotkeyListener};
-use crate::hotkey::{HotkeyListenerStatus, HotkeySignal};
+use crate::hotkey::{AGENTDICTATE_TEST_DEVICE_NAME, HotkeyListenerStatus, HotkeySignal};
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode, uinput::VirtualDevice};
 use std::{
-    io,
+    io::{self, Write},
     os::unix::net::UnixDatagram,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
@@ -16,10 +16,9 @@ use std::{
 
 #[test]
 fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
-    if !Path::new("/dev/uinput").exists() {
-        return;
-    }
-    let Ok((mut keyboard, path)) = virtual_keyboard() else {
+    let Some((mut keyboard, path)) =
+        test_keyboard_or_skip("native_listener_opens_polls_reads_and_reconnects_evdev_keyboards")
+    else {
         return;
     };
     let expected_path = path.clone();
@@ -31,11 +30,9 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
             .expect("discovery paths lock")
             .clone())
     });
-    let listener = NativeHotkeyListener::start_with_discovery(
-        "Ctrl+Space".parse().expect("valid hotkey"),
-        discover,
-    )
-    .expect("native listener starts");
+    let listener =
+        NativeHotkeyListener::start_with_discovery("F24".parse().expect("valid hotkey"), discover)
+            .expect("native listener starts");
 
     if !listener.readiness().is_ready() {
         receive_until(&listener, |event| {
@@ -45,7 +42,8 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
             )
         });
     }
-    emit_chord(&mut keyboard);
+    // Held down: the disconnect below must release it.
+    press_f24(&mut keyboard);
     let pressed = receive_until(
         &listener,
         |event| matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed),
@@ -54,11 +52,11 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
         unreachable!("the predicate accepts only a hotkey press")
     };
     assert_eq!(pressed.device.path, expected_path);
-    assert_eq!(pressed.device.name, "AgentDictate listener test");
+    assert_eq!(pressed.device.name, AGENTDICTATE_TEST_DEVICE_NAME);
     assert!(matches!(
         pressed.trigger,
         NativeHotkeySignalTrigger::Input(input)
-            if input.code == crate::hotkey::KEY_SPACE
+            if input.code == KeyCode::KEY_F24.code()
                 && input.state == crate::hotkey::KeyState::Pressed
     ));
 
@@ -95,7 +93,7 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
             NativeHotkeyEvent::Status(HotkeyListenerStatus::Ready { active_devices: 1 })
         )
     });
-    emit_chord(&mut replacement);
+    tap_f24(&mut replacement);
     assert!(matches!(
         receive_until(&listener, |event| {
             matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
@@ -106,35 +104,27 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
 
 #[test]
 fn cloneable_control_reconfigures_the_live_listener_without_a_polling_delay() {
-    if !Path::new("/dev/uinput").exists() {
-        return;
-    }
-    let Ok((mut keyboard, path)) = virtual_keyboard() else {
+    let Some((mut keyboard, path)) = test_keyboard_or_skip(
+        "cloneable_control_reconfigures_the_live_listener_without_a_polling_delay",
+    ) else {
         return;
     };
     let discovered = vec![path];
     let discover: Arc<DiscoverDevices> = Arc::new(move |_| Ok(discovered.clone()));
     let listener = NativeHotkeyListener::start_with_discovery(
-        "Ctrl+Space".parse().expect("valid initial hotkey"),
+        "Ctrl+F24".parse().expect("valid initial hotkey"),
         discover,
     )
     .expect("native listener starts");
     wait_until_ready(&listener);
 
-    keyboard
-        .emit(&[InputEvent::new(
-            EventType::KEY.0,
-            KeyCode::KEY_LEFTCTRL.code(),
-            1,
-        )])
-        .expect("partial old chord is emitted");
     let control = listener.control_handle().clone();
     assert!(matches!(
         control.reconfigure_text("Ctrl+Hyper"),
         Err(NativeHotkeyControlError::Parse(_))
     ));
     control
-        .reconfigure("F9".parse().expect("valid replacement hotkey"))
+        .reconfigure("F24".parse().expect("valid replacement hotkey"))
         .expect("reconfiguration is queued and wakes poll");
     receive_until(&listener, |event| {
         matches!(
@@ -143,9 +133,8 @@ fn cloneable_control_reconfigures_the_live_listener_without_a_polling_delay() {
         )
     });
 
-    keyboard
-        .emit(&[InputEvent::new(EventType::KEY.0, KeyCode::KEY_F9.code(), 1)])
-        .expect("new hotkey is emitted");
+    // F24 alone never matched the initial Ctrl+F24, so a press proves the swap.
+    tap_f24(&mut keyboard);
     assert!(matches!(
         receive_until(&listener, |event| {
             matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
@@ -156,20 +145,19 @@ fn cloneable_control_reconfigures_the_live_listener_without_a_polling_delay() {
 
 #[test]
 fn failed_reconfiguration_keeps_the_ready_hotkey_active() {
-    if !Path::new("/dev/uinput").exists() {
-        return;
-    }
-    let Ok((mut keyboard, path)) = virtual_keyboard() else {
+    let Some((mut keyboard, path)) =
+        test_keyboard_or_skip("failed_reconfiguration_keeps_the_ready_hotkey_active")
+    else {
         return;
     };
     let discover: Arc<DiscoverDevices> = Arc::new(move |spec| {
-        Ok((spec.display() == "Ctrl+Space")
+        Ok((spec.display() == "F24")
             .then(|| path.clone())
             .into_iter()
             .collect())
     });
     let listener = NativeHotkeyListener::start_with_discovery(
-        "Ctrl+Space".parse().expect("valid initial hotkey"),
+        "F24".parse().expect("valid initial hotkey"),
         discover,
     )
     .expect("native listener starts");
@@ -177,13 +165,13 @@ fn failed_reconfiguration_keeps_the_ready_hotkey_active() {
 
     let error = listener
         .control_handle()
-        .reconfigure_text("F9")
-        .expect_err("the caller learns that the live listener rejected F9");
+        .reconfigure_text("Ctrl+F24")
+        .expect_err("the caller learns that the live listener rejected Ctrl+F24");
     assert!(error.to_string().contains("no keyboard supports"));
     receive_until(&listener, |event| {
         matches!(
             event,
-            NativeHotkeyEvent::ReconfigurationRejected { hotkey, .. } if hotkey == "F9"
+            NativeHotkeyEvent::ReconfigurationRejected { hotkey, .. } if hotkey == "Ctrl+F24"
         )
     });
     assert_eq!(
@@ -196,7 +184,8 @@ fn failed_reconfiguration_keeps_the_ready_hotkey_active() {
         NativeHotkeyEvent::Status(HotkeyListenerStatus::Ready { active_devices: 1 })
     );
 
-    emit_chord(&mut keyboard);
+    // Only the kept F24 hotkey matches F24 alone; Ctrl+F24 would not.
+    tap_f24(&mut keyboard);
     assert!(matches!(
         receive_until(&listener, |event| {
             matches!(event, NativeHotkeyEvent::Signal(signal) if signal.signal == HotkeySignal::Pressed)
@@ -240,13 +229,29 @@ fn control_only_returns_success_after_the_worker_accepts_reconfiguration() {
     worker.join().unwrap();
 }
 
+/// Creates the test keyboard, or prints a visible skip when this environment
+/// has no usable /dev/uinput. Written straight to stderr because libtest hides
+/// `eprintln!` output of passing tests.
+fn test_keyboard_or_skip(test: &str) -> Option<(VirtualDevice, PathBuf)> {
+    virtual_keyboard()
+        .inspect_err(|error| {
+            let _ = writeln!(
+                io::stderr(),
+                "SKIPPED {test}: cannot create a uinput keyboard ({error})"
+            );
+        })
+        .ok()
+}
+
+/// The listener must read this keyboard, so it cannot be grabbed and its keys
+/// also reach the desktop. It stays harmless there: running daemons ignore its
+/// name (`AGENTDICTATE_TEST_DEVICE_NAME`), and its only key, F24, is bound by
+/// nothing (xkb maps F20–F23 to mic and touchpad toggles, so avoid those).
 fn virtual_keyboard() -> io::Result<(VirtualDevice, PathBuf)> {
     let mut keys = AttributeSet::<KeyCode>::new();
-    keys.insert(KeyCode::KEY_LEFTCTRL);
-    keys.insert(KeyCode::KEY_SPACE);
-    keys.insert(KeyCode::KEY_F9);
+    keys.insert(KeyCode::KEY_F24);
     let mut keyboard = VirtualDevice::builder()?
-        .name("AgentDictate listener test")
+        .name(AGENTDICTATE_TEST_DEVICE_NAME)
         .with_keys(&keys)?
         .build()?;
     let path = keyboard
@@ -257,13 +262,23 @@ fn virtual_keyboard() -> io::Result<(VirtualDevice, PathBuf)> {
     Ok((keyboard, path))
 }
 
-fn emit_chord(keyboard: &mut VirtualDevice) {
+fn press_f24(keyboard: &mut VirtualDevice) {
+    emit_f24(keyboard, 1);
+}
+
+fn tap_f24(keyboard: &mut VirtualDevice) {
+    emit_f24(keyboard, 1);
+    emit_f24(keyboard, 0);
+}
+
+fn emit_f24(keyboard: &mut VirtualDevice, value: i32) {
     keyboard
-        .emit(&[
-            InputEvent::new(EventType::KEY.0, KeyCode::KEY_LEFTCTRL.code(), 1),
-            InputEvent::new(EventType::KEY.0, KeyCode::KEY_SPACE.code(), 1),
-        ])
-        .expect("virtual chord is emitted");
+        .emit(&[InputEvent::new(
+            EventType::KEY.0,
+            KeyCode::KEY_F24.code(),
+            value,
+        )])
+        .expect("virtual F24 event is emitted");
 }
 
 fn wait_until_ready(listener: &NativeHotkeyListener) {

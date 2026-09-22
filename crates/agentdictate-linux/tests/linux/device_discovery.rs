@@ -43,10 +43,12 @@ fn unrelated_virtual_keyboard_is_allowed_when_it_supports_the_hotkey() {
 }
 
 #[test]
-fn agentdictate_self_injection_keyboard_is_excluded_by_identity() {
+fn agentdictate_own_virtual_keyboards_are_excluded_by_identity() {
     let proc_devices = concat!(
         "N: Name=\"AgentDictate virtual keyboard\"\n",
-        "H: Handlers=kbd event18\n",
+        "H: Handlers=kbd event18\n\n",
+        "N: Name=\"AgentDictate hotkey test keyboard\"\n",
+        "H: Handlers=kbd event19\n",
     );
 
     let devices = discover_keyboard_devices(proc_devices, |_| DeviceFacts {

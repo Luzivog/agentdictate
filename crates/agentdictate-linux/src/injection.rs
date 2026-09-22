@@ -227,7 +227,7 @@ fn emit_key(device: &mut VirtualDevice, key: KeyCode, value: i32) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::io::Write;
 
     use evdev::Device;
 
@@ -290,19 +290,28 @@ mod tests {
         assert_eq!(pressed.iter().count(), 0, "keys left pressed: {pressed:?}");
     }
 
-    fn test_injector() -> Option<PasteInjector> {
-        if !Path::new("/dev/uinput").exists() {
+    /// An injector whose device the test has grabbed, or a visible skip when
+    /// this environment has no usable /dev/uinput. Written straight to stderr
+    /// because libtest hides `eprintln!` output of passing tests.
+    fn grabbed_injector_or_skip(test: &str) -> Option<(PasteInjector, Device)> {
+        let mut injector = PasteInjector::new();
+        let Some(reader) = grabbed_reader(&mut injector) else {
+            let _ = writeln!(
+                io::stderr(),
+                "SKIPPED {test}: no grabbable uinput paste keyboard"
+            );
             return None;
-        }
-        let injector = PasteInjector::new();
-        injector.device.as_ref()?;
-        Some(injector)
+        };
+        Some((injector, reader))
     }
 
     #[test]
     fn universal_chord_pairs_every_press_with_a_release_in_reverse_order() {
-        let Some(mut injector) = test_injector() else { return };
-        let Some(mut reader) = grabbed_reader(&mut injector) else { return };
+        let Some((mut injector, mut reader)) = grabbed_injector_or_skip(
+            "universal_chord_pairs_every_press_with_a_release_in_reverse_order",
+        ) else {
+            return;
+        };
 
         injector
             .inject(PasteShortcut::Universal, Instant::now() + Duration::from_secs(5))
@@ -322,8 +331,11 @@ mod tests {
 
     #[test]
     fn terminal_chord_releases_modifiers_in_reverse_order() {
-        let Some(mut injector) = test_injector() else { return };
-        let Some(mut reader) = grabbed_reader(&mut injector) else { return };
+        let Some((mut injector, mut reader)) =
+            grabbed_injector_or_skip("terminal_chord_releases_modifiers_in_reverse_order")
+        else {
+            return;
+        };
 
         injector
             .inject(PasteShortcut::Terminal, Instant::now() + Duration::from_secs(5))
@@ -345,8 +357,11 @@ mod tests {
 
     #[test]
     fn expired_deadline_fails_before_any_key_is_pressed() {
-        let Some(mut injector) = test_injector() else { return };
-        let Some(mut reader) = grabbed_reader(&mut injector) else { return };
+        let Some((mut injector, mut reader)) =
+            grabbed_injector_or_skip("expired_deadline_fails_before_any_key_is_pressed")
+        else {
+            return;
+        };
 
         let result = injector.inject(
             PasteShortcut::Standard,
@@ -360,8 +375,11 @@ mod tests {
 
     #[test]
     fn injection_device_uses_the_hotkey_excluded_name() {
-        let Some(mut injector) = test_injector() else { return };
-        let Some(reader) = grabbed_reader(&mut injector) else { return };
+        let Some((_injector, reader)) =
+            grabbed_injector_or_skip("injection_device_uses_the_hotkey_excluded_name")
+        else {
+            return;
+        };
 
         assert_eq!(reader.name(), Some(AGENTDICTATE_INJECTION_DEVICE_NAME));
     }
