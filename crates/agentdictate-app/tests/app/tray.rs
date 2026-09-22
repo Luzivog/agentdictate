@@ -1,5 +1,5 @@
 use agentdictate_app::{TrayAction, tray_command_for_phase};
-use agentdictate_core::{ClientCommandKind, JobId, ProcessingStage, WorkflowPhase};
+use agentdictate_core::{ClientCommandKind, JobId, JobStage, ProcessingStage, WorkflowPhase};
 
 #[test]
 fn tray_toggle_maps_only_actionable_workflow_phases() {
@@ -38,6 +38,34 @@ fn tray_toggle_maps_only_actionable_workflow_phases() {
         .is_none(),
         "the tray must not queue a new recording while transcription is busy"
     );
+}
+
+#[test]
+fn tray_starts_a_new_dictation_while_an_earlier_one_waits_in_recovery() {
+    let needs_attention = WorkflowPhase::NeedsAttention {
+        job_id: JobId::new(),
+        at: JobStage::Failed,
+    };
+
+    let toggle = tray_command_for_phase(TrayAction::ToggleDictation, needs_attention, 10)
+        .expect("toggle starts recording");
+    let literal = tray_command_for_phase(TrayAction::StartLiteral, needs_attention, 11)
+        .expect("literal starts recording");
+
+    assert!(matches!(
+        toggle.kind,
+        ClientCommandKind::StartRecording {
+            request_id: 10,
+            mode: None
+        }
+    ));
+    assert!(matches!(
+        literal.kind,
+        ClientCommandKind::StartRecording {
+            request_id: 11,
+            mode: Some(agentdictate_core::DictationMode::Literal)
+        }
+    ));
 }
 
 #[test]
