@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use agentdictate_app::{HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason};
+use agentdictate_core::RecordingMode;
 use agentdictate_linux::{
     hotkey::{HotkeySignal, KEY_ESC, KEY_SPACE, KeyInput, KeyState},
     native_hotkey::{NativeHotkeyDevice, NativeHotkeySignal, NativeHotkeySignalTrigger},
@@ -31,8 +32,11 @@ fn toggle_start_rearms_at_the_dispatch_boundary() {
     let mut gate = HotkeyDispatchGate::default();
 
     assert!(
-        gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-            .is_ok()
+        gate.accept(
+            RecordingMode::Toggle,
+            &hotkey_event(HotkeySignal::Pressed, started_at)
+        )
+        .is_ok()
     );
     assert!(
         gate.complete(HotkeyActionOutcome::ToggleRecordingStarted, completed_at)
@@ -40,7 +44,7 @@ fn toggle_start_rearms_at_the_dispatch_boundary() {
     );
     assert_eq!(
         gate.accept(
-            "toggle",
+            RecordingMode::Toggle,
             &hotkey_event(
                 HotkeySignal::Released,
                 completed_at + Duration::from_millis(10),
@@ -50,7 +54,7 @@ fn toggle_start_rearms_at_the_dispatch_boundary() {
     );
     assert!(matches!(
         gate.accept(
-            "toggle",
+            RecordingMode::Toggle,
             &hotkey_event(
                 HotkeySignal::Pressed,
                 completed_at + Duration::from_millis(149),
@@ -60,7 +64,7 @@ fn toggle_start_rearms_at_the_dispatch_boundary() {
     ));
     assert!(
         gate.accept(
-            "toggle",
+            RecordingMode::Toggle,
             &hotkey_event(
                 HotkeySignal::Pressed,
                 completed_at + Duration::from_millis(150),
@@ -76,12 +80,15 @@ fn cancellation_replaces_one_queued_hold_release() {
     let mut gate = HotkeyDispatchGate::default();
 
     assert!(
-        gate.accept("hold", &hotkey_event(HotkeySignal::Pressed, started_at))
-            .is_ok()
+        gate.accept(
+            RecordingMode::Hold,
+            &hotkey_event(HotkeySignal::Pressed, started_at)
+        )
+        .is_ok()
     );
     assert_eq!(
         gate.accept(
-            "hold",
+            RecordingMode::Hold,
             &hotkey_event(
                 HotkeySignal::Released,
                 started_at + Duration::from_millis(20),
@@ -91,7 +98,7 @@ fn cancellation_replaces_one_queued_hold_release() {
     );
     assert_eq!(
         gate.accept(
-            "hold",
+            RecordingMode::Hold,
             &hotkey_event(
                 HotkeySignal::Cancelled,
                 started_at + Duration::from_millis(30),
@@ -101,7 +108,7 @@ fn cancellation_replaces_one_queued_hold_release() {
     );
     assert_eq!(
         gate.accept(
-            "hold",
+            RecordingMode::Hold,
             &hotkey_event(
                 HotkeySignal::Released,
                 started_at + Duration::from_millis(40),
@@ -134,8 +141,11 @@ fn idle_escape_is_dropped_unless_an_action_may_be_starting_a_recording() {
     assert!(gate.ignores_cancel(false));
     assert!(!gate.ignores_cancel(true));
 
-    gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, now))
-        .unwrap();
+    gate.accept(
+        RecordingMode::Toggle,
+        &hotkey_event(HotkeySignal::Pressed, now),
+    )
+    .unwrap();
     // The in-flight press may be starting a recording that Esc must cancel.
     assert!(!gate.ignores_cancel(false));
 

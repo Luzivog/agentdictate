@@ -74,7 +74,7 @@ pub struct Settings {
     pub dictation_mode: crate::DictationMode,
     pub streaming_enabled: bool,
     pub hotkey: String,
-    pub recording_mode: String,
+    pub recording_mode: RecordingMode,
     pub max_recording_seconds: u32,
     pub audio_ducking_enabled: bool,
     pub audio_ducking_volume_percent: u8,
@@ -84,7 +84,108 @@ pub struct Settings {
     pub show_tray_icon: bool,
     pub preserve_temp_audio: bool,
     pub save_history: bool,
-    pub paste_shortcut: String,
+    pub paste_shortcut: PasteShortcut,
+}
+
+impl Settings {
+    /// Rejects values that cannot work together. Loading config.json does
+    /// not validate, so a hand edit never stops the daemon from starting.
+    pub fn validate(&self) -> Result<(), SettingsError> {
+        if self.audio_ducking_volume_percent > 100 {
+            return Err(SettingsError::DuckedVolumeOutOfRange);
+        }
+        if self.transcription_provider == TranscriptionProvider::ChatGptSubscription
+            && self.language.contains(',')
+        {
+            return Err(SettingsError::SubscriptionTakesOneLanguage);
+        }
+        Ok(())
+    }
+}
+
+/// Why `Settings::validate` rejected a change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SettingsError {
+    #[error("Ducked volume must be between 0 and 100")]
+    DuckedVolumeOutOfRange,
+    #[error("The ChatGPT subscription accepts one language; choose one or automatic detection")]
+    SubscriptionTakesOneLanguage,
+    #[error("Recording mode must be toggle or hold")]
+    UnknownRecordingMode,
+    #[error("Paste shortcut must be automatic, standard, or terminal")]
+    UnknownPasteShortcut,
+}
+
+/// How the global shortcut records: press it once to start and again to
+/// stop, or hold it down while speaking.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingMode {
+    #[default]
+    #[serde(alias = "Toggle")]
+    Toggle,
+    #[serde(alias = "Hold")]
+    Hold,
+}
+
+impl RecordingMode {
+    /// The stored name, as config.json and the settings form spell it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::Hold => "hold",
+        }
+    }
+}
+
+impl std::str::FromStr for RecordingMode {
+    type Err = SettingsError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        [Self::Toggle, Self::Hold]
+            .into_iter()
+            .find(|mode| mode.as_str() == value)
+            .ok_or(SettingsError::UnknownRecordingMode)
+    }
+}
+
+/// The keys that paste a transcript. `Automatic` picks them per target
+/// app; the other two always send Ctrl+V or Ctrl+Shift+V. The aliases are
+/// the labels that older settings windows stored.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteShortcut {
+    #[default]
+    #[serde(alias = "Automatic")]
+    Automatic,
+    #[serde(alias = "Standard (Ctrl+V)", alias = "Ctrl+V")]
+    Standard,
+    #[serde(alias = "Terminal (Ctrl+Shift+V)", alias = "Ctrl+Shift+V")]
+    Terminal,
+}
+
+impl PasteShortcut {
+    /// The stored name, as config.json and the settings form spell it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Standard => "standard",
+            Self::Terminal => "terminal",
+        }
+    }
+}
+
+impl std::str::FromStr for PasteShortcut {
+    type Err = SettingsError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        [Self::Automatic, Self::Standard, Self::Terminal]
+            .into_iter()
+            .find(|shortcut| shortcut.as_str() == value)
+            .ok_or(SettingsError::UnknownPasteShortcut)
+    }
 }
 
 impl Default for Settings {
@@ -100,7 +201,7 @@ impl Default for Settings {
             dictation_mode: crate::DictationMode::Dictate,
             streaming_enabled: false,
             hotkey: "Ctrl+Space".into(),
-            recording_mode: "toggle".into(),
+            recording_mode: RecordingMode::Toggle,
             max_recording_seconds: 300,
             audio_ducking_enabled: true,
             audio_ducking_volume_percent: 15,
@@ -110,7 +211,7 @@ impl Default for Settings {
             show_tray_icon: true,
             preserve_temp_audio: false,
             save_history: true,
-            paste_shortcut: "Automatic".into(),
+            paste_shortcut: PasteShortcut::Automatic,
         }
     }
 }

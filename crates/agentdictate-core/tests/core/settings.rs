@@ -1,4 +1,7 @@
-use agentdictate_core::{Settings, SettingsSnapshot, TRANSCRIPTION_MODEL, TranscriptionProvider};
+use agentdictate_core::{
+    PasteShortcut, RecordingMode, Settings, SettingsError, SettingsSnapshot, TRANSCRIPTION_MODEL,
+    TranscriptionProvider,
+};
 
 #[test]
 fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
@@ -91,4 +94,61 @@ fn settings_sent_to_the_ui_never_include_the_api_key() {
         TranscriptionProvider::ChatGptSubscription
     );
     assert!(!wire.contains("sk-private-value"));
+}
+
+#[test]
+fn every_stored_recording_mode_and_paste_label_loads() {
+    let load = |mode: &str, paste: &str| {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "recording_mode": mode,
+            "paste_shortcut": paste,
+        }))
+        .unwrap();
+        (settings.recording_mode, settings.paste_shortcut)
+    };
+
+    assert_eq!(
+        load("toggle", "Automatic"),
+        (RecordingMode::Toggle, PasteShortcut::Automatic)
+    );
+    assert_eq!(
+        load("Hold", "Standard (Ctrl+V)"),
+        (RecordingMode::Hold, PasteShortcut::Standard)
+    );
+    assert_eq!(
+        load("hold", "Terminal (Ctrl+Shift+V)"),
+        (RecordingMode::Hold, PasteShortcut::Terminal)
+    );
+    let saved = serde_json::to_value(Settings {
+        recording_mode: RecordingMode::Hold,
+        paste_shortcut: PasteShortcut::Terminal,
+        ..Settings::default()
+    })
+    .unwrap();
+    assert_eq!(
+        load(
+            saved["recording_mode"].as_str().unwrap(),
+            saved["paste_shortcut"].as_str().unwrap()
+        ),
+        (RecordingMode::Hold, PasteShortcut::Terminal)
+    );
+}
+
+#[test]
+fn settings_that_cannot_work_together_are_rejected() {
+    assert_eq!(Settings::default().validate(), Ok(()));
+    let loud = Settings {
+        audio_ducking_volume_percent: 101,
+        ..Settings::default()
+    };
+    assert_eq!(loud.validate(), Err(SettingsError::DuckedVolumeOutOfRange));
+    let bilingual_subscription = Settings {
+        transcription_provider: TranscriptionProvider::ChatGptSubscription,
+        language: "en,fr".into(),
+        ..Settings::default()
+    };
+    assert_eq!(
+        bilingual_subscription.validate(),
+        Err(SettingsError::SubscriptionTakesOneLanguage)
+    );
 }

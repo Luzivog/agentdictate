@@ -1,14 +1,19 @@
 use agentdictate_app::command_for_hotkey;
-use agentdictate_core::{ClientCommandKind, JobId, WorkflowPhase};
+use agentdictate_core::{ClientCommandKind, JobId, RecordingMode, WorkflowPhase};
 use agentdictate_linux::hotkey::HotkeySignal;
 
 #[test]
 fn toggle_hotkey_starts_and_stops_only_on_press_edges() {
-    let start = command_for_hotkey("toggle", HotkeySignal::Pressed, WorkflowPhase::Ready, 1)
-        .expect("ready press should start");
+    let start = command_for_hotkey(
+        RecordingMode::Toggle,
+        HotkeySignal::Pressed,
+        WorkflowPhase::Ready,
+        1,
+    )
+    .expect("ready press should start");
     let job_id = JobId::new();
     let stop = command_for_hotkey(
-        "toggle",
+        RecordingMode::Toggle,
         HotkeySignal::Pressed,
         WorkflowPhase::Recording { job_id },
         2,
@@ -22,7 +27,7 @@ fn toggle_hotkey_starts_and_stops_only_on_press_edges() {
     assert!(matches!(stop.kind, ClientCommandKind::StopRecording { .. }));
     assert!(
         command_for_hotkey(
-            "toggle",
+            RecordingMode::Toggle,
             HotkeySignal::Released,
             WorkflowPhase::Recording { job_id },
             3,
@@ -35,14 +40,19 @@ fn toggle_hotkey_starts_and_stops_only_on_press_edges() {
 fn hold_and_escape_edges_never_create_duplicate_commands() {
     let job_id = JobId::new();
     assert!(matches!(
-        command_for_hotkey("hold", HotkeySignal::Pressed, WorkflowPhase::Ready, 1)
-            .unwrap()
-            .kind,
+        command_for_hotkey(
+            RecordingMode::Hold,
+            HotkeySignal::Pressed,
+            WorkflowPhase::Ready,
+            1
+        )
+        .unwrap()
+        .kind,
         ClientCommandKind::StartRecording { .. }
     ));
     assert!(matches!(
         command_for_hotkey(
-            "hold",
+            RecordingMode::Hold,
             HotkeySignal::Released,
             WorkflowPhase::Recording { job_id },
             2,
@@ -53,7 +63,7 @@ fn hold_and_escape_edges_never_create_duplicate_commands() {
     ));
     assert!(matches!(
         command_for_hotkey(
-            "toggle",
+            RecordingMode::Toggle,
             HotkeySignal::Cancelled,
             WorkflowPhase::Recording { job_id },
             3,
@@ -64,7 +74,7 @@ fn hold_and_escape_edges_never_create_duplicate_commands() {
     ));
     assert!(
         command_for_hotkey(
-            "hold",
+            RecordingMode::Hold,
             HotkeySignal::Pressed,
             WorkflowPhase::Recording { job_id },
             4,

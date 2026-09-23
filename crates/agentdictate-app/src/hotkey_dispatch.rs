@@ -9,8 +9,8 @@ use std::{
 };
 
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyReadiness, JobId, ServerMessageKind,
-    WorkflowPhase,
+    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyReadiness, JobId, RecordingMode,
+    ServerMessageKind, WorkflowPhase,
 };
 use agentdictate_linux::{
     hotkey::{HotkeyListenerStatus, HotkeySignal, HotkeySpec},
@@ -38,7 +38,7 @@ pub fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyh
                 }
             }
         })?;
-    let recording_mode = Arc::new(RwLock::new(process.recording_mode().to_owned()));
+    let recording_mode = Arc::new(RwLock::new(process.recording_mode()));
     let recording = process.recording_flag();
     process.set_recording_mode_control(Arc::clone(&recording_mode));
     process.set_hotkey_reconfigurer(Arc::new(SupervisedHotkeyControl {
@@ -195,7 +195,7 @@ fn schedule_environment_retry(generation: u64, events: std::sync::mpsc::Sender<D
 
 struct HotkeyDispatchLoop {
     runtime: std::path::PathBuf,
-    recording_mode: Arc<RwLock<String>>,
+    recording_mode: Arc<RwLock<RecordingMode>>,
     recording: Arc<AtomicBool>,
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
     incoming: std::sync::mpsc::Receiver<DispatchLoopEvent>,
@@ -232,18 +232,18 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 }
                 let mode = recording_mode
                     .read()
-                    .map_or_else(|_| "toggle".to_owned(), |mode| mode.clone());
-                match gate.accept(&mode, &event) {
+                    .map_or(RecordingMode::Toggle, |mode| *mode);
+                match gate.accept(mode, &event) {
                     Ok(()) => {
                         log_hotkey_decision(
                             event_generation,
-                            &mode,
+                            mode,
                             &event,
                             "dispatch",
                             "accepted",
                             None,
                         );
-                        spawn_hotkey_action(runtime, &mode, event, events.clone());
+                        spawn_hotkey_action(runtime, mode, event, events.clone());
                     }
                     Err(reason) => {
                         let disposition = if reason == HotkeyIgnoreReason::TerminalQueued {
@@ -253,7 +253,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                         };
                         log_hotkey_decision(
                             event_generation,
-                            &mode,
+                            mode,
                             &event,
                             disposition,
                             reason.label(),
@@ -331,8 +331,8 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 if let Some(event) = gate.complete(completion.outcome, completion.completed_at) {
                     let mode = recording_mode
                         .read()
-                        .map_or_else(|_| "toggle".to_owned(), |mode| mode.clone());
-                    spawn_hotkey_action(runtime, &mode, event, events.clone());
+                        .map_or(RecordingMode::Toggle, |mode| *mode);
+                    spawn_hotkey_action(runtime, mode, event, events.clone());
                 }
             }
             DispatchLoopEvent::ListenerClosed {
@@ -420,7 +420,7 @@ fn publish_hotkey_status(
 
 fn log_hotkey_decision(
     listener_generation: u64,
-    mode: &str,
+    mode: RecordingMode,
     event: &NativeHotkeySignal,
     disposition: &str,
     reason: &str,
@@ -433,7 +433,7 @@ fn log_hotkey_decision(
     };
     tracing::info!(
         listener_generation,
-        mode,
+        ?mode,
         signal = ?event.signal,
         disposition,
         reason,
@@ -524,13 +524,13 @@ pub struct HotkeyDispatchGate {
 impl HotkeyDispatchGate {
     pub fn accept(
         &mut self,
-        mode: &str,
+        mode: RecordingMode,
         event: &NativeHotkeySignal,
     ) -> Result<(), HotkeyIgnoreReason> {
-        if mode != "hold" && event.signal == HotkeySignal::Released {
+        if mode == RecordingMode::Toggle && event.signal == HotkeySignal::Released {
             return Err(HotkeyIgnoreReason::ToggleRelease);
         }
-        if mode != "hold"
+        if mode == RecordingMode::Toggle
             && event.signal == HotkeySignal::Pressed
             && let Some(rearm_at) = self.toggle_rearm_at
             && event.observed_at < rearm_at
@@ -545,7 +545,7 @@ impl HotkeyDispatchGate {
         }
         let should_queue_terminal = match event.signal {
             HotkeySignal::Cancelled => true,
-            HotkeySignal::Released if mode == "hold" => self
+            HotkeySignal::Released if mode == RecordingMode::Hold => self
                 .pending_terminal
                 .as_ref()
                 .is_none_or(|pending| pending.signal != HotkeySignal::Cancelled),
@@ -618,17 +618,16 @@ impl Drop for ActionCompletion {
 
 fn spawn_hotkey_action(
     runtime: &Path,
-    mode: &str,
+    mode: RecordingMode,
     event: NativeHotkeySignal,
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
 ) {
     let runtime = runtime.to_owned();
-    let mode = mode.to_owned();
     let completion = ActionCompletion::new(events);
     let spawned = std::thread::Builder::new()
         .name("agentdictate-hotkey-action".into())
         .spawn(move || {
-            completion.finish(match dispatch_hotkey(&runtime, &mode, &event) {
+            completion.finish(match dispatch_hotkey(&runtime, mode, &event) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     tracing::error!(
@@ -652,7 +651,7 @@ fn spawn_hotkey_action(
 
 fn dispatch_hotkey(
     runtime: &Path,
-    mode: &str,
+    mode: RecordingMode,
     event: &NativeHotkeySignal,
 ) -> anyhow::Result<HotkeyActionOutcome> {
     let (mut client, initial) = IpcClient::connect(runtime)?;
@@ -664,7 +663,7 @@ fn dispatch_hotkey(
     let Some(command) = command_for_hotkey(mode, event.signal, phase, request_id) else {
         tracing::info!(
             request_id,
-            mode,
+            ?mode,
             signal = ?event.signal,
             ?phase,
             device_id = event.device.id,
@@ -683,7 +682,7 @@ fn dispatch_hotkey(
     };
     tracing::info!(
         request_id,
-        mode,
+        ?mode,
         action,
         signal = ?event.signal,
         ?phase,
@@ -717,7 +716,7 @@ fn dispatch_hotkey(
                     settings.values.max_recording_seconds,
                 );
             }
-            mode != "hold" && recording_job.is_some()
+            mode == RecordingMode::Toggle && recording_job.is_some()
         }
         ServerMessageKind::Workspace { .. } | ServerMessageKind::HistoryPage { .. } => false,
     };
@@ -838,12 +837,15 @@ mod tests {
         let started_at = Instant::now();
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Toggle,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         assert!(matches!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Pressed,
                     started_at + Duration::from_millis(50)
@@ -866,8 +868,11 @@ mod tests {
         let completed_at = started_at + Duration::from_millis(100);
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Toggle,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         assert!(
             gate.complete(HotkeyActionOutcome::ToggleRecordingStarted, completed_at)
@@ -875,7 +880,7 @@ mod tests {
         );
         assert!(matches!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Released,
                     completed_at + Duration::from_millis(10)
@@ -885,7 +890,7 @@ mod tests {
         ));
         assert!(matches!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Pressed,
                     completed_at + Duration::from_millis(31)
@@ -895,7 +900,7 @@ mod tests {
         ));
         assert!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(HotkeySignal::Pressed, completed_at + TOGGLE_REARM_DELAY)
             )
             .is_ok()
@@ -908,14 +913,17 @@ mod tests {
         let completed_at = started_at + Duration::from_millis(100);
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Toggle,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         gate.complete(HotkeyActionOutcome::ToggleRecordingStarted, completed_at);
 
         assert!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Cancelled,
                     completed_at + Duration::from_millis(31)
@@ -931,12 +939,15 @@ mod tests {
         let completed_at = started_at + Duration::from_millis(100);
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Toggle,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         assert_eq!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Cancelled,
                     started_at + Duration::from_millis(50)
@@ -958,14 +969,17 @@ mod tests {
         let completed_at = started_at + Duration::from_millis(100);
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Toggle,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         gate.complete(HotkeyActionOutcome::Other, completed_at);
 
         assert!(
             gate.accept(
-                "toggle",
+                RecordingMode::Toggle,
                 &hotkey_event(
                     HotkeySignal::Pressed,
                     completed_at + Duration::from_millis(31)
@@ -980,12 +994,15 @@ mod tests {
         let started_at = Instant::now();
         let mut gate = HotkeyDispatchGate::default();
         assert!(
-            gate.accept("hold", &hotkey_event(HotkeySignal::Pressed, started_at))
-                .is_ok()
+            gate.accept(
+                RecordingMode::Hold,
+                &hotkey_event(HotkeySignal::Pressed, started_at)
+            )
+            .is_ok()
         );
         assert!(matches!(
             gate.accept(
-                "hold",
+                RecordingMode::Hold,
                 &hotkey_event(
                     HotkeySignal::Released,
                     started_at + Duration::from_millis(50)
@@ -995,7 +1012,7 @@ mod tests {
         ));
         assert!(matches!(
             gate.accept(
-                "hold",
+                RecordingMode::Hold,
                 &hotkey_event(
                     HotkeySignal::Released,
                     started_at + Duration::from_millis(60)

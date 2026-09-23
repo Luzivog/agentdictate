@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
-use agentdictate_core::{Settings, TranscriptionProvider};
+use agentdictate_core::{
+    PasteShortcut, RecordingMode, Settings, SettingsError, TranscriptionProvider,
+};
 use thiserror::Error;
 
 macro_rules! settings_fields {
@@ -29,15 +31,15 @@ macro_rules! settings_fields {
                     read: string,
                 },
                 recording_mode: String {
-                    from: cloned,
-                    apply: validate_field(validated_recording_mode),
+                    from: recording_mode_value,
+                    apply: validate_field(parsed_setting),
                     options: plain(recording_mode_options),
                     searchable: false,
                     read: string,
                 },
                 paste_shortcut: String {
-                    from: cloned,
-                    apply: validate_field(validated_paste_shortcut),
+                    from: paste_shortcut_value,
+                    apply: validate_field(parsed_setting),
                     options: plain(paste_shortcut_options),
                     searchable: false,
                     read: string,
@@ -241,8 +243,8 @@ pub enum SettingsDraftError {
     InvalidDictation(String),
     #[error("{0} cannot be blank")]
     Required(&'static str),
-    #[error("Recording mode must be toggle or hold")]
-    InvalidRecordingMode,
+    #[error(transparent)]
+    Invalid(#[from] SettingsError),
     #[error("{field} must be a whole number")]
     InvalidNumber { field: &'static str },
     #[error("Ducked volume must be between 0 and 100")]
@@ -269,13 +271,20 @@ fn validated_hotkey(value: &str) -> Result<String, SettingsDraftError> {
     required("Global shortcut", value)
 }
 
-fn validated_recording_mode(value: &str) -> Result<String, SettingsDraftError> {
-    let recording_mode = value.trim().to_ascii_lowercase();
-    if matches!(recording_mode.as_str(), "toggle" | "hold") {
-        Ok(recording_mode)
-    } else {
-        Err(SettingsDraftError::InvalidRecordingMode)
-    }
+fn recording_mode_value(mode: &RecordingMode) -> String {
+    mode.as_str().to_owned()
+}
+
+fn paste_shortcut_value(shortcut: &PasteShortcut) -> String {
+    shortcut.as_str().to_owned()
+}
+
+/// Reads a choice the form stores by its settings name.
+fn parsed_setting<T>(value: &str) -> Result<T, SettingsDraftError>
+where
+    T: std::str::FromStr<Err = SettingsError>,
+{
+    value.trim().parse().map_err(SettingsDraftError::Invalid)
 }
 
 fn parsed_max_recording_seconds(value: &str) -> Result<u32, SettingsDraftError> {
@@ -297,10 +306,6 @@ fn parsed_ducking_fade_out_ms(value: &str) -> Result<u32, SettingsDraftError> {
 
 fn parsed_ducking_fade_in_ms(value: &str) -> Result<u32, SettingsDraftError> {
     parse_number("Fade in", value)
-}
-
-fn validated_paste_shortcut(value: &str) -> Result<String, SettingsDraftError> {
-    required("Paste shortcut", value)
 }
 
 fn required(field: &'static str, value: &str) -> Result<String, SettingsDraftError> {

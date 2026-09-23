@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
-    WorkflowPhase,
+    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, RecordingMode,
+    ServerMessage, Settings, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -40,7 +40,7 @@ pub struct AgentProcess {
     history_index_maintenance: HistoryIndexMaintenance,
     recording_priority: Option<RecordingPriorityGuard>,
     hotkey_control: Option<Arc<dyn HotkeyReconfigurer>>,
-    recording_mode_control: Option<Arc<RwLock<String>>>,
+    recording_mode_control: Option<Arc<RwLock<RecordingMode>>>,
     should_quit: bool,
 }
 
@@ -60,7 +60,7 @@ impl AgentProcess {
             &paths.runtime,
             &paths.ducking_state_file,
         );
-        let deliverer = SystemDeliverer::for_environment(&settings.paste_shortcut);
+        let deliverer = SystemDeliverer::for_environment(settings.paste_shortcut);
         let history_index_maintenance = HistoryIndexMaintenance::new();
         Ok(Self {
             daemon: Daemon::new(
@@ -97,8 +97,8 @@ impl AgentProcess {
     }
 
     #[must_use]
-    pub fn recording_mode(&self) -> &str {
-        &self.daemon.settings().recording_mode
+    pub const fn recording_mode(&self) -> RecordingMode {
+        self.daemon.settings().recording_mode
     }
 
     #[must_use]
@@ -124,7 +124,7 @@ impl AgentProcess {
         self.hotkey_control = Some(control);
     }
 
-    pub fn set_recording_mode_control(&mut self, recording_mode: Arc<RwLock<String>>) {
+    pub fn set_recording_mode_control(&mut self, recording_mode: Arc<RwLock<RecordingMode>>) {
         self.recording_mode_control = Some(recording_mode);
     }
 
@@ -183,6 +183,7 @@ impl AgentProcess {
     }
 
     fn update_settings(&mut self, mut settings: Settings) -> anyhow::Result<()> {
+        settings.validate()?;
         let start_on_login_changed =
             settings.start_on_login != self.daemon.settings().start_on_login;
         let hotkey_changed = settings.hotkey != self.daemon.settings().hotkey;
@@ -244,13 +245,13 @@ impl AgentProcess {
         self.daemon.recorder_mut().update_settings(&settings);
         self.daemon
             .deliverer_mut()
-            .update_shortcut(&settings.paste_shortcut);
+            .update_shortcut(settings.paste_shortcut);
         self.daemon.update_settings(settings);
         if recording_mode_changed && let Some(mode) = &self.recording_mode_control {
             *mode
                 .write()
                 .map_err(|_| anyhow::anyhow!("recording-mode control is unavailable"))? =
-                self.daemon.settings().recording_mode.clone();
+                self.daemon.settings().recording_mode;
         }
         Ok(())
     }
@@ -508,7 +509,7 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
 /// The native listener owns repeat suppression; the daemon dispatcher owns toggle rearming.
 #[must_use]
 pub fn command_for_hotkey(
-    mode: &str,
+    mode: RecordingMode,
     signal: HotkeySignal,
     phase: WorkflowPhase,
     request_id: u64,
@@ -520,19 +521,20 @@ pub fn command_for_hotkey(
     match (mode, signal) {
         (_, HotkeySignal::Cancelled) if is_recording => Some(ClientCommand::cancel(request_id)),
         (_, HotkeySignal::Cancelled) => None,
-        (_, HotkeySignal::Released) if mode != "hold" => None,
-        ("hold", HotkeySignal::Pressed) if !is_recording => {
+        (RecordingMode::Hold, HotkeySignal::Pressed) if !is_recording => {
             Some(ClientCommand::start_recording(request_id))
         }
-        ("hold", HotkeySignal::Released) if is_recording => {
+        (RecordingMode::Hold, HotkeySignal::Released) if is_recording => {
             Some(ClientCommand::stop_recording(request_id))
         }
-        ("hold", _) => None,
-        (_, HotkeySignal::Pressed) if is_recording => {
+        (RecordingMode::Hold, _) => None,
+        (RecordingMode::Toggle, HotkeySignal::Pressed) if is_recording => {
             Some(ClientCommand::stop_recording(request_id))
         }
-        (_, HotkeySignal::Pressed) => Some(ClientCommand::start_recording(request_id)),
-        (_, HotkeySignal::Released) => None,
+        (RecordingMode::Toggle, HotkeySignal::Pressed) => {
+            Some(ClientCommand::start_recording(request_id))
+        }
+        (RecordingMode::Toggle, HotkeySignal::Released) => None,
     }
 }
 
@@ -645,6 +647,31 @@ mod tests {
         assert_eq!(
             control.attempts.lock().unwrap().as_slice(),
             ["F9", "Ctrl+Space"]
+        );
+    }
+
+    #[test]
+    fn invalid_settings_are_rejected_without_being_saved() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let changed = Settings {
+            audio_ducking_volume_percent: 150,
+            ..Settings::default()
+        };
+
+        let response = process.handle(ClientCommand::update_settings(6, &changed));
+
+        assert!(matches!(
+            response.kind,
+            ServerMessageKind::CommandRejected { ref error, .. }
+                if error.contains("Ducked volume")
+        ));
+        assert_eq!(
+            load_settings(&paths.config_file)
+                .unwrap()
+                .audio_ducking_volume_percent,
+            15
         );
     }
 

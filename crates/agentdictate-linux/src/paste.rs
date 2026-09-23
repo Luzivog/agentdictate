@@ -100,6 +100,16 @@ pub enum ShortcutMode {
     Terminal,
 }
 
+impl From<agentdictate_core::PasteShortcut> for ShortcutMode {
+    fn from(setting: agentdictate_core::PasteShortcut) -> Self {
+        match setting {
+            agentdictate_core::PasteShortcut::Automatic => Self::Auto,
+            agentdictate_core::PasteShortcut::Standard => Self::Standard,
+            agentdictate_core::PasteShortcut::Terminal => Self::Terminal,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteShortcut {
     Universal,

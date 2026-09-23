@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 use agentdictate_core::TranscriptionProvider;
-use agentdictate_core::{ClientCommand, JobId, ServerMessageKind, Settings};
+use agentdictate_core::{ClientCommand, JobId, PasteShortcut, ServerMessageKind, Settings};
 use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
     clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
@@ -339,21 +339,21 @@ pub struct SystemDeliverer {
 
 impl SystemDeliverer {
     #[must_use]
-    pub fn for_environment(paste_shortcut: &str) -> Self {
+    pub fn for_environment(paste_shortcut: PasteShortcut) -> Self {
         let runner = SystemCommandRunner;
         Self {
             clipboard: CommandClipboard::for_system(runner),
             focus: observe_x11_focus,
             injector: PasteInjector::new(),
-            shortcut_mode: shortcut_mode(paste_shortcut),
+            shortcut_mode: paste_shortcut.into(),
             wayland_session: std::env::var("XDG_SESSION_TYPE")
                 .is_ok_and(|session| session.eq_ignore_ascii_case("wayland")),
             active_publications: Vec::new(),
         }
     }
 
-    pub fn update_shortcut(&mut self, paste_shortcut: &str) {
-        self.shortcut_mode = shortcut_mode(paste_shortcut);
+    pub fn update_shortcut(&mut self, paste_shortcut: PasteShortcut) {
+        self.shortcut_mode = paste_shortcut.into();
     }
 
     fn observe_focus(
@@ -544,17 +544,6 @@ impl Deliverer for SystemDeliverer {
                 },
             },
         })
-    }
-}
-
-fn shortcut_mode(paste_shortcut: &str) -> ShortcutMode {
-    let shortcut = paste_shortcut.to_ascii_lowercase();
-    if shortcut.starts_with("terminal") || shortcut == "ctrl+shift+v" {
-        ShortcutMode::Terminal
-    } else if shortcut.starts_with("standard") || shortcut == "ctrl+v" {
-        ShortcutMode::Standard
-    } else {
-        ShortcutMode::Auto
     }
 }
 

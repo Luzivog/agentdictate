@@ -1,6 +1,8 @@
 //! Settings draft contracts.
 
-use agentdictate_core::{Settings, TranscriptionProvider};
+use agentdictate_core::{
+    PasteShortcut, RecordingMode, Settings, SettingsError, TranscriptionProvider,
+};
 use agentdictate_ui::{SettingsDraft, SettingsDraftError};
 
 #[test]
@@ -21,7 +23,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     draft.audio_ducking_volume_percent = "25".to_owned();
     draft.audio_ducking_fade_out_ms = "450".to_owned();
     draft.audio_ducking_fade_in_ms = "725".to_owned();
-    draft.paste_shortcut = "Ctrl+Shift+V".to_owned();
+    draft.paste_shortcut = "terminal".to_owned();
     draft.start_on_login = false;
     draft.save_history = true;
     draft.preserve_temp_audio = true;
@@ -35,13 +37,13 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
     assert_eq!(updated.hotkey, "Alt+Space");
-    assert_eq!(updated.recording_mode, "hold");
+    assert_eq!(updated.recording_mode, RecordingMode::Hold);
     assert_eq!(updated.max_recording_seconds, 420);
     assert!(!updated.audio_ducking_enabled);
     assert_eq!(updated.audio_ducking_volume_percent, 25);
     assert_eq!(updated.audio_ducking_fade_out_ms, 450);
     assert_eq!(updated.audio_ducking_fade_in_ms, 725);
-    assert_eq!(updated.paste_shortcut, "Ctrl+Shift+V");
+    assert_eq!(updated.paste_shortcut, PasteShortcut::Terminal);
     assert!(!updated.start_on_login);
     assert!(updated.save_history);
     assert!(updated.preserve_temp_audio);
@@ -83,7 +85,9 @@ fn settings_draft_rejects_invalid_modes_and_out_of_range_volume() {
     draft.recording_mode = "sometimes".to_owned();
     assert_eq!(
         draft.apply_to(&original),
-        Err(SettingsDraftError::InvalidRecordingMode)
+        Err(SettingsDraftError::Invalid(
+            SettingsError::UnknownRecordingMode
+        ))
     );
 
     draft.recording_mode = "toggle".to_owned();

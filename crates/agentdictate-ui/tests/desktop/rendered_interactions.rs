@@ -1175,7 +1175,7 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
         &commands[0].kind,
         ClientCommandKind::UpdateSettings { settings, .. }
             if settings.hotkey == "Ctrl+Space"
-                && settings.recording_mode == "toggle"
+                && settings.recording_mode == agentdictate_core::RecordingMode::Toggle
                 && settings.max_recording_seconds == 300
                 && settings.audio_ducking_fade_out_ms == 600
                 && settings.audio_ducking_fade_in_ms == 600
