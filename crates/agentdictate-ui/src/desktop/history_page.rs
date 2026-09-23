@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use agentdictate_core::HISTORY_CONTINUATION_PAGE_SIZE;
 use gpui::{Context, Entity, SharedString, prelude::*, px};
 use gpui_component::{
-    Sizable, h_flex,
+    Sizable,
+    button::Button,
+    h_flex,
     input::{Input, InputState},
     v_flex,
 };
@@ -19,6 +21,7 @@ use super::{
     row_actions::{copy_button, delete_button},
     shell_render::workspace_feedback,
     single_line::single_line_clip,
+    words_actions::FixWordForm,
 };
 
 const RECOVERY_ROW_HEIGHT: f32 = 58.0;
@@ -31,6 +34,9 @@ pub(super) struct HistoryPageModel {
     pub(super) pending_destructive_action: Option<WorkspaceAction>,
     pub(super) expanded_transcripts: HashSet<i64>,
     pub(super) copied_transcript: Option<i64>,
+    pub(super) fix_word: Option<FixWordForm>,
+    /// The transcript whose "Fix a word" just added to Words.
+    pub(super) added_to_words: Option<i64>,
 }
 
 /// Renders recovery and transcript history as one dense, flat document.
@@ -49,6 +55,8 @@ pub(super) fn surface(
         pending_destructive_action,
         expanded_transcripts,
         copied_transcript,
+        fix_word,
+        added_to_words,
     } = model;
     let has_recoveries = history.recovery.has_items();
     let recovery_detail = history.recovery.detail.clone();
@@ -144,12 +152,16 @@ pub(super) fn surface(
                     )
                 })
                 .children(transcripts.into_iter().map(|transcript| {
-                    let expanded = expanded_transcripts.contains(&transcript.id);
-                    let copied = copied_transcript == Some(transcript.id);
+                    let id = transcript.id;
+                    let state = TranscriptRowState {
+                        expanded: expanded_transcripts.contains(&id),
+                        copied: copied_transcript == Some(id),
+                        added_to_words: added_to_words == Some(id),
+                        fix_word: fix_word.clone().filter(|form| form.transcript_id == id),
+                    };
                     transcript_row(
                         transcript,
-                        expanded,
-                        copied,
+                        state,
                         pending_destructive_action.as_ref(),
                         theme,
                         cx,
@@ -312,16 +324,31 @@ fn recovery_row(
         )
 }
 
-/// One transcript. Clicking its text expands the row to the whole, wrapped
-/// transcript, and clicking again collapses it to one line.
-fn transcript_row(
-    transcript: TranscriptViewModel,
+/// What a transcript row shows besides the transcript itself.
+struct TranscriptRowState {
     expanded: bool,
     copied: bool,
+    added_to_words: bool,
+    /// The row's open "Fix a word" editor, shown while it is expanded.
+    fix_word: Option<FixWordForm>,
+}
+
+/// One transcript. Clicking its text expands the row to the whole, wrapped
+/// transcript and offers "Fix a word"; clicking again collapses it to one line.
+fn transcript_row(
+    transcript: TranscriptViewModel,
+    state: TranscriptRowState,
     pending_destructive_action: Option<&WorkspaceAction>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
+    let TranscriptRowState {
+        expanded,
+        copied,
+        added_to_words,
+        fix_word,
+    } = state;
+    let fix_word = fix_word.filter(|_| expanded);
     let id = transcript.id;
     let row_selector = format!("history-transcript-item-{id}");
     let toggle_selector = format!("history-transcript-toggle-{id}");
@@ -339,49 +366,170 @@ fn transcript_row(
     } else {
         single_line_clip(format!("history-transcript-title-{id}"), transcript.preview).text_sm()
     };
+    let offers_fix_word = expanded && fix_word.is_none();
 
-    h_flex()
+    v_flex()
         .debug_selector(move || row_selector)
         .w_full()
-        .map(|row| {
-            if expanded {
-                row.min_h(px(TRANSCRIPT_ROW_HEIGHT)).items_start().py_2()
-            } else {
-                row.h(px(TRANSCRIPT_ROW_HEIGHT))
-            }
-        })
         .min_w_0()
-        .justify_between()
         .border_b_1()
         .border_color(gpui_color(theme.border))
         .px_1()
-        .gap_4()
-        .child(
-            v_flex()
-                .id(SharedString::from(toggle_selector.clone()))
-                .debug_selector(move || toggle_selector)
-                .min_w_0()
-                .flex_auto()
-                .gap_1()
-                .cursor_pointer()
-                .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_transcript(id, cx)))
-                .child(text)
-                .child(
-                    single_line_clip(metadata_selector, metadata)
-                        .text_xs()
-                        .text_color(gpui_color(theme.text_muted)),
-                ),
-        )
         .child(
             h_flex()
-                .flex_none()
-                .gap_1()
-                .child(copy_button(id, copied, cx))
-                .child(delete_button(
-                    WorkspaceAction::DeleteTranscript { id },
-                    "Delete",
-                    pending_destructive_action,
-                    cx,
-                )),
+                .w_full()
+                .map(|row| {
+                    if expanded {
+                        row.min_h(px(TRANSCRIPT_ROW_HEIGHT)).items_start().py_2()
+                    } else {
+                        row.h(px(TRANSCRIPT_ROW_HEIGHT))
+                    }
+                })
+                .min_w_0()
+                .justify_between()
+                .gap_4()
+                .child(
+                    v_flex()
+                        .id(SharedString::from(toggle_selector.clone()))
+                        .debug_selector(move || toggle_selector)
+                        .min_w_0()
+                        .flex_auto()
+                        .gap_1()
+                        .cursor_pointer()
+                        .on_click(
+                            cx.listener(move |shell, _, _, cx| shell.toggle_transcript(id, cx)),
+                        )
+                        .child(text)
+                        .child(
+                            single_line_clip(metadata_selector, metadata)
+                                .text_xs()
+                                .text_color(gpui_color(theme.text_muted)),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .when(offers_fix_word, |actions| {
+                            actions.child(fix_word_button(id, added_to_words, cx))
+                        })
+                        .child(copy_button(id, copied, cx))
+                        .child(delete_button(
+                            WorkspaceAction::DeleteTranscript { id },
+                            "Delete",
+                            pending_destructive_action,
+                            cx,
+                        )),
+                ),
+        )
+        .when_some(fix_word, |row, form| {
+            row.child(fix_word_editor(form, theme, cx))
+        })
+}
+
+/// Opens "Fix a word". It reads "Added to Words ✓" while `added`, and its
+/// selector gains an `added-` prefix so rendered tests can see that state.
+fn fix_word_button(id: i64, added: bool, cx: &mut Context<SettingsShell>) -> Button {
+    let selector = format!("history-fix-word-{id}");
+    let rendered_selector = if added {
+        format!("added-{selector}")
+    } else {
+        selector.clone()
+    };
+    action_button(SharedString::from(selector))
+        .debug_selector(move || rendered_selector)
+        .small()
+        .label(if added {
+            "Added to Words ✓"
+        } else {
+            "Fix a word"
+        })
+        .on_click(cx.listener(move |shell, _, window, cx| {
+            shell.open_fix_word(id, window, cx);
+        }))
+}
+
+/// Teaches Words a correction: what AgentDictate heard, and how it should be
+/// spelled. Add to Words (or Enter) saves it; Cancel closes the editor.
+fn fix_word_editor(
+    form: FixWordForm,
+    theme: ThemeTokens,
+    cx: &mut Context<SettingsShell>,
+) -> gpui::Div {
+    let id = form.transcript_id;
+    v_flex()
+        .debug_selector(move || format!("history-fix-word-editor-{id}"))
+        .w_full()
+        .min_w_0()
+        .pb_3()
+        .gap_1()
+        .child(
+            h_flex()
+                .w_full()
+                .min_w_0()
+                .items_end()
+                .gap_2()
+                .child(labeled_input(
+                    "Heard",
+                    "history-fix-word-heard",
+                    &form.heard,
+                    theme,
+                ))
+                .child(labeled_input(
+                    "Should be",
+                    "history-fix-word-spelling",
+                    &form.spelling,
+                    theme,
+                ))
+                .child(
+                    action_button("history-fix-word-save")
+                        .debug_selector(|| "history-fix-word-save".to_owned())
+                        .flex_none()
+                        .small()
+                        .label("Add to Words")
+                        .on_click(cx.listener(|shell, _, window, cx| {
+                            shell.save_fix_word(window, cx);
+                        })),
+                )
+                .child(
+                    action_button("history-fix-word-cancel")
+                        .debug_selector(|| "history-fix-word-cancel".to_owned())
+                        .flex_none()
+                        .small()
+                        .label("Cancel")
+                        .on_click(cx.listener(|shell, _, _, cx| shell.close_fix_word(cx))),
+                ),
+        )
+        .when_some(form.error, |editor, error| {
+            editor.child(
+                gpui::div()
+                    .debug_selector(|| "history-fix-word-error".to_owned())
+                    .text_xs()
+                    .text_color(gpui_color(theme.danger))
+                    .child(error),
+            )
+        })
+}
+
+fn labeled_input(
+    label: &'static str,
+    selector: &'static str,
+    input: &Entity<InputState>,
+    theme: ThemeTokens,
+) -> gpui::Div {
+    v_flex()
+        .min_w_0()
+        .flex_1()
+        .gap_1()
+        .child(
+            gpui::div()
+                .text_xs()
+                .text_color(gpui_color(theme.text_muted))
+                .child(label),
+        )
+        .child(
+            gpui::div()
+                .debug_selector(move || selector.to_owned())
+                .child(Input::new(input).small()),
         )
 }

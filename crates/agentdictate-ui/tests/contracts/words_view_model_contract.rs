@@ -1,7 +1,7 @@
 //! Words screen edit contracts.
 
 use agentdictate_core::{VocabularyEntry, VocabularyError};
-use agentdictate_ui::{WordRowViewModel, WordsEdit, word_rows};
+use agentdictate_ui::{WordRowViewModel, WordsEdit, WordsError, word_rows};
 
 fn word(spelling: &str, aliases: &[&str]) -> VocabularyEntry {
     VocabularyEntry {
@@ -66,12 +66,20 @@ fn edits_are_refused_for_blank_or_duplicate_spellings_and_self_aliases() {
         .apply(&vocabulary())
     };
 
-    assert_eq!(add("  ", "lead"), Err(VocabularyError::BlankSpelling));
+    assert_eq!(
+        add("  ", "lead"),
+        Err(WordsError::Invalid(VocabularyError::BlankSpelling))
+    );
     assert_eq!(
         add("leadlord", ""),
-        Err(VocabularyError::DuplicateSpelling("leadlord".to_owned()))
+        Err(WordsError::Invalid(VocabularyError::DuplicateSpelling(
+            "leadlord".to_owned()
+        )))
     );
-    assert_eq!(add("Codex", "Codex"), Err(VocabularyError::AliasIsSpelling));
+    assert_eq!(
+        add("Codex", "Codex"),
+        Err(WordsError::Invalid(VocabularyError::AliasIsSpelling))
+    );
     assert_eq!(
         add("Leadlords", "lead lord").map_err(|error| error.to_string()),
         Err("“lead lord” is already listed under Sounds like".to_owned())
@@ -85,6 +93,36 @@ fn edits_are_refused_for_blank_or_duplicate_spellings_and_self_aliases() {
         }
         .apply(&vocabulary())
         .is_ok()
+    );
+}
+
+#[test]
+fn fixing_a_word_adds_the_heard_phrase_to_an_existing_spelling_or_a_new_word() {
+    let fix = |heard: &str, spelling: &str| {
+        WordsEdit::FixWord {
+            heard: heard.to_owned(),
+            spelling: spelling.to_owned(),
+        }
+        .apply(&vocabulary())
+    };
+
+    // An existing spelling, matched ignoring case, keeps its own casing.
+    assert_eq!(
+        fix(" lead load ", "leadlord").unwrap()[0],
+        word("Leadlord", &["lead lord", "lead load"])
+    );
+    // A phrase it already sounds like is not added twice.
+    assert_eq!(fix("Lead Lord", "Leadlord").unwrap(), vocabulary());
+    assert_eq!(
+        fix("codecs", "Codex").unwrap().last(),
+        Some(&word("Codex", &["codecs"]))
+    );
+    assert_eq!(fix("  ", "Codex"), Err(WordsError::BlankHeard));
+    assert_eq!(
+        fix("lead lord", "Codex"),
+        Err(WordsError::Invalid(VocabularyError::DuplicateAlias(
+            "lead lord".to_owned()
+        )))
     );
 }
 

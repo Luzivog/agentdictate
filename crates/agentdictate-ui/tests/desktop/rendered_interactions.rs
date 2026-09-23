@@ -1522,3 +1522,45 @@ fn a_words_change_leaves_unsaved_settings_for_settings_to_save(cx: &mut TestAppC
                 && settings.streaming_enabled != Settings::default().streaming_enabled
     ));
 }
+
+#[gpui::test]
+fn fix_a_word_in_an_expanded_transcript_adds_what_was_heard_to_words(cx: &mut TestAppContext) {
+    let model = ShellViewModel::from_snapshot(
+        Route::History,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    )
+    .with_workspace(WorkspaceViewModel {
+        history: history(
+            Vec::new(),
+            vec![TranscriptViewModel::new(
+                41,
+                "Today 14:18",
+                "We shipped lead lord today.",
+                5,
+                "0:04",
+            )],
+        ),
+        ..WorkspaceViewModel::default()
+    });
+    let (mut harness, commands) = open_with_vocabulary(cx, model, "Leadlord\nClaude Code");
+    assert!(!harness.has("history-fix-word-41"));
+
+    harness.click("history-transcript-toggle-41");
+    harness.click("history-fix-word-41");
+    harness.click("history-fix-word-save");
+    assert!(harness.has("history-fix-word-error"));
+    assert!(saved_vocabularies(&commands).is_empty());
+
+    harness.type_text("history-fix-word-heard", "lead lord");
+    harness.type_text("history-fix-word-spelling", "Leadlord");
+    harness.click("history-fix-word-save");
+
+    assert_eq!(
+        saved_vocabularies(&commands),
+        [parse_vocabulary("Leadlord = lead lord\nClaude Code").unwrap()]
+    );
+    assert!(!harness.has("history-fix-word-editor-41"));
+    assert!(harness.has("added-history-fix-word-41"));
+}

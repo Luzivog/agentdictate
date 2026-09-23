@@ -2,9 +2,10 @@
 //! edits that change them. Core's `validate_vocabulary` decides what is valid.
 
 use agentdictate_core::{VocabularyEntry, VocabularyError, validate_vocabulary};
+use thiserror::Error;
 
-/// One change to the vocabulary from the Words screen. `sounds_like` fields
-/// hold comma-separated aliases.
+/// One change to the vocabulary, from the Words screen or from "Fix a word"
+/// in History. `sounds_like` fields hold comma-separated aliases.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WordsEdit {
     Add {
@@ -20,6 +21,21 @@ pub enum WordsEdit {
     Delete {
         index: usize,
     },
+    /// Teaches that `heard` should be written `spelling`: adds `heard` to that
+    /// word's Sounds like, or adds the word when it is new.
+    FixWord {
+        heard: String,
+        spelling: String,
+    },
+}
+
+/// Why a Words edit was refused.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum WordsError {
+    #[error("Type what AgentDictate heard")]
+    BlankHeard,
+    #[error(transparent)]
+    Invalid(#[from] VocabularyError),
 }
 
 impl WordsEdit {
@@ -28,7 +44,7 @@ impl WordsEdit {
     pub fn apply(
         &self,
         vocabulary: &[VocabularyEntry],
-    ) -> Result<Vec<VocabularyEntry>, VocabularyError> {
+    ) -> Result<Vec<VocabularyEntry>, WordsError> {
         let mut next = vocabulary.to_vec();
         match self {
             Self::Add {
@@ -47,6 +63,30 @@ impl WordsEdit {
             Self::Delete { index } => {
                 if *index < next.len() {
                     next.remove(*index);
+                }
+            }
+            Self::FixWord { heard, spelling } => {
+                let (heard, spelling) = (heard.trim(), spelling.trim());
+                if heard.is_empty() {
+                    return Err(WordsError::BlankHeard);
+                }
+                match next
+                    .iter_mut()
+                    .find(|word| word.spelling.to_lowercase() == spelling.to_lowercase())
+                {
+                    Some(word) => {
+                        if !word
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.to_lowercase() == heard.to_lowercase())
+                        {
+                            word.aliases.push(heard.to_owned());
+                        }
+                    }
+                    None => next.push(VocabularyEntry {
+                        spelling: spelling.to_owned(),
+                        aliases: vec![heard.to_owned()],
+                    }),
                 }
             }
         }

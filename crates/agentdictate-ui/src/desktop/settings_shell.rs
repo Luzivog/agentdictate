@@ -6,8 +6,10 @@ use gpui_component::input::{InputEvent, InputState};
 use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink};
 
 use super::{
-    CommandSink, SettingsShell, history_action_lane::HistoryActionLane,
-    settings_form::SettingsFormState, words_actions::WordsUiState,
+    CommandSink, SettingsShell,
+    history_action_lane::HistoryActionLane,
+    settings_form::SettingsFormState,
+    words_actions::{FixWordEditor, WordsUiState},
 };
 
 pub(super) struct SettingsEditState {
@@ -46,6 +48,8 @@ pub(super) struct RouteUiState {
     pub(super) overview_recent_expanded: bool,
     /// History rows showing their whole transcript.
     pub(super) expanded_transcripts: HashSet<i64>,
+    /// History's "Fix a word" editor, open under one expanded transcript.
+    pub(super) fix_word: Option<FixWordEditor>,
     pub(super) words: WordsUiState,
     pub(super) confirmation: Option<Confirmation>,
 }
@@ -60,6 +64,8 @@ pub(super) enum Confirmed {
     Copied(i64),
     /// The Words screen saved a change and shows "Saved ✓".
     WordsSaved,
+    /// "Fix a word" on transcript `id` added to Words.
+    AddedToWords(i64),
 }
 
 /// The confirmation on screen, with the timer that clears it. Replacing it
@@ -137,6 +143,7 @@ impl SettingsShell {
             pending_destructive_action: None,
             overview_recent_expanded: false,
             expanded_transcripts: HashSet::new(),
+            fix_word: None,
             words,
             confirmation: None,
         };
@@ -177,9 +184,19 @@ impl SettingsShell {
         &self.model
     }
 
-    /// Expands a collapsed History row to its whole transcript, or collapses it.
+    /// Expands a collapsed History row to its whole transcript, or collapses
+    /// it along with its "Fix a word" editor.
     pub(super) fn toggle_transcript(&mut self, id: i64, cx: &mut Context<Self>) {
-        if !self.routes.expanded_transcripts.remove(&id) {
+        if self.routes.expanded_transcripts.remove(&id) {
+            if self
+                .routes
+                .fix_word
+                .as_ref()
+                .is_some_and(|editor| editor.form.transcript_id == id)
+            {
+                self.routes.fix_word = None;
+            }
+        } else {
             self.routes.expanded_transcripts.insert(id);
         }
         cx.notify();
@@ -212,7 +229,7 @@ impl SettingsShell {
     pub(super) fn copied_transcript(&self) -> Option<i64> {
         match self.confirmed()? {
             Confirmed::Copied(id) => Some(id),
-            Confirmed::WordsSaved => None,
+            Confirmed::WordsSaved | Confirmed::AddedToWords(_) => None,
         }
     }
 

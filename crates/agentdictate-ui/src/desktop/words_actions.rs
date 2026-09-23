@@ -31,6 +31,20 @@ pub(super) struct WordForm {
     pub(super) error: Option<String>,
 }
 
+/// History's "Fix a word" editor under one expanded transcript.
+pub(super) struct FixWordEditor {
+    pub(super) form: FixWordForm,
+    _submit_on_enter: [Subscription; 2],
+}
+
+#[derive(Clone)]
+pub(super) struct FixWordForm {
+    pub(super) transcript_id: i64,
+    pub(super) heard: Entity<InputState>,
+    pub(super) spelling: Entity<InputState>,
+    pub(super) error: Option<String>,
+}
+
 impl WordsUiState {
     /// Creates the screen's inputs. Typing in the filter re-renders the list,
     /// and Enter in the add row adds the word.
@@ -206,6 +220,58 @@ impl SettingsShell {
             Ok(()) => self.confirm(Confirmed::WordsSaved, cx),
             Err(message) => self.routes.words.error = Some(message),
         }
+        cx.notify();
+    }
+
+    pub(super) fn open_fix_word(
+        &mut self,
+        transcript_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let heard = text_input(String::new(), "e.g. lead lord", window, cx);
+        let spelling = text_input(String::new(), "e.g. Leadlord", window, cx);
+        heard.update(cx, |input, cx| input.focus(window, cx));
+        self.routes.fix_word = Some(FixWordEditor {
+            _submit_on_enter: [
+                submit_on_enter(&heard, window, cx, Self::save_fix_word),
+                submit_on_enter(&spelling, window, cx, Self::save_fix_word),
+            ],
+            form: FixWordForm {
+                transcript_id,
+                heard,
+                spelling,
+                error: None,
+            },
+        });
+        cx.notify();
+    }
+
+    pub(super) fn save_fix_word(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = &self.routes.fix_word else {
+            return;
+        };
+        let transcript_id = editor.form.transcript_id;
+        let edit = WordsEdit::FixWord {
+            heard: value(&editor.form.heard, cx),
+            spelling: value(&editor.form.spelling, cx),
+        };
+        match self.save_words(edit) {
+            Ok(()) => {
+                self.routes.fix_word = None;
+                self.confirm(Confirmed::AddedToWords(transcript_id), cx);
+            }
+            Err(message) => {
+                if let Some(editor) = &mut self.routes.fix_word {
+                    editor.form.error = Some(message);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn close_fix_word(&mut self, cx: &mut Context<Self>) {
+        self.routes.fix_word = None;
         cx.notify();
     }
 }

@@ -60,6 +60,15 @@ impl RoutePageModel {
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
                 expanded_transcripts: shell.routes.expanded_transcripts.clone(),
                 copied_transcript: shell.copied_transcript(),
+                fix_word: shell
+                    .routes
+                    .fix_word
+                    .as_ref()
+                    .map(|editor| editor.form.clone()),
+                added_to_words: match shell.confirmed() {
+                    Some(Confirmed::AddedToWords(id)) => Some(id),
+                    _ => None,
+                },
             }),
             Route::Words => {
                 let words = &shell.routes.words;

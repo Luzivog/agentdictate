@@ -47,7 +47,7 @@ pub use view_model::{
 };
 #[cfg(feature = "desktop")]
 pub use window_frame::AgentDictateWindowFrame;
-pub use words::{WordRowViewModel, WordsEdit, word_rows};
+pub use words::{WordRowViewModel, WordsEdit, WordsError, word_rows};
 pub use workspace::{UiActionError, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel};
 
 #[cfg(feature = "test-support")]
