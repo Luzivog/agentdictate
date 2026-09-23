@@ -21,10 +21,18 @@ mkdir -p "${fixture_root}/dev/input" "${fixture_root}/bin" "${fixture_root}/rule
 cat > "${fixture_root}/proc-input-devices" <<'EOF'
 N: Name="USB Keyboard"
 H: Handlers=sysrq kbd event4 leds
+B: KEY=1000000000007 ff9f207ac14057ff febeffdfffefffff fffffffffffffffe 
+
+N: Name="Webcam button"
+H: Handlers=kbd event20
+B: KEY=100000 0 0 0
 
 N: Name="Mouse"
 H: Handlers=mouse0 event7
 EOF
+# A camera button has the kbd handler but is no keyboard: unreadable is fine.
+touch "${fixture_root}/dev/input/event20"
+chmod 0000 "${fixture_root}/dev/input/event20"
 # Stand-ins for the privileged tools: they only log their arguments.
 for tool in udevadm sudo; do
   cat > "${fixture_root}/bin/${tool}" <<EOF

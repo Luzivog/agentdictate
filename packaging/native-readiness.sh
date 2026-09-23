@@ -13,18 +13,24 @@ agentdictate_keyboard_event_paths() {
     BEGIN { RS = ""; FS = "\n" }
     {
       handlers = ""
+      keys = ""
       for (line = 1; line <= NF; line++) {
         if ($line ~ /^H: Handlers=/) {
           handlers = $line
           sub(/^H: Handlers=/, "", handlers)
         }
+        if ($line ~ /^B: KEY=/) {
+          keys = $line
+          sub(/^B: KEY=/, "", keys)
+          sub(/[[:space:]]+$/, "", keys)
+        }
       }
+      # Like udev, a keyboard has every key from Esc to S: bits 1-31 of the
+      # lowest bitmap word. Cameras, power buttons and hotkey panels also get
+      # the kbd handler, but the access rule never covers them.
+      words = split(keys, key_words, /[[:space:]]+/)
+      if (key_words[words] !~ /[fF][fF][fF][fF][fF][fF][fF][eEfF]$/) next
       count = split(handlers, names, /[[:space:]]+/)
-      keyboard = 0
-      for (entry = 1; entry <= count; entry++) {
-        if (names[entry] == "kbd") keyboard = 1
-      }
-      if (!keyboard) next
       for (entry = 1; entry <= count; entry++) {
         if (names[entry] ~ /^event[0-9]+$/) {
           print input_dir "/" names[entry]
