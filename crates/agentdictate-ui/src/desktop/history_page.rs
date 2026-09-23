@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use agentdictate_core::HISTORY_CONTINUATION_PAGE_SIZE;
 use gpui::{Context, Entity, SharedString, prelude::*, px};
 use gpui_component::{
@@ -19,18 +21,30 @@ use super::{
 const RECOVERY_ROW_HEIGHT: f32 = 58.0;
 const TRANSCRIPT_ROW_HEIGHT: f32 = 50.0;
 
+pub(super) struct HistoryPageModel {
+    pub(super) history: HistoryViewModel,
+    pub(super) search_input: Entity<InputState>,
+    pub(super) feedback: Option<String>,
+    pub(super) pending_destructive_action: Option<WorkspaceAction>,
+    pub(super) expanded_transcripts: HashSet<i64>,
+}
+
 /// Renders recovery and transcript history as one dense, flat document.
 /// Scrolling belongs to the shell's route-content container; this page never
 /// introduces a competing scroll region. Action feedback sits at the top, next
 /// to Recovery, rather than below a long transcript list.
 pub(super) fn surface(
-    history: HistoryViewModel,
-    search_input: Entity<InputState>,
-    feedback: Option<String>,
-    pending_destructive_action: Option<WorkspaceAction>,
+    model: HistoryPageModel,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
+    let HistoryPageModel {
+        history,
+        search_input,
+        feedback,
+        pending_destructive_action,
+        expanded_transcripts,
+    } = model;
     let has_recoveries = history.recovery.has_items();
     let recovery_detail = history.recovery.detail.clone();
     let recovery_items = history.recovery.items;
@@ -124,11 +138,10 @@ pub(super) fn surface(
                             }),
                     )
                 })
-                .children(
-                    transcripts
-                        .into_iter()
-                        .map(|transcript| transcript_row(transcript, theme, cx)),
-                )
+                .children(transcripts.into_iter().map(|transcript| {
+                    let expanded = expanded_transcripts.contains(&transcript.id);
+                    transcript_row(transcript, expanded, theme, cx)
+                }))
                 .when(has_more, |section| {
                     section.child(
                         h_flex().w_full().justify_center().pt_3().child(
@@ -297,25 +310,44 @@ fn recovery_row(
         )
 }
 
+/// One transcript. Clicking its text expands the row to the whole, wrapped
+/// transcript, and clicking again collapses it to one line.
 fn transcript_row(
     transcript: TranscriptViewModel,
+    expanded: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
-    let row_selector = format!("history-transcript-item-{}", transcript.id);
-    let action = WorkspaceAction::CopyTranscript { id: transcript.id };
+    let id = transcript.id;
+    let row_selector = format!("history-transcript-item-{id}");
+    let toggle_selector = format!("history-transcript-toggle-{id}");
+    let action = WorkspaceAction::CopyTranscript { id };
     let action_selector = action.selector();
     let metadata = format!(
         "{} · {} words · {}",
         transcript.created_at, transcript.word_count, transcript.duration
     );
-    let title_selector = format!("history-transcript-title-{}", transcript.id);
-    let metadata_selector = format!("history-transcript-metadata-{}", transcript.id);
+    let metadata_selector = format!("history-transcript-metadata-{id}");
+    let text = if expanded {
+        gpui::div()
+            .debug_selector(move || format!("history-transcript-text-{id}"))
+            .w_full()
+            .text_sm()
+            .child(transcript.text)
+    } else {
+        single_line_clip(format!("history-transcript-title-{id}"), transcript.preview).text_sm()
+    };
 
     h_flex()
         .debug_selector(move || row_selector)
         .w_full()
-        .h(px(TRANSCRIPT_ROW_HEIGHT))
+        .map(|row| {
+            if expanded {
+                row.min_h(px(TRANSCRIPT_ROW_HEIGHT)).items_start().py_2()
+            } else {
+                row.h(px(TRANSCRIPT_ROW_HEIGHT))
+            }
+        })
         .min_w_0()
         .justify_between()
         .border_b_1()
@@ -324,10 +356,14 @@ fn transcript_row(
         .gap_4()
         .child(
             v_flex()
+                .id(SharedString::from(toggle_selector.clone()))
+                .debug_selector(move || toggle_selector)
                 .min_w_0()
                 .flex_auto()
                 .gap_1()
-                .child(single_line_clip(title_selector, transcript.preview()).text_sm())
+                .cursor_pointer()
+                .on_click(cx.listener(move |shell, _, _, cx| shell.toggle_transcript(id, cx)))
+                .child(text)
                 .child(
                     single_line_clip(metadata_selector, metadata)
                         .text_xs()

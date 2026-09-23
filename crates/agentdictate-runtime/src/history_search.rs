@@ -579,6 +579,7 @@ fn entries_to_matches(
             id: entry.id,
             created_at: entry.created_at,
             preview_text: preview(&entry.final_text, preview_terms, search_active),
+            text: entry.final_text,
             word_count: entry.word_count,
             duration_seconds: entry.duration_seconds,
         })

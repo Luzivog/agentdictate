@@ -17,11 +17,16 @@ pub struct RecoverySnapshot {
     pub delivery_ambiguous: bool,
 }
 
+/// One History row. A page carries every row's whole text (transcripts are
+/// a few KB at most) so the window can expand a row without another request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HistorySnapshot {
     pub id: i64,
     pub created_at: DateTime<Utc>,
+    /// One line to list: the start of the text, or the part around a
+    /// search match.
     pub preview_text: String,
+    pub text: String,
     pub word_count: u64,
     pub duration_seconds: f64,
 }

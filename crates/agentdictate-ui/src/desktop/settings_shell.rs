@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use gpui::{AppContext, Context, Entity, ScrollHandle, Window};
 use gpui_component::input::{InputEvent, InputState};
 
@@ -67,6 +69,8 @@ pub(super) struct RouteUiState {
     pub(super) replacement_editor: Option<ReplacementEditorState>,
     pub(super) pending_destructive_action: Option<WorkspaceAction>,
     pub(super) overview_recent_expanded: bool,
+    /// History rows showing their whole transcript.
+    pub(super) expanded_transcripts: HashSet<i64>,
 }
 
 impl RouteUiState {
@@ -134,6 +138,7 @@ impl SettingsShell {
             replacement_editor: None,
             pending_destructive_action: None,
             overview_recent_expanded: false,
+            expanded_transcripts: HashSet::new(),
         };
 
         Self {
@@ -170,6 +175,14 @@ impl SettingsShell {
 
     pub const fn view_model(&self) -> &ShellViewModel {
         &self.model
+    }
+
+    /// Expands a collapsed History row to its whole transcript, or collapses it.
+    pub(super) fn toggle_transcript(&mut self, id: i64, cx: &mut Context<Self>) {
+        if !self.routes.expanded_transcripts.remove(&id) {
+            self.routes.expanded_transcripts.insert(id);
+        }
+        cx.notify();
     }
 
     pub(super) fn select_route(&mut self, route: Route, cx: &mut Context<Self>) {

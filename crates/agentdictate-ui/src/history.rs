@@ -78,12 +78,16 @@ impl RecoveryItemViewModel {
 pub struct TranscriptViewModel {
     pub id: i64,
     pub created_at: String,
+    /// The whole transcript, shown when its row is expanded.
     pub text: String,
+    /// The one line shown while its row is collapsed.
+    pub preview: String,
     pub word_count: u64,
     pub duration: String,
 }
 
 impl TranscriptViewModel {
+    /// A transcript whose collapsed line is the start of `text`.
     pub fn new(
         id: i64,
         created_at: impl Into<String>,
@@ -91,24 +95,32 @@ impl TranscriptViewModel {
         word_count: u64,
         duration: impl Into<String>,
     ) -> Self {
+        const PREVIEW_CHARACTERS: usize = 120;
+        let text = text.into();
+        let mut characters = text.chars();
+        let mut preview = characters
+            .by_ref()
+            .take(PREVIEW_CHARACTERS)
+            .collect::<String>();
+        if characters.next().is_some() {
+            preview.push('…');
+        }
         Self {
             id,
             created_at: created_at.into(),
-            text: text.into(),
+            text,
+            preview,
             word_count,
             duration: duration.into(),
         }
     }
 
-    pub fn preview(&self) -> String {
-        const MAX_CHARACTERS: usize = 120;
-        let mut characters = self.text.chars();
-        let preview = characters.by_ref().take(MAX_CHARACTERS).collect::<String>();
-        if characters.next().is_some() {
-            format!("{preview}…")
-        } else {
-            preview
-        }
+    /// Replaces the collapsed line, e.g. with the daemon's excerpt around a
+    /// search match.
+    #[must_use]
+    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
+        self.preview = preview.into();
+        self
     }
 }
 

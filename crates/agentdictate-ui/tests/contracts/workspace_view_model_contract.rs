@@ -36,7 +36,7 @@ fn history_projects_recoverable_recordings_and_transcripts_without_losing_action
     assert_eq!(history.recovery.items, vec![recovery]);
     assert_eq!(history.transcript_count, 1);
     assert_eq!(
-        history.transcripts[0].preview(),
+        history.transcripts[0].preview,
         "Ship the clean recovery flow."
     );
     assert_eq!(

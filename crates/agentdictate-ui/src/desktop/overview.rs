@@ -461,7 +461,7 @@ fn recent_history(
                         .min_w_0()
                         .flex_auto()
                         .gap_1()
-                        .child(single_line_clip(title_selector, transcript.preview()).text_sm())
+                        .child(single_line_clip(title_selector, transcript.preview).text_sm())
                         .child(
                             single_line_clip(metadata_selector, metadata)
                                 .text_xs()

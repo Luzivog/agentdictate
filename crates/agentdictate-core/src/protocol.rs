@@ -7,7 +7,7 @@ use crate::snapshots::{
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {

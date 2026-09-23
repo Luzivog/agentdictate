@@ -563,10 +563,11 @@ fn transcript_view_model(
     TranscriptViewModel::new(
         entry.id,
         format_history_time(entry.created_at, now),
-        entry.preview_text.clone(),
+        entry.text.clone(),
         entry.word_count,
         format_duration_clock(entry.duration_seconds),
     )
+    .with_preview(entry.preview_text.clone())
 }
 
 fn usage_view_model(snapshot: &UsageSnapshot, period: UsagePeriod) -> UsageViewModel {
@@ -636,6 +637,7 @@ mod tests {
                     id: 4,
                     created_at: Utc.with_ymd_and_hms(2026, 8, 18, 9, 30, 0).unwrap(),
                     preview_text: "one two three".into(),
+                    text: "one two three".into(),
                     word_count: 3,
                     duration_seconds: 7.0,
                 }],
@@ -848,6 +850,7 @@ mod tests {
                         id: 99,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
                         preview_text: "needle transcript".into(),
+                        text: "needle transcript".into(),
                         word_count: 2,
                         duration_seconds: 3.0,
                     }],
@@ -872,6 +875,7 @@ mod tests {
                         id: 7,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
                         preview_text: "newest transcript".into(),
+                        text: "newest transcript".into(),
                         word_count: 2,
                         duration_seconds: 2.0,
                     }],
@@ -938,6 +942,7 @@ mod tests {
                         id: 88,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 17, 13, 0, 0).unwrap(),
                         preview_text: "older transcript page".into(),
+                        text: "older transcript page".into(),
                         word_count: 3,
                         duration_seconds: 4.0,
                     }],
@@ -962,6 +967,7 @@ mod tests {
                         id: 89,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
                         preview_text: "newer transcript page".into(),
+                        text: "newer transcript page".into(),
                         word_count: 3,
                         duration_seconds: 3.0,
                     }],
@@ -1019,6 +1025,7 @@ mod tests {
                         id: 100,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 19, 13, 0, 0).unwrap(),
                         preview_text: "fresh first page".into(),
+                        text: "fresh first page".into(),
                         word_count: 3,
                         duration_seconds: 4.0,
                     }],
@@ -1046,6 +1053,7 @@ mod tests {
                         id: 99,
                         created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
                         preview_text: "stale prior page".into(),
+                        text: "stale prior page".into(),
                         word_count: 3,
                         duration_seconds: 3.0,
                     }],
@@ -1112,6 +1120,7 @@ mod tests {
             id: 99,
             created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
             preview_text: "fresh transcript".into(),
+            text: "fresh transcript".into(),
             word_count: 2,
             duration_seconds: 3.0,
         }];

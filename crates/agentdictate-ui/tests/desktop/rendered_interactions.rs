@@ -1048,6 +1048,76 @@ fn history_loads_more_without_rendering_the_archive(cx: &mut TestAppContext) {
     );
 }
 
+/// Opens History on `transcripts` and records every workspace action.
+fn open_history_recording_actions(
+    cx: &mut TestAppContext,
+    transcripts: Vec<TranscriptViewModel>,
+) -> (Harness, Arc<Mutex<Vec<WorkspaceAction>>>) {
+    let model = ShellViewModel::from_snapshot(
+        Route::History,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    )
+    .with_workspace(WorkspaceViewModel {
+        history: history(Vec::new(), transcripts),
+        ..WorkspaceViewModel::default()
+    });
+    let refreshed = model.workspace.clone();
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&actions);
+    let harness = Harness::open_model_with_actions(
+        cx,
+        size(px(1_100.), px(780.)),
+        model,
+        Arc::new(move |action| {
+            captured.lock().expect("action lock").push(action);
+            Ok(refreshed.clone())
+        }),
+    );
+    (harness, actions)
+}
+
+#[gpui::test]
+fn clicking_a_transcript_expands_its_whole_text_and_clicking_again_collapses_it(
+    cx: &mut TestAppContext,
+) {
+    let text = format!(
+        "{}and that is the whole dictation.",
+        "A long dictated thought ".repeat(30)
+    );
+    let (mut harness, actions) = open_history_recording_actions(
+        cx,
+        vec![TranscriptViewModel::new(
+            41,
+            "Today 14:18",
+            text,
+            125,
+            "0:48",
+        )],
+    );
+    let collapsed = harness.bounds("history-transcript-item-41");
+    assert!(harness.has("history-transcript-title-41"));
+    assert!(!harness.has("history-transcript-text-41"));
+
+    harness.click("history-transcript-toggle-41");
+
+    let row = harness.bounds("history-transcript-item-41");
+    let text = harness.bounds("history-transcript-text-41");
+    assert!(!harness.has("history-transcript-title-41"));
+    // The whole transcript wraps onto several lines inside the row.
+    assert!(text.size.height > collapsed.size.height);
+    assert!(row.size.height > text.size.height);
+    assert!(text.right() <= row.right());
+    assert!(actions.lock().expect("action lock").is_empty());
+
+    harness.click("history-transcript-toggle-41");
+
+    assert!(!harness.has("history-transcript-text-41"));
+    assert!(harness.has("history-transcript-title-41"));
+    assert_eq!(harness.bounds("history-transcript-item-41"), collapsed);
+}
+
 #[gpui::test]
 fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mut TestAppContext) {
     let model = ShellViewModel::from_snapshot(

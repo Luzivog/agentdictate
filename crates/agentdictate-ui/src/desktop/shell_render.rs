@@ -1,5 +1,5 @@
-use gpui::{Context, Entity, IntoElement, Render, ScrollHandle, Window, prelude::*, px};
-use gpui_component::{input::InputState, scroll::Scrollbar, v_flex};
+use gpui::{Context, IntoElement, Render, ScrollHandle, Window, prelude::*, px};
+use gpui_component::{scroll::Scrollbar, v_flex};
 
 use crate::{
     HistoryViewModel, NavigationItemViewModel, ReplacementsViewModel, Route, ThemeTokens,
@@ -7,7 +7,9 @@ use crate::{
 };
 
 use super::{
-    ROUTE_SCROLLBAR_WIDTH, SettingsShell, gpui_color, history_page, overview, replacements_page,
+    ROUTE_SCROLLBAR_WIDTH, SettingsShell, gpui_color,
+    history_page::{self, HistoryPageModel},
+    overview, replacements_page,
     settings_page::{self, SettingsPageModel},
     settings_shell::{ReplacementEditorState, route_index},
     shell_chrome::{shell_title_bar, sidebar_view},
@@ -33,12 +35,7 @@ enum RoutePageModel {
         recent_transcripts: Vec<TranscriptViewModel>,
         recent_expanded: bool,
     },
-    History {
-        history: HistoryViewModel,
-        search_input: Entity<InputState>,
-        feedback: Option<String>,
-        pending_destructive_action: Option<WorkspaceAction>,
-    },
+    History(HistoryPageModel),
     Replacements {
         replacements: ReplacementsViewModel,
         editor: Option<ReplacementEditorState>,
@@ -58,12 +55,13 @@ impl RoutePageModel {
                 recent_transcripts: workspace.recent_transcripts.clone(),
                 recent_expanded: shell.routes.overview_recent_expanded,
             },
-            Route::History => Self::History {
+            Route::History => Self::History(HistoryPageModel {
                 history: workspace.history.clone(),
                 search_input: shell.routes.history_search_input.clone(),
                 feedback: shell.routes.entry(Route::History).feedback.clone(),
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
-            },
+                expanded_transcripts: shell.routes.expanded_transcripts.clone(),
+            }),
             Route::Replacements => Self::Replacements {
                 replacements: workspace.replacements.clone(),
                 editor: shell.routes.replacement_editor.clone(),
@@ -87,7 +85,7 @@ impl RoutePageModel {
     const fn route(&self) -> Route {
         match self {
             Self::Overview { .. } => Route::Overview,
-            Self::History { .. } => Route::History,
+            Self::History(_) => Route::History,
             Self::Replacements { .. } => Route::Replacements,
             Self::Settings(_) => Route::Settings,
         }
@@ -95,7 +93,7 @@ impl RoutePageModel {
 
     fn embeds_feedback(&self) -> bool {
         match self {
-            Self::Settings(_) | Self::History { .. } => true,
+            Self::Settings(_) | Self::History(_) => true,
             Self::Replacements { editor, .. } => editor.is_some(),
             Self::Overview { .. } => false,
         }
@@ -116,19 +114,7 @@ impl RoutePageModel {
                 theme,
                 cx,
             ),
-            Self::History {
-                history,
-                search_input,
-                feedback,
-                pending_destructive_action,
-            } => history_page::surface(
-                history,
-                search_input,
-                feedback,
-                pending_destructive_action,
-                theme,
-                cx,
-            ),
+            Self::History(history) => history_page::surface(history, theme, cx),
             Self::Replacements {
                 replacements,
                 editor,

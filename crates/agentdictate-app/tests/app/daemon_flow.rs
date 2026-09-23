@@ -870,7 +870,9 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
     assert!(history.next_cursor.is_some());
     assert!(!history.rows.iter().any(|entry| entry.id == 1));
     assert!(history.rows.iter().all(|entry| {
-        entry.preview_text.chars().count() == 161 && entry.preview_text.ends_with('…')
+        entry.preview_text.chars().count() == 161
+            && entry.preview_text.ends_with('…')
+            && entry.text == full_body
     }));
 }
 
