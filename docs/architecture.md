@@ -94,7 +94,10 @@ the daemon appear without polling or debounce delays.
 
 After transcription, the daemon delivers text to the focused application:
 
-1. Observe the focused window.
+1. Observe the focused window: the daemon reads `_NET_ACTIVE_WINDOW`, its
+   `WM_CLASS`, and `_NET_WM_STATE` from the X server (X11 or XWayland)
+   in-process. On native Wayland, only an XWayland window that holds focus
+   counts as the target.
 2. Publish the transcript. Automatic mode on native Wayland publishes the
    same text to both the clipboard and the primary selection; other
    deliveries publish only to the clipboard. Both selections are owned by

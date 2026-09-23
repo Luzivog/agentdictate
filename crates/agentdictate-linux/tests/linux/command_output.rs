@@ -18,11 +18,11 @@ fn command_output_drains_stdout_and_stderr_while_the_child_is_running() {
             "head -c 262144 /dev/zero >&2\n",
         ),
     );
-    let executable = PlatformExecutable::at(PlatformTool::Xprop, executable);
+    let executable = PlatformExecutable::at(PlatformTool::Ffmpeg, executable);
 
     let stdout = SystemCommandRunner
         .run_output(
-            PlatformCapability::FocusObservation,
+            PlatformCapability::AudioCompression,
             &executable,
             &[],
             Instant::now() + Duration::from_secs(2),
@@ -37,11 +37,11 @@ fn command_output_drains_stdout_and_stderr_while_the_child_is_running() {
 fn inherited_pipe_handles_remain_inside_the_command_deadline() {
     let directory = TestDirectory::new();
     let executable = directory.executable("inherited-pipe", "#!/bin/sh\nsleep 5 &\nexit 0\n");
-    let executable = PlatformExecutable::at(PlatformTool::Xprop, executable);
+    let executable = PlatformExecutable::at(PlatformTool::Ffmpeg, executable);
 
     let error = SystemCommandRunner
         .run_output(
-            PlatformCapability::FocusObservation,
+            PlatformCapability::AudioCompression,
             &executable,
             &[],
             Instant::now() + Duration::from_millis(500),
@@ -52,7 +52,7 @@ fn inherited_pipe_handles_remain_inside_the_command_deadline() {
         matches!(
             error,
             agentdictate_linux::command::PlatformCommandError::Deadline {
-                tool: PlatformTool::Xprop,
+                tool: PlatformTool::Ffmpeg,
             }
         ),
         "unexpected command outcome: {error:?}"

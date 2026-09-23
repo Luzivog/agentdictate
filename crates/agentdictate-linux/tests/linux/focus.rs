@@ -1,71 +1,48 @@
-use crate::support;
-
-use std::time::{Duration, Instant};
-
 use agentdictate_linux::{
-    command::{PlatformExecutable, PlatformTool, SystemCommandRunner},
-    focus::X11FocusObserver,
-    paste::{FocusTarget, X11FocusObservation, parse_x11_focus, resolve_focus_target},
+    focus::focus_observation,
+    paste::{ClipboardProtocol, FocusTarget, resolve_focus_target},
 };
-use support::TestDirectory;
+
+const FOCUSED: u32 = 401;
+const MAXIMIZED: u32 = 402;
 
 #[test]
-fn stale_xwayland_window_is_not_mistaken_for_native_wayland_focus() {
-    let stale_x11 = X11FocusObservation {
-        window_id: "18874372".into(),
-        window_class: "chatgpt Chatgpt".into(),
-        focused: false,
-    };
+fn window_class_joins_the_instance_and_class_names() {
+    let observation = focus_observation(
+        18_874_372,
+        b"chatgpt (/config/Codex)\0Chatgpt\0",
+        [MAXIMIZED, FOCUSED],
+        FOCUSED,
+    );
+
+    assert_eq!(observation.window_id, 18_874_372);
+    assert_eq!(observation.window_class, "chatgpt (/config/Codex) Chatgpt");
+    assert!(observation.focused);
+}
+
+#[test]
+fn x11_session_pastes_into_the_active_window_even_without_a_focus_state() {
+    let observation = focus_observation(84, b"kitty\0kitty\0", [], FOCUSED);
+
+    assert!(!observation.focused);
+    assert_eq!(
+        resolve_focus_target(false, Some(observation)),
+        FocusTarget::x11(84, "kitty kitty")
+    );
+}
+
+#[test]
+fn wayland_session_trusts_only_an_xwayland_window_that_holds_focus() {
+    let focused = focus_observation(42, b"code\0Code\0", [FOCUSED], FOCUSED);
+    let stale = focus_observation(42, b"code\0Code\0", [MAXIMIZED], FOCUSED);
 
     assert_eq!(
-        resolve_focus_target(true, Some(stale_x11)),
+        resolve_focus_target(true, Some(focused)).protocol(),
+        ClipboardProtocol::X11
+    );
+    assert_eq!(
+        resolve_focus_target(true, Some(stale)),
         FocusTarget::wayland()
     );
-}
-
-#[test]
-fn xprop_focus_parser_keeps_window_identity_and_class() {
-    let properties = concat!(
-        "WM_CLASS(STRING) = \"chatgpt (/config/Codex)\", \"Chatgpt\"\n",
-        "_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED\n",
-    );
-
-    assert_eq!(
-        parse_x11_focus("18874372", properties),
-        X11FocusObservation {
-            window_id: "18874372".into(),
-            window_class: "chatgpt (/config/Codex) Chatgpt".into(),
-            focused: true,
-        }
-    );
-}
-
-#[test]
-fn x11_focus_observer_reads_the_active_window_and_its_properties() {
-    let directory = TestDirectory::new();
-    let xdotool = directory.executable("xdotool", "#!/bin/sh\nprintf '18874372\\n'\n");
-    let xprop = directory.executable(
-        "xprop",
-        concat!(
-            "#!/bin/sh\n",
-            "printf '%s\\n' 'WM_CLASS(STRING) = \"chatgpt\", \"Chatgpt\"'\n",
-            "printf '%s\\n' '_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED'\n",
-        ),
-    );
-    let observer = X11FocusObserver::new(
-        SystemCommandRunner,
-        PlatformExecutable::at(PlatformTool::Xdotool, xdotool),
-        PlatformExecutable::at(PlatformTool::Xprop, xprop),
-    );
-
-    assert_eq!(
-        observer
-            .observe(Instant::now() + Duration::from_secs(2))
-            .expect("focus is observable"),
-        X11FocusObservation {
-            window_id: "18874372".into(),
-            window_class: "chatgpt Chatgpt".into(),
-            focused: true,
-        }
-    );
+    assert_eq!(resolve_focus_target(true, None), FocusTarget::wayland());
 }

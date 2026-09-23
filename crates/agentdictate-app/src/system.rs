@@ -11,11 +11,11 @@ use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
     clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
     command::{PlatformCommandError, SystemCommandRunner},
-    focus::X11FocusObserver,
+    focus::{FocusError, observe_x11_focus},
     injection::PasteInjector,
     paste::{
         ClipboardProtocol, DeliveryAction, DeliveryFailure, DeliveryObservation, PasteDelivery,
-        ShortcutMode, resolve_focus_target,
+        ShortcutMode, X11FocusObservation, resolve_focus_target,
     },
     recorder::{PwRecordRecorder, Recording, RecordingExitObserver},
 };
@@ -322,9 +322,12 @@ impl RecordingController for SystemRecordingController {
     }
 }
 
+/// Reads the active X11 window before a paste; tests substitute a fake.
+type FocusReader = fn(Instant) -> Result<X11FocusObservation, FocusError>;
+
 pub struct SystemDeliverer {
     clipboard: CommandClipboard,
-    focus: X11FocusObserver,
+    focus: FocusReader,
     injector: PasteInjector,
     shortcut_mode: ShortcutMode,
     wayland_session: bool,
@@ -340,7 +343,7 @@ impl SystemDeliverer {
         let runner = SystemCommandRunner;
         Self {
             clipboard: CommandClipboard::for_system(runner),
-            focus: X11FocusObserver::for_system(runner),
+            focus: observe_x11_focus,
             injector: PasteInjector::new(),
             shortcut_mode: shortcut_mode(paste_shortcut),
             wayland_session: std::env::var("XDG_SESSION_TYPE")
@@ -357,7 +360,7 @@ impl SystemDeliverer {
         &self,
         deadline: Instant,
     ) -> Result<agentdictate_linux::paste::FocusTarget, ExternalError> {
-        match self.focus.observe(deadline) {
+        match (self.focus)(deadline) {
             Ok(observation) => Ok(resolve_focus_target(
                 self.wayland_session,
                 Some(observation),
@@ -655,36 +658,19 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&xsel, fs::Permissions::from_mode(0o755)).unwrap();
-        let xdotool = directory.path().join("xdotool");
-        fs::write(
-            &xdotool,
-            "#!/bin/sh\ncase \"$1\" in\n  getactivewindow) printf '42\\n' ;;\nesac\n",
-        )
-        .unwrap();
-        fs::set_permissions(&xdotool, fs::Permissions::from_mode(0o755)).unwrap();
-        let xprop = directory.path().join("xprop");
-        fs::write(
-            &xprop,
-            concat!(
-                "#!/bin/sh\n",
-                "printf '%s\\n' 'WM_CLASS(STRING) = \"chatgpt\", \"Chatgpt\"'\n",
-                "printf '%s\\n' '_NET_WM_STATE(ATOM) = _NET_WM_STATE_FOCUSED'\n",
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&xprop, fs::Permissions::from_mode(0o755)).unwrap();
         let runner = SystemCommandRunner;
-        let xdotool = PlatformExecutable::at(PlatformTool::Xdotool, xdotool);
         let mut deliverer = SystemDeliverer {
             clipboard: CommandClipboard::new(
                 runner,
                 PlatformExecutable::at(PlatformTool::Xsel, xsel),
             ),
-            focus: X11FocusObserver::new(
-                runner,
-                xdotool,
-                PlatformExecutable::at(PlatformTool::Xprop, xprop),
-            ),
+            focus: |_| {
+                Ok(X11FocusObservation {
+                    window_id: 42,
+                    window_class: "chatgpt Chatgpt".to_owned(),
+                    focused: true,
+                })
+            },
             injector,
             shortcut_mode: ShortcutMode::Standard,
             wayland_session: false,
@@ -772,11 +758,7 @@ mod tests {
                 runner,
                 PlatformExecutable::at(PlatformTool::Xsel, xsel),
             ),
-            focus: X11FocusObserver::new(
-                runner,
-                PlatformExecutable::missing(PlatformTool::Xdotool),
-                PlatformExecutable::missing(PlatformTool::Xprop),
-            ),
+            focus: |_| Err(FocusError::NoActiveWindow),
             injector,
             shortcut_mode: ShortcutMode::Auto,
             wayland_session: true,

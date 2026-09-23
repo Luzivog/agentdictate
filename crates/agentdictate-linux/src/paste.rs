@@ -30,49 +30,19 @@ impl ClipboardReadinessEvidence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FocusTarget {
     protocol: ClipboardProtocol,
-    identity: Option<String>,
+    /// The X11 window id; native Wayland targets have none.
+    identity: Option<u32>,
     window_class: String,
 }
 
+/// The X server's active window, as `focus::observe_x11_focus` reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct X11FocusObservation {
-    pub window_id: String,
+    pub window_id: u32,
     pub window_class: String,
+    /// Whether the window carries `_NET_WM_STATE_FOCUSED`. Under XWayland the
+    /// active X11 window can be stale while a native Wayland window has focus.
     pub focused: bool,
-}
-
-pub fn parse_x11_focus(window_id: impl Into<String>, properties: &str) -> X11FocusObservation {
-    let window_class = properties
-        .lines()
-        .find(|line| line.starts_with("WM_CLASS"))
-        .map(quoted_values)
-        .unwrap_or_default()
-        .join(" ");
-    let focused = properties
-        .lines()
-        .any(|line| line.starts_with("_NET_WM_STATE") && line.contains("_NET_WM_STATE_FOCUSED"));
-    X11FocusObservation {
-        window_id: window_id.into(),
-        window_class,
-        focused,
-    }
-}
-
-fn quoted_values(line: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for character in line.chars() {
-        if character == '"' {
-            if quoted {
-                values.push(std::mem::take(&mut current));
-            }
-            quoted = !quoted;
-        } else if quoted {
-            current.push(character);
-        }
-    }
-    values
 }
 
 pub fn resolve_focus_target(
@@ -88,10 +58,10 @@ pub fn resolve_focus_target(
 }
 
 impl FocusTarget {
-    pub fn x11(identity: impl Into<String>, window_class: impl Into<String>) -> Self {
+    pub fn x11(window: u32, window_class: impl Into<String>) -> Self {
         Self {
             protocol: ClipboardProtocol::X11,
-            identity: Some(identity.into()),
+            identity: Some(window),
             window_class: window_class.into(),
         }
     }
@@ -106,10 +76,6 @@ impl FocusTarget {
 
     pub const fn protocol(&self) -> ClipboardProtocol {
         self.protocol
-    }
-
-    pub fn window_id(&self) -> Option<&str> {
-        self.identity.as_deref()
     }
 
     pub fn window_class(&self) -> &str {

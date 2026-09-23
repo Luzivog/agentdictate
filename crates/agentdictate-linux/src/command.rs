@@ -12,8 +12,6 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PlatformTool {
-    Xdotool,
-    Xprop,
     Xsel,
     Pactl,
     Ffmpeg,
@@ -23,8 +21,6 @@ pub enum PlatformTool {
 impl PlatformTool {
     pub const fn executable_name(self) -> &'static str {
         match self {
-            Self::Xdotool => "xdotool",
-            Self::Xprop => "xprop",
             Self::Xsel => "xsel",
             Self::Pactl => "pactl",
             Self::Ffmpeg => "ffmpeg",
@@ -37,14 +33,13 @@ impl PlatformTool {
         match self {
             // Volume lines are parsed, so they must not be localized.
             Self::Pactl => &[("LC_ALL", "C")],
-            Self::Xdotool | Self::Xprop | Self::Xsel | Self::Ffmpeg | Self::Systemctl => &[],
+            Self::Xsel | Self::Ffmpeg | Self::Systemctl => &[],
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlatformCapability {
-    FocusObservation,
     Clipboard,
     AudioDucking,
     AudioCompression,

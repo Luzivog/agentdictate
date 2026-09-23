@@ -7,8 +7,8 @@ install the runtime and build dependencies:
 
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
-  libfontconfig1-dev libfreetype6-dev libvulkan1 x11-utils \
-  pipewire-bin pulseaudio-utils xsel xdotool ffmpeg
+  libfontconfig1-dev libfreetype6-dev libvulkan1 \
+  pipewire-bin pulseaudio-utils xsel ffmpeg
 ```
 
 `pulseaudio-utils` provides `pactl`, which lowers other audio while you

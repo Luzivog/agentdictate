@@ -107,7 +107,7 @@ Version: ${VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCHITECTURE}
-Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, pulseaudio-utils, udev, systemd, xsel, xdotool, x11-utils, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
+Depends: ${SHLIB_DEPENDS}, ca-certificates, pipewire-bin, pulseaudio-utils, udev, systemd, xsel, libfontconfig1, libfreetype6, libwayland-client0, libx11-6, libvulkan1
 Recommends: ffmpeg
 Maintainer: AgentDictate <local@agentdictate>
 Description: Fast native Linux dictation for AI coding prompts
