@@ -127,7 +127,9 @@ not a supported OpenAI API and can stop working without notice.
   recovered. After the paste, the text is kept only in History, and only when
   **Save history** is on. Usage numbers, such as duration, word count, model, and
   estimated cost, are always kept, without text.
-- Deleting a History item removes its text and its usage numbers for good.
+- **Delete** on a History item removes its text and its usage numbers for good.
+  **Delete all history…** under **Settings**, **Privacy** does that for every item.
+  **Save history** and **Preserve temporary audio** are in the same section.
 - A failed dictation keeps its text and recording in Recovery until you retry it or
   delete it. Deleting it removes both.
 - Audio is deleted after the paste unless **Preserve temporary audio** is on. Each
