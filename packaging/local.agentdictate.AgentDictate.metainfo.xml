@@ -16,6 +16,16 @@
     </p>
   </description>
   <releases>
+    <release version="0.3.1" date="2026-09-23">
+      <description>
+        <ul>
+          <li>The navigation labels in the window are left-aligned.</li>
+          <li>The input-access check no longer mistakes a webcam or power button for a keyboard it cannot read.</li>
+          <li>The input-access rule lets your session read AgentDictate's own virtual keyboard, and nothing else new.</li>
+          <li>Building from source needs the xkbcommon development packages; the linker workaround is gone.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-09-23">
       <description>
         <ul>
