@@ -1,3 +1,5 @@
+#[path = "linux/audio_ducking.rs"]
+mod audio_ducking;
 #[path = "linux/availability.rs"]
 mod availability;
 #[path = "linux/clipboard_commands.rs"]

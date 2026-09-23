@@ -2,11 +2,11 @@ use std::{
     ffi::{OsStr, OsString},
     fmt, fs,
     io::{self, Read, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::fs::PermissionsExt,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    thread,
+    process::{Child, Command, ExitStatus, Stdio},
     time::Instant,
 };
 
@@ -15,6 +15,9 @@ pub enum PlatformTool {
     Xdotool,
     Xprop,
     Xsel,
+    Pactl,
+    Ffmpeg,
+    Systemctl,
 }
 
 impl PlatformTool {
@@ -23,6 +26,18 @@ impl PlatformTool {
             Self::Xdotool => "xdotool",
             Self::Xprop => "xprop",
             Self::Xsel => "xsel",
+            Self::Pactl => "pactl",
+            Self::Ffmpeg => "ffmpeg",
+            Self::Systemctl => "systemctl",
+        }
+    }
+
+    /// Environment a tool needs for output the adapters can parse.
+    const fn environment(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            // Volume lines are parsed, so they must not be localized.
+            Self::Pactl => &[("LC_ALL", "C")],
+            Self::Xdotool | Self::Xprop | Self::Xsel | Self::Ffmpeg | Self::Systemctl => &[],
         }
     }
 }
@@ -31,6 +46,9 @@ impl PlatformTool {
 pub enum PlatformCapability {
     FocusObservation,
     Clipboard,
+    AudioDucking,
+    AudioCompression,
+    ServiceManagement,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,8 +135,12 @@ impl fmt::Display for PlatformCommandError {
             Self::Communicate { tool, .. } => {
                 write!(formatter, "could not communicate with {tool:?}")
             }
-            Self::Failed { tool, code, .. } => {
-                write!(formatter, "{tool:?} failed with exit code {code:?}")
+            Self::Failed { tool, code, stderr } => {
+                write!(formatter, "{tool:?} failed with exit code {code:?}")?;
+                match stderr.trim() {
+                    "" => Ok(()),
+                    detail => write!(formatter, ": {detail}"),
+                }
             }
             Self::Deadline { tool } => write!(formatter, "{tool:?} exceeded its deadline"),
             Self::UnexpectedOutput { tool, detail } => {
@@ -285,6 +307,9 @@ impl SystemCommandRunner {
         }
     }
 
+    /// Runs a tool to completion and returns its stdout. The whole tool
+    /// process group is killed if it outlives `deadline`, including helpers
+    /// that inherited its pipes.
     pub fn run_output(
         &self,
         capability: PlatformCapability,
@@ -292,93 +317,39 @@ impl SystemCommandRunner {
         arguments: &[OsString],
         deadline: Instant,
     ) -> Result<Vec<u8>, PlatformCommandError> {
+        let tool = executable.tool();
         let Some(program) = executable.path() else {
             return Err(PlatformCommandError::Unavailable(AvailabilityDiagnostic {
                 capability,
-                missing_tools: vec![executable.tool()],
+                missing_tools: vec![tool],
             }));
         };
         let mut child = Command::new(program)
             .args(arguments)
+            .envs(tool.environment().iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()
-            .map_err(|source| PlatformCommandError::Start {
-                tool: executable.tool(),
-                source,
-            })?;
-
-        let Some(mut stdout_pipe) = child.stdout.take() else {
-            kill_group(&mut child);
-            return Err(PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source: io::Error::new(io::ErrorKind::BrokenPipe, "child stdout is unavailable"),
-            });
-        };
-        let Some(mut stderr_pipe) = child.stderr.take() else {
-            kill_group(&mut child);
-            return Err(PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source: io::Error::new(io::ErrorKind::BrokenPipe, "child stderr is unavailable"),
-            });
-        };
-
-        let (status, stdout, stderr) = thread::scope(|scope| {
-            let stdout_reader = scope.spawn(move || {
-                let mut output = Vec::new();
-                stdout_pipe.read_to_end(&mut output).map(|_| output)
-            });
-            let stderr_reader = scope.spawn(move || {
-                let mut output = Vec::new();
-                stderr_pipe.read_to_end(&mut output).map(|_| output)
-            });
-
-            let mut exit_status = None;
-            let status = loop {
-                match child.try_wait() {
-                    Ok(status) => exit_status = status.or(exit_status),
-                    Err(source) => {
-                        kill_group(&mut child);
-                        break Err(PlatformCommandError::Communicate {
-                            tool: executable.tool(),
-                            source,
-                        });
+            .map_err(|source| PlatformCommandError::Start { tool, source })?;
+        let (status, stdout, stderr) = match collect_output(&mut child, deadline) {
+            Ok(output) => output,
+            Err(failure) => {
+                kill_group(&mut child);
+                return Err(match failure {
+                    CollectFailure::Deadline => PlatformCommandError::Deadline { tool },
+                    CollectFailure::Io(source) => {
+                        PlatformCommandError::Communicate { tool, source }
                     }
-                }
-                if stdout_reader.is_finished()
-                    && stderr_reader.is_finished()
-                    && let Some(status) = exit_status
-                {
-                    break Ok(status);
-                }
-                if Instant::now() >= deadline {
-                    kill_group(&mut child);
-                    break Err(PlatformCommandError::Deadline {
-                        tool: executable.tool(),
-                    });
-                }
-                thread::yield_now();
-            };
-            (status, stdout_reader.join(), stderr_reader.join())
-        });
-        let status = status?;
-        let stdout =
-            join_pipe_reader(stdout).map_err(|source| PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source,
-            })?;
-        let stderr =
-            join_pipe_reader(stderr).map_err(|source| PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source,
-            })?;
+                });
+            }
+        };
         if status.success() {
             Ok(stdout)
         } else {
             Err(PlatformCommandError::Failed {
-                tool: executable.tool(),
+                tool,
                 code: status.code(),
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             })
@@ -432,8 +403,115 @@ impl SystemCommandRunner {
     }
 }
 
-fn join_pipe_reader(result: thread::Result<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    result.map_err(|_| io::Error::other("command pipe reader panicked"))?
+enum CollectFailure {
+    Deadline,
+    Io(io::Error),
+}
+
+impl From<io::Error> for CollectFailure {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// Drains stdout and stderr and waits for the child to exit without
+/// spinning: one `poll` covers both pipes and a pidfd for the child, bounded
+/// by `deadline`. The caller kills the process group on failure.
+fn collect_output(
+    child: &mut Child,
+    deadline: Instant,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), CollectFailure> {
+    let unavailable = |pipe| io::Error::new(io::ErrorKind::BrokenPipe, pipe);
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| unavailable("child stdout is unavailable"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| unavailable("child stderr is unavailable"))?;
+    let exit = pidfd_open(child.id())?;
+    let (mut stdout_bytes, mut stderr_bytes) = (Vec::new(), Vec::new());
+    let (mut stdout_open, mut stderr_open, mut exited) = (true, true, false);
+    while stdout_open || stderr_open || !exited {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(CollectFailure::Deadline);
+        }
+        let watch = |open: bool, fd: i32| libc::pollfd {
+            // poll skips negative descriptors, so finished sources stay quiet.
+            fd: if open { fd } else { -1 },
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let mut descriptors = [
+            watch(stdout_open, stdout.as_raw_fd()),
+            watch(stderr_open, stderr.as_raw_fd()),
+            watch(!exited, exit.as_raw_fd()),
+        ];
+        // Round up so a sub-millisecond remainder cannot become a busy loop.
+        let timeout = i32::try_from(remaining.as_micros().div_ceil(1000)).unwrap_or(i32::MAX);
+        // SAFETY: `descriptors` is an initialized array that outlives the call,
+        // and its length is passed alongside the pointer.
+        let ready = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                timeout,
+            )
+        };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        let [stdout_event, stderr_event, exit_event] = descriptors.map(|fd| fd.revents);
+        if stdout_event != 0 {
+            stdout_open = read_available(&mut stdout, &mut stdout_bytes)?;
+        }
+        if stderr_event != 0 {
+            stderr_open = read_available(&mut stderr, &mut stderr_bytes)?;
+        }
+        if exit_event & libc::POLLNVAL != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "pidfd is invalid").into());
+        }
+        exited |= exit_event != 0;
+    }
+    // The pidfd reported exit, so this reaps a zombie without blocking.
+    let status = child.wait()?;
+    Ok((status, stdout_bytes, stderr_bytes))
+}
+
+/// Reads what one ready pipe holds. Returns whether the pipe is still open.
+fn read_available(pipe: &mut impl Read, output: &mut Vec<u8>) -> io::Result<bool> {
+    let mut chunk = [0_u8; 16 * 1024];
+    match pipe.read(&mut chunk) {
+        Ok(0) => Ok(false),
+        Ok(read) => {
+            output.extend_from_slice(&chunk[..read]);
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// Opens a pidfd, a descriptor that becomes readable when `process_id`
+/// exits. Waiting on it never reaps the child.
+pub(crate) fn pidfd_open(process_id: u32) -> io::Result<OwnedFd> {
+    // SAFETY: `pidfd_open` receives only integer values and returns a new
+    // owned descriptor on success.
+    let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, process_id, 0) };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| io::Error::other("pidfd does not fit in a file descriptor"))?;
+    // SAFETY: ownership of the fresh descriptor returned by pidfd_open is
+    // transferred exactly once to OwnedFd.
+    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
 }
 
 fn kill_group(child: &mut Child) {

@@ -1,13 +1,16 @@
 use std::{
+    ffi::OsString,
     fs, io,
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
 
 use agentdictate_core::{ClientCommand, ServerMessageKind};
+use agentdictate_linux::command::{
+    PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner,
+};
 use agentdictate_runtime::{IpcClient, IpcError, write_atomic};
 use sha2::{Digest, Sha256};
 
@@ -18,6 +21,7 @@ const APPIMAGE_BOOTSTRAP_ARGUMENT: &str = "--background";
 const SERVICE_ROUTE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_ROUTE";
 const SERVICE_IDENTITY_FILE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_IDENTITY_FILE";
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StartupCommand {
@@ -484,20 +488,17 @@ fn hash_bytes(digest: &mut Sha256, value: &[u8]) {
 }
 
 fn systemctl_value(systemctl: &Path, property: &str) -> io::Result<String> {
-    let output = Command::new(systemctl)
-        .args([
+    systemctl_output(
+        systemctl,
+        &[
             "--user",
             "show",
             DAEMON_SERVICE_NAME,
             "--property",
             property,
             "--value",
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(systemctl_error(systemctl, &output));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        ],
+    )
 }
 
 fn cgroup_contains(service_group: &str, process_group: &str) -> bool {
@@ -517,26 +518,22 @@ fn process_environment_value(pid: u32, name: &str) -> io::Result<Option<String>>
 }
 
 fn run_systemctl(systemctl: &Path, arguments: &[&str]) -> io::Result<()> {
-    let output = Command::new(systemctl).args(arguments).output()?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(systemctl_error(systemctl, &output))
+    systemctl_output(systemctl, arguments).map(|_| ())
 }
 
-fn systemctl_error(systemctl: &Path, output: &std::process::Output) -> io::Error {
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let detail = detail.trim();
-    let suffix = if detail.is_empty() {
-        String::new()
-    } else {
-        format!(": {detail}")
-    };
-    io::Error::other(format!(
-        "{} exited with {}{suffix}",
-        systemctl.display(),
-        output.status
-    ))
+/// Runs systemctl bounded by `SYSTEMCTL_TIMEOUT`, so a stuck user manager
+/// cannot hang the daemon or the settings window.
+fn systemctl_output(systemctl: &Path, arguments: &[&str]) -> io::Result<String> {
+    let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+    let stdout = SystemCommandRunner
+        .run_output(
+            PlatformCapability::ServiceManagement,
+            &PlatformExecutable::at(PlatformTool::Systemctl, systemctl),
+            &arguments,
+            Instant::now() + SYSTEMCTL_TIMEOUT,
+        )
+        .map_err(io::Error::other)?;
+    Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
 }
 
 fn quote_desktop_exec_value(value: &str) -> String {

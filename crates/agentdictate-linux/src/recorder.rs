@@ -2,14 +2,14 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt, fs, io,
-    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     path::{Path, PathBuf},
     process::{Child, ExitStatus},
     thread,
     time::Instant,
 };
 
-use crate::command::SystemCommandRunner;
+use crate::command::{SystemCommandRunner, pidfd_open};
 
 const WAV_HEADER_BYTES: u64 = 44;
 const DROP_FINALIZATION_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -254,22 +254,9 @@ impl AsRawFd for RecordingExitObserver {
 impl Recording {
     pub fn exit_observer(&self) -> Result<RecordingExitObserver, RecorderError> {
         let process_id = self.child.id();
-        // SAFETY: `pidfd_open` receives only integer values and returns a new
-        // owned descriptor on success. The child remains owned by `Recording`.
-        let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, process_id, 0) };
-        if descriptor < 0 {
-            return Err(RecorderError::ObserveExit {
-                process_id,
-                source: io::Error::last_os_error(),
-            });
-        }
-        let descriptor = i32::try_from(descriptor).map_err(|_| RecorderError::ObserveExit {
-            process_id,
-            source: io::Error::other("pidfd does not fit in a file descriptor"),
-        })?;
-        // SAFETY: ownership of the fresh descriptor returned by pidfd_open is
-        // transferred exactly once to OwnedFd.
-        let pidfd = unsafe { OwnedFd::from_raw_fd(descriptor) };
+        // The child remains owned by `Recording`; the pidfd only observes it.
+        let pidfd = pidfd_open(process_id)
+            .map_err(|source| RecorderError::ObserveExit { process_id, source })?;
         Ok(RecordingExitObserver { process_id, pidfd })
     }
 
