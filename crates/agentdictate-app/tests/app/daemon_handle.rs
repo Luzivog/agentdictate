@@ -7,11 +7,12 @@ use std::{
 
 use agentdictate_app::{
     AgentProcess, AppPaths, CapturedRecording, Daemon, DaemonDeliverer, DaemonHandle,
-    RecordingController, Transcriber,
+    RecordingController, Transcriber, Trigger, TriggerOutcome,
 };
 use agentdictate_core::{
     ClientCommand, JobStage, ServerMessageKind, SettingChange, Settings, WorkflowPhase,
 };
+use agentdictate_linux::hotkey::HotkeySignal;
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, IpcHandler, Recorder,
     RecordingJob, Runtime, Transcript,
@@ -195,6 +196,50 @@ fn settings_and_snapshots_are_served_while_a_transcription_is_blocked() {
         ServerMessageKind::Snapshot { snapshot, .. }
             if matches!(snapshot.workflow.phase, WorkflowPhase::Processing { .. })
     ));
+    gate.open();
+    wait_for(&handle, |phase| phase == WorkflowPhase::Ready);
+    assert_eq!(deliveries(&handle), [DeliveryMethod::Paste]);
+}
+
+#[test]
+fn presses_during_processing_are_ignored_atomically() {
+    let directory = tempdir().unwrap();
+    let transcriber = GatedTranscriber::default();
+    let gate = transcriber.gate.clone();
+    let (handle, paths) = handle_with(directory.path(), transcriber);
+    let press = Trigger::Hotkey(HotkeySignal::Pressed);
+    let TriggerOutcome::Started {
+        job_id,
+        toggle: true,
+    } = handle.trigger(press)
+    else {
+        panic!("a toggle press starts a recording");
+    };
+    assert_eq!(handle.trigger(press), TriggerOutcome::Stopped { job_id });
+    gate.wait_until_entered();
+
+    for trigger in [
+        press,
+        Trigger::TrayToggle,
+        Trigger::TrayStartLiteral,
+        Trigger::Hotkey(HotkeySignal::Cancelled),
+    ] {
+        assert!(
+            matches!(
+                handle.trigger(trigger),
+                TriggerOutcome::Ignored {
+                    phase: WorkflowPhase::Processing { .. }
+                }
+            ),
+            "{trigger:?}"
+        );
+    }
+
+    let jobs: i64 = rusqlite::Connection::open(&paths.database_file)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM dictation_jobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1);
     gate.open();
     wait_for(&handle, |phase| phase == WorkflowPhase::Ready);
     assert_eq!(deliveries(&handle), [DeliveryMethod::Paste]);

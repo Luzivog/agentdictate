@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, HistoryPageRequest, Hotkey, HotkeyCaptureOutcome,
-    HotkeyReadiness, RecordingMode, ServerMessage, SettingChange, Settings, WorkflowPhase,
+    ClientCommandKind, HistoryPageRequest, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness,
+    RecordingMode, ServerMessage, SettingChange, Settings,
 };
-use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
+use agentdictate_linux::hotkey::HotkeySpec;
 use agentdictate_runtime::{
     FinishedJobCleanup, Runtime, RuntimeError, load_settings, save_settings,
 };
@@ -19,8 +19,6 @@ use crate::{
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
-pub type ProductionDaemon =
-    Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
 /// How long a shortcut capture waits for a key press.
 pub(crate) const HOTKEY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,7 +48,6 @@ pub struct AgentProcess<
     database_file: PathBuf,
     recordings_directory: PathBuf,
     hotkey_control: Option<Arc<dyn HotkeyControl>>,
-    recording_mode_control: Option<Arc<RwLock<RecordingMode>>>,
 }
 
 /// What an IPC command answers with, rendered once the command's work is done.
@@ -118,7 +115,6 @@ where
             database_file: paths.database_file.clone(),
             recordings_directory: paths.recordings.clone(),
             hotkey_control: None,
-            recording_mode_control: None,
         }
     }
 
@@ -146,26 +142,12 @@ where
         self.daemon.settings().show_tray_icon
     }
 
-    pub fn set_hotkey_readiness(&mut self, readiness: HotkeyReadiness) {
-        self.daemon.set_hotkey_readiness(readiness);
-    }
-
     pub fn set_overlay_controller(&mut self, controller: OverlayController) {
         self.daemon.set_overlay_controller(controller);
     }
 
-    /// See `Daemon::recording_flag`.
-    #[must_use]
-    pub fn recording_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        self.daemon.recording_flag()
-    }
-
     pub fn set_hotkey_control(&mut self, control: Arc<dyn HotkeyControl>) {
         self.hotkey_control = Some(control);
-    }
-
-    pub fn set_recording_mode_control(&mut self, recording_mode: Arc<RwLock<RecordingMode>>) {
-        self.recording_mode_control = Some(recording_mode);
     }
 
     /// Starts reconciliation that is useful but must never delay or prevent
@@ -316,8 +298,6 @@ where
         let start_on_login_changed =
             settings.start_on_login != self.daemon.settings().start_on_login;
         let hotkey_changed = settings.hotkey != self.daemon.settings().hotkey;
-        let recording_mode_changed =
-            settings.recording_mode != self.daemon.settings().recording_mode;
         let new_hotkey = hotkey_changed.then(|| HotkeySpec::from(&settings.hotkey));
         let old_hotkey = hotkey_changed.then(|| HotkeySpec::from(&self.daemon.settings().hotkey));
         if let Some(spec) = new_hotkey.as_ref() {
@@ -350,12 +330,6 @@ where
         self.daemon.recorder_mut().update_settings(&settings);
         self.daemon.deliverer_mut().update_settings(&settings);
         self.daemon.update_settings(settings);
-        if recording_mode_changed && let Some(mode) = &self.recording_mode_control {
-            *mode
-                .write()
-                .map_err(|_| anyhow::anyhow!("recording-mode control is unavailable"))? =
-                self.daemon.settings().recording_mode;
-        }
         Ok(())
     }
 
@@ -450,39 +424,6 @@ pub(crate) const fn request_id(command: &ClientCommandKind) -> u64 {
     }
 }
 
-/// Converts one dispatcher-approved hotkey edge into at most one lifecycle command.
-/// The native listener owns repeat suppression; the daemon dispatcher owns toggle rearming.
-#[must_use]
-pub fn command_for_hotkey(
-    mode: RecordingMode,
-    signal: HotkeySignal,
-    phase: WorkflowPhase,
-    request_id: u64,
-) -> Option<ClientCommand> {
-    let is_recording = matches!(
-        phase,
-        WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
-    );
-    match (mode, signal) {
-        (_, HotkeySignal::Cancelled) if is_recording => Some(ClientCommand::cancel(request_id)),
-        (_, HotkeySignal::Cancelled) => None,
-        (RecordingMode::Hold, HotkeySignal::Pressed) if !is_recording => {
-            Some(ClientCommand::start_recording(request_id))
-        }
-        (RecordingMode::Hold, HotkeySignal::Released) if is_recording => {
-            Some(ClientCommand::stop_recording(request_id))
-        }
-        (RecordingMode::Hold, _) => None,
-        (RecordingMode::Toggle, HotkeySignal::Pressed) if is_recording => {
-            Some(ClientCommand::stop_recording(request_id))
-        }
-        (RecordingMode::Toggle, HotkeySignal::Pressed) => {
-            Some(ClientCommand::start_recording(request_id))
-        }
-        (RecordingMode::Toggle, HotkeySignal::Released) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -493,7 +434,7 @@ mod tests {
         },
     };
 
-    use agentdictate_core::{JobStage, KeepTranscripts, ServerMessageKind};
+    use agentdictate_core::{ClientCommand, JobStage, KeepTranscripts, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };

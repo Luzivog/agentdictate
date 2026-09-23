@@ -4,10 +4,10 @@ mod daemon_flow;
 mod daemon_handle;
 #[path = "app/diagnostics.rs"]
 mod diagnostics;
-#[path = "app/hotkey_dispatch.rs"]
-mod hotkey_dispatch;
 #[path = "app/hotkey_dispatch_state.rs"]
 mod hotkey_dispatch_state;
+#[path = "app/lifecycle.rs"]
+mod lifecycle;
 #[path = "app/openai_http.rs"]
 mod openai_http;
 #[path = "app/overlay_lifecycle.rs"]
@@ -18,5 +18,3 @@ mod paths;
 mod support;
 #[path = "app/transcription.rs"]
 mod transcription;
-#[path = "app/tray.rs"]
-mod tray;

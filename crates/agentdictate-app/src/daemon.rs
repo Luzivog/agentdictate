@@ -1,14 +1,14 @@
 use std::fs;
 use std::sync::{
-    Arc,
+    Arc, Mutex, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageRequest, HistoryPageSnapshot, HotkeyReadiness, JobId, JobStage,
-    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
-    WorkspaceSnapshot,
+    RecordingMode, Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal,
+    WorkflowSnapshot, WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
@@ -154,6 +154,59 @@ pub enum DaemonError {
     StaleResult { job_id: JobId },
 }
 
+/// Daemon state that other threads read without the daemon lock. The hotkey
+/// loop must never wait for that lock: saving settings holds it while it
+/// waits for the hotkey loop to accept a new shortcut.
+#[derive(Debug)]
+pub struct DaemonStatus {
+    /// A recording is starting or running, so Esc can cancel it.
+    recording: AtomicBool,
+    recording_mode: Mutex<RecordingMode>,
+    hotkey: Mutex<HotkeyReadiness>,
+}
+
+impl DaemonStatus {
+    fn new(recording_mode: RecordingMode) -> Self {
+        Self {
+            recording: AtomicBool::new(false),
+            recording_mode: Mutex::new(recording_mode),
+            hotkey: Mutex::new(HotkeyReadiness::Starting),
+        }
+    }
+
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.recording.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn recording_mode(&self) -> RecordingMode {
+        *self
+            .recording_mode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[must_use]
+    pub fn hotkey_readiness(&self) -> HotkeyReadiness {
+        self.hotkey
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn set_hotkey_readiness(&self, readiness: HotkeyReadiness) {
+        *self.hotkey.lock().unwrap_or_else(PoisonError::into_inner) = readiness;
+    }
+
+    fn set_recording_mode(&self, mode: RecordingMode) {
+        *self
+            .recording_mode
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = mode;
+    }
+}
+
 /// A result that arrives this long after the user stopped recording is only
 /// copied: by then they may have moved on to another window.
 const STALE_PASTE_AFTER: Duration = Duration::from_secs(8);
@@ -198,9 +251,8 @@ pub struct Daemon<R, T, D> {
     activity: Activity,
     recoverable_count: usize,
     last_transcript: Option<String>,
-    hotkey: HotkeyReadiness,
     overlay: OverlayDeliveryGate,
-    recording: Arc<AtomicBool>,
+    status: Arc<DaemonStatus>,
 }
 
 impl<R, T, D> Daemon<R, T, D>
@@ -219,6 +271,7 @@ where
         deliverer: D,
     ) -> Self {
         let recoverable_count = runtime.recoveries().map_or(0, |entries| entries.len());
+        let status = Arc::new(DaemonStatus::new(settings.recording_mode));
         Self {
             runtime,
             settings,
@@ -230,9 +283,8 @@ where
             activity: Activity::Idle,
             recoverable_count,
             last_transcript: None,
-            hotkey: HotkeyReadiness::Starting,
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
-            recording: Arc::new(AtomicBool::new(false)),
+            status,
         }
     }
 
@@ -793,15 +845,14 @@ where
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
             workflow: self.workflow.snapshot(),
-            hotkey: self.hotkey.clone(),
+            hotkey: self.status.hotkey_readiness(),
             recoverable_count: self.recoverable_count,
             last_transcript: self.last_transcript.clone(),
         }
     }
 
-    pub fn set_hotkey_readiness(&mut self, readiness: HotkeyReadiness) {
-        self.hotkey = readiness;
-        self.publish_overlay_update();
+    pub fn set_hotkey_readiness(&self, readiness: HotkeyReadiness) {
+        self.status.set_hotkey_readiness(readiness);
     }
 
     pub fn set_overlay_controller(&mut self, controller: OverlayController) {
@@ -809,12 +860,10 @@ where
         self.publish_overlay_update();
     }
 
-    /// True while a recording is starting or running. Other threads read it
-    /// without the daemon lock; the hotkey listener uses it to drop Esc
-    /// presses that could not cancel anything.
+    /// State other threads read without the daemon lock.
     #[must_use]
-    pub fn recording_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.recording)
+    pub fn status(&self) -> Arc<DaemonStatus> {
+        Arc::clone(&self.status)
     }
 
     #[must_use]
@@ -833,6 +882,7 @@ where
     }
 
     pub fn update_settings(&mut self, settings: Settings) {
+        self.status.set_recording_mode(settings.recording_mode);
         self.settings = settings;
         self.publish_overlay_update();
     }
@@ -849,14 +899,14 @@ where
         &mut self.deliverer
     }
 
-    /// Publishes the workflow to the overlay helper and the recording flag.
+    /// Publishes the workflow to the overlay helper and the status mirror.
     /// Every workflow change ends with this call.
     fn publish_overlay_update(&self) {
         let recording = matches!(
             self.workflow.snapshot().phase,
             WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
         );
-        self.recording.store(recording, Ordering::Release);
+        self.status.recording.store(recording, Ordering::Release);
         if let OverlayDeliveryGate::Live(overlay) = &self.overlay {
             overlay.update(self.overlay_update());
         }

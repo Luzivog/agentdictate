@@ -1,64 +1,26 @@
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, Sender},
-    },
+    sync::mpsc::{self, Sender},
     thread::JoinHandle,
 };
 
-use agentdictate_core::{ClientCommand, ServerMessageKind, WorkflowPhase};
-use agentdictate_runtime::IpcClient;
 use ksni::blocking::TrayMethods;
 
-use crate::startup::running_app_image;
-
-static TRAY_REQUEST_ID: AtomicU64 = AtomicU64::new(10_000);
+use crate::{DaemonHandle, Trigger, TriggerOutcome, startup::running_app_image};
 
 /// User intent emitted by the desktop tray. Menu callbacks only enqueue these
-/// values; IPC and process work happens away from the status-notifier thread.
+/// values; daemon and process work happens away from the status-notifier
+/// thread.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
     OpenSettings,
     ToggleDictation,
     StartLiteral,
+    /// Discards a recording, or stops waiting for a transcription, whose
+    /// result then waits in Recovery.
+    Cancel,
     Quit,
-}
-
-/// Converts the state-sensitive tray toggle into a single daemon command.
-/// Busy processing states intentionally produce no command rather than
-/// replaying an action after the current dictation completes. A dictation
-/// waiting in Recovery does not block a new one, as with the hotkey.
-#[must_use]
-pub const fn tray_command_for_phase(
-    action: TrayAction,
-    phase: WorkflowPhase,
-    request_id: u64,
-) -> Option<ClientCommand> {
-    if matches!(action, TrayAction::StartLiteral) {
-        return match phase {
-            WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. } => {
-                Some(ClientCommand::start_recording_in_mode(
-                    request_id,
-                    agentdictate_core::DictationMode::Literal,
-                ))
-            }
-            _ => None,
-        };
-    }
-    if !matches!(action, TrayAction::ToggleDictation) {
-        return None;
-    }
-    match phase {
-        WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. } => {
-            Some(ClientCommand::start_recording(request_id))
-        }
-        WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. } => {
-            Some(ClientCommand::stop_recording(request_id))
-        }
-        WorkflowPhase::Stopping { .. } | WorkflowPhase::Processing { .. } => None,
-    }
 }
 
 #[derive(Debug)]
@@ -86,6 +48,7 @@ impl ksni::Tray for AgentDictateTray {
         let toggle_actions = self.actions.clone();
         let quit_actions = self.actions.clone();
         let literal_actions = self.actions.clone();
+        let cancel_actions = self.actions.clone();
         vec![
             StandardItem {
                 label: "Open AgentDictate".to_owned(),
@@ -108,6 +71,14 @@ impl ksni::Tray for AgentDictateTray {
                 label: "Start literal dictation".into(),
                 activate: Box::new(move |_| {
                     let _ = literal_actions.send(TrayAction::StartLiteral);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Cancel dictation".into(),
+                activate: Box::new(move |_| {
+                    let _ = cancel_actions.send(TrayAction::Cancel);
                 }),
                 ..Default::default()
             }
@@ -136,22 +107,19 @@ pub struct SystemTrayHandle {
 /// treated as an offline watcher by ksni, so the daemon and global shortcut
 /// remain available even when the shell has no tray extension.
 pub fn start_system_tray(
-    runtime_directory: PathBuf,
+    handle: DaemonHandle,
     settings_executable: PathBuf,
-) -> Result<SystemTrayHandle, ksni::Error> {
+) -> anyhow::Result<SystemTrayHandle> {
     let (actions, incoming) = mpsc::channel();
     let worker = std::thread::Builder::new()
         .name("agentdictate-tray-actions".to_owned())
         .spawn(move || {
             while let Ok(action) = incoming.recv() {
-                if let Err(error) =
-                    execute_tray_action(action, &runtime_directory, &settings_executable)
-                {
+                if let Err(error) = execute_tray_action(action, &handle, &settings_executable) {
                     tracing::error!(?action, %error, "tray action failed");
                 }
             }
-        })
-        .expect("tray action worker should start");
+        })?;
     let tray = AgentDictateTray { actions }
         .assume_sni_available(true)
         .spawn()?;
@@ -169,10 +137,10 @@ pub fn settings_executable_for_current_process() -> std::io::Result<PathBuf> {
 
 fn execute_tray_action(
     action: TrayAction,
-    runtime_directory: &Path,
+    handle: &DaemonHandle,
     settings_executable: &Path,
 ) -> anyhow::Result<()> {
-    match action {
+    let trigger = match action {
         TrayAction::OpenSettings => {
             drop(
                 Command::new(settings_executable)
@@ -181,32 +149,18 @@ fn execute_tray_action(
                     .stderr(Stdio::null())
                     .spawn()?,
             );
+            return Ok(());
+        }
+        TrayAction::Quit => return Ok(handle.quit()?),
+        TrayAction::ToggleDictation => Trigger::TrayToggle,
+        TrayAction::StartLiteral => Trigger::TrayStartLiteral,
+        TrayAction::Cancel => Trigger::TrayCancel,
+    };
+    match handle.trigger(trigger) {
+        TriggerOutcome::Failed(error) => anyhow::bail!(error),
+        outcome => {
+            tracing::info!(?action, ?outcome, "tray action completed");
             Ok(())
         }
-        TrayAction::ToggleDictation | TrayAction::StartLiteral => {
-            let (mut client, initial) = IpcClient::connect(runtime_directory)?;
-            let ServerMessageKind::Snapshot { snapshot, .. } = initial.kind else {
-                anyhow::bail!("daemon did not provide its current workflow")
-            };
-            let request_id = TRAY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-            let Some(command) = tray_command_for_phase(action, snapshot.workflow.phase, request_id)
-            else {
-                tracing::info!("dictation is busy; tray toggle ignored");
-                return Ok(());
-            };
-            reject_command_error(client.send(command)?.kind)
-        }
-        TrayAction::Quit => {
-            let (mut client, _) = IpcClient::connect(runtime_directory)?;
-            let request_id = TRAY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-            reject_command_error(client.send(ClientCommand::quit(request_id))?.kind)
-        }
     }
-}
-
-fn reject_command_error(message: ServerMessageKind) -> anyhow::Result<()> {
-    if let ServerMessageKind::CommandRejected { error, .. } = message {
-        anyhow::bail!(error)
-    }
-    Ok(())
 }

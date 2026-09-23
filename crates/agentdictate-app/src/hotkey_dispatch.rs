@@ -1,16 +1,10 @@
 use std::{
-    path::Path,
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    panic::{self, AssertUnwindSafe},
+    sync::{Arc, mpsc::Sender},
     time::{Duration, Instant},
 };
 
-use agentdictate_core::{
-    ClientCommandTag, HotkeyCaptureOutcome, HotkeyReadiness, RecordingMode, ServerMessageKind,
-    WorkflowPhase,
-};
+use agentdictate_core::{HotkeyCaptureOutcome, HotkeyReadiness, RecordingMode};
 use agentdictate_linux::{
     hotkey::{HotkeyListenerStatus, HotkeySignal, HotkeySpec},
     native_hotkey::{
@@ -18,62 +12,49 @@ use agentdictate_linux::{
         NativeHotkeyRetryWatcher, NativeHotkeySignal, NativeHotkeySignalTrigger,
     },
 };
-use agentdictate_runtime::IpcClient;
 
-use crate::{AgentProcess, HotkeyControl, command_for_hotkey};
+use crate::{DaemonHandle, DaemonStatus, HotkeyControl, Trigger, TriggerOutcome};
 
-static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-
-pub fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyhow::Result<()> {
+/// Starts the global shortcut listener and the loop that turns its signals
+/// into daemon triggers. Readiness goes to the daemon's status mirror.
+pub fn start_hotkey_listener(handle: &DaemonHandle) -> anyhow::Result<()> {
     let (events, incoming) = std::sync::mpsc::channel();
-    let (status_updates, status_receiver) = std::sync::mpsc::channel();
-    let status_runtime = runtime.to_owned();
-    std::thread::Builder::new()
-        .name("agentdictate-hotkey-status".into())
-        .spawn(move || {
-            while let Ok(readiness) = status_receiver.recv() {
-                if let Err(error) = update_hotkey_status(&status_runtime, readiness) {
-                    tracing::error!(%error, "could not publish hotkey status");
-                }
-            }
-        })?;
-    let recording_mode = Arc::new(RwLock::new(process.recording_mode()));
-    let recording = process.recording_flag();
-    process.set_recording_mode_control(Arc::clone(&recording_mode));
-    process.set_hotkey_control(Arc::new(SupervisedHotkeyControl {
-        events: events.clone(),
-    }));
+    let status = handle.status();
+    let hotkey = handle.with_process(|process| {
+        process.set_hotkey_control(Arc::new(SupervisedHotkeyControl {
+            events: events.clone(),
+        }));
+        process.hotkey().clone()
+    });
+    let actions = start_hotkey_action_worker(handle.clone(), events.clone())?;
 
     let generation = 1_u64;
-    let current_spec = HotkeySpec::from(process.hotkey());
+    let current_spec = HotkeySpec::from(&hotkey);
     let active_listener = match NativeHotkeyListener::start(current_spec.clone()) {
         Ok(listener) => {
             log_initial_hotkey_readiness(generation, listener.readiness());
-            process.set_hotkey_readiness(readiness_from_initial(listener.readiness()));
+            status.set_hotkey_readiness(readiness_from_initial(listener.readiness()));
             Some(activate_listener(listener, generation, events.clone())?)
         }
         Err(error) => {
-            process.set_hotkey_readiness(HotkeyReadiness::Unavailable {
+            status.set_hotkey_readiness(HotkeyReadiness::Unavailable {
                 message: error.to_string(),
             });
             schedule_environment_retry(generation, events.clone());
             None
         }
     };
-    let runtime = runtime.to_owned();
     std::thread::Builder::new()
         .name("agentdictate-hotkey-dispatch".into())
         .spawn(move || {
             hotkey_dispatch_loop(HotkeyDispatchLoop {
-                runtime,
-                recording_mode,
-                recording,
+                status,
+                actions,
                 events,
                 incoming,
                 current_spec,
                 active_listener,
                 generation,
-                status_updates,
             });
         })?;
     Ok(())
@@ -209,31 +190,28 @@ fn schedule_environment_retry(generation: u64, events: std::sync::mpsc::Sender<D
     }
 }
 
+/// The dispatch loop never waits for the daemon lock: saving settings holds
+/// it while it waits for this loop to reconfigure the listener.
 struct HotkeyDispatchLoop {
-    runtime: std::path::PathBuf,
-    recording_mode: Arc<RwLock<RecordingMode>>,
-    recording: Arc<AtomicBool>,
-    events: std::sync::mpsc::Sender<DispatchLoopEvent>,
+    status: Arc<DaemonStatus>,
+    actions: Sender<NativeHotkeySignal>,
+    events: Sender<DispatchLoopEvent>,
     incoming: std::sync::mpsc::Receiver<DispatchLoopEvent>,
     current_spec: HotkeySpec,
     active_listener: Option<ActiveHotkeyListener>,
     generation: u64,
-    status_updates: std::sync::mpsc::Sender<HotkeyReadiness>,
 }
 
 fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
     let HotkeyDispatchLoop {
-        runtime,
-        recording_mode,
-        recording,
+        status,
+        actions,
         events,
         incoming,
         mut current_spec,
         mut active_listener,
         mut generation,
-        status_updates,
     } = state;
-    let runtime = runtime.as_path();
     let mut gate = HotkeyDispatchGate::default();
     while let Ok(event) = incoming.recv() {
         match event {
@@ -242,13 +220,11 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 event: NativeHotkeyEvent::Signal(event),
             } if event_generation == generation => {
                 if event.signal == HotkeySignal::Cancelled
-                    && gate.ignores_cancel(recording.load(Ordering::Acquire))
+                    && gate.ignores_cancel(status.is_recording())
                 {
                     continue;
                 }
-                let mode = recording_mode
-                    .read()
-                    .map_or(RecordingMode::Toggle, |mode| *mode);
+                let mode = status.recording_mode();
                 match gate.accept(mode, &event) {
                     Ok(()) => {
                         log_hotkey_decision(
@@ -259,7 +235,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                             "accepted",
                             None,
                         );
-                        spawn_hotkey_action(runtime, mode, event, events.clone());
+                        dispatch(&actions, event, &events);
                     }
                     Err(reason) => {
                         let disposition = if reason == HotkeyIgnoreReason::TerminalQueued {
@@ -280,14 +256,14 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,
-                event: NativeHotkeyEvent::Status(status),
+                event: NativeHotkeyEvent::Status(listener_status),
             } if event_generation == generation => {
                 tracing::info!(
                     listener_generation = event_generation,
-                    ?status,
+                    status = ?listener_status,
                     "hotkey listener status changed"
                 );
-                let readiness = match status {
+                let readiness = match listener_status {
                     HotkeyListenerStatus::Starting => HotkeyReadiness::Starting,
                     HotkeyListenerStatus::Ready { .. } => HotkeyReadiness::Ready,
                     HotkeyListenerStatus::Unavailable { .. } => HotkeyReadiness::Unavailable {
@@ -295,7 +271,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                             .to_owned(),
                     },
                 };
-                publish_hotkey_status(&status_updates, readiness);
+                status.set_hotkey_readiness(readiness);
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,
@@ -318,12 +294,9 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 event: NativeHotkeyEvent::DiscoveryError(error),
             } if event_generation == generation => {
                 tracing::error!(%error, "keyboard discovery failed");
-                publish_hotkey_status(
-                    &status_updates,
-                    HotkeyReadiness::Unavailable {
-                        message: format!("Keyboard discovery failed: {error}"),
-                    },
-                );
+                status.set_hotkey_readiness(HotkeyReadiness::Unavailable {
+                    message: format!("Keyboard discovery failed: {error}"),
+                });
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,
@@ -345,10 +318,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             }
             DispatchLoopEvent::ActionFinished(completion) => {
                 if let Some(event) = gate.complete(completion.outcome, completion.completed_at) {
-                    let mode = recording_mode
-                        .read()
-                        .map_or(RecordingMode::Toggle, |mode| *mode);
-                    spawn_hotkey_action(runtime, mode, event, events.clone());
+                    dispatch(&actions, event, &events);
                 }
             }
             DispatchLoopEvent::ListenerClosed {
@@ -359,13 +329,13 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                     "hotkey listener closed"
                 );
                 active_listener = None;
-                publish_hotkey_status(&status_updates, listener_closed_readiness());
+                status.set_hotkey_readiness(listener_closed_readiness());
                 schedule_environment_retry(generation, events.clone());
             }
             DispatchLoopEvent::EnvironmentChanged {
                 generation: retry_generation,
             } if retry_generation == generation && active_listener.is_none() => {
-                publish_hotkey_status(&status_updates, HotkeyReadiness::Starting);
+                status.set_hotkey_readiness(HotkeyReadiness::Starting);
                 generation += 1;
                 match NativeHotkeyListener::start(current_spec.clone()) {
                     Ok(listener) => {
@@ -374,28 +344,22 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                         match activate_listener(listener, generation, events.clone()) {
                             Ok(listener) => {
                                 active_listener = Some(listener);
-                                publish_hotkey_status(&status_updates, readiness);
+                                status.set_hotkey_readiness(readiness);
                             }
                             Err(error) => {
                                 tracing::error!(%error, "could not bridge recovered hotkey listener");
-                                publish_hotkey_status(
-                                    &status_updates,
-                                    HotkeyReadiness::Unavailable {
-                                        message: error.to_string(),
-                                    },
-                                );
+                                status.set_hotkey_readiness(HotkeyReadiness::Unavailable {
+                                    message: error.to_string(),
+                                });
                                 schedule_environment_retry(generation, events.clone());
                             }
                         }
                     }
                     Err(error) => {
                         tracing::error!(%error, "hotkey listener recovery failed");
-                        publish_hotkey_status(
-                            &status_updates,
-                            HotkeyReadiness::Unavailable {
-                                message: error.to_string(),
-                            },
-                        );
+                        status.set_hotkey_readiness(HotkeyReadiness::Unavailable {
+                            message: error.to_string(),
+                        });
                         schedule_environment_retry(generation, events.clone());
                     }
                 }
@@ -426,15 +390,6 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             | DispatchLoopEvent::ListenerClosed { .. }
             | DispatchLoopEvent::EnvironmentChanged { .. } => {}
         }
-    }
-}
-
-fn publish_hotkey_status(
-    status_updates: &std::sync::mpsc::Sender<HotkeyReadiness>,
-    readiness: HotkeyReadiness,
-) {
-    if status_updates.send(readiness).is_err() {
-        tracing::error!("hotkey status publisher has stopped");
     }
 }
 
@@ -581,8 +536,8 @@ impl HotkeyDispatchGate {
         Err(HotkeyIgnoreReason::ActionInFlight)
     }
 
-    /// Whether an Esc press can be dropped before dispatch, without an
-    /// action thread, IPC round trip, or log line. Esc cancels only a
+    /// Whether an Esc press can be dropped before dispatch, without taking
+    /// the daemon lock or writing a log line. Esc cancels only a
     /// recording, so it is dropped when none is active, unless an action is
     /// in flight: that may be a start, and the press then queues to cancel it.
     pub const fn ignores_cancel(&self, recording_active: bool) -> bool {
@@ -639,116 +594,65 @@ impl Drop for ActionCompletion {
     }
 }
 
-fn spawn_hotkey_action(
-    runtime: &Path,
-    mode: RecordingMode,
-    event: NativeHotkeySignal,
-    events: std::sync::mpsc::Sender<DispatchLoopEvent>,
-) {
-    let runtime = runtime.to_owned();
-    let completion = ActionCompletion::new(events);
-    let spawned = std::thread::Builder::new()
+/// Runs accepted signals one at a time; the gate lets at most one be in
+/// flight. Every signal ends with exactly one `ActionFinished`, even if
+/// acting on it panicked.
+fn start_hotkey_action_worker(
+    handle: DaemonHandle,
+    events: Sender<DispatchLoopEvent>,
+) -> std::io::Result<Sender<NativeHotkeySignal>> {
+    let (actions, incoming) = std::sync::mpsc::channel::<NativeHotkeySignal>();
+    std::thread::Builder::new()
         .name("agentdictate-hotkey-action".into())
         .spawn(move || {
-            completion.finish(match dispatch_hotkey(&runtime, mode, &event) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    tracing::error!(
-                        %error,
-                        signal = ?event.signal,
-                        device_id = event.device.id,
-                        device_path = %event.device.path.display(),
-                        device_name = %event.device.name,
-                        "hotkey action failed"
-                    );
-                    HotkeyActionOutcome::Other
-                }
-            });
-        });
-    if let Err(error) = spawned {
-        // A failed spawn drops the closure, and with it the completion, so
-        // the gate still completes and the next press is accepted.
-        tracing::error!(%error, "could not start the hotkey action");
+            for event in incoming {
+                let completion = ActionCompletion::new(events.clone());
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+                    handle.trigger(Trigger::Hotkey(event.signal))
+                }));
+                completion.finish(action_outcome(&event, outcome));
+            }
+        })?;
+    Ok(actions)
+}
+
+/// Hands an accepted signal to the action worker. If the worker is gone, the
+/// action completes at once, so the gate does not ignore every later press.
+fn dispatch(
+    actions: &Sender<NativeHotkeySignal>,
+    event: NativeHotkeySignal,
+    events: &Sender<DispatchLoopEvent>,
+) {
+    if actions.send(event).is_err() {
+        tracing::error!("the hotkey action worker has stopped");
+        drop(ActionCompletion::new(events.clone()));
     }
 }
 
-fn dispatch_hotkey(
-    runtime: &Path,
-    mode: RecordingMode,
+fn action_outcome(
     event: &NativeHotkeySignal,
-) -> anyhow::Result<HotkeyActionOutcome> {
-    let (mut client, initial) = IpcClient::connect(runtime)?;
-    let ServerMessageKind::Snapshot { snapshot, .. } = initial.kind else {
-        anyhow::bail!("daemon did not provide a hotkey snapshot")
+    outcome: std::thread::Result<TriggerOutcome>,
+) -> HotkeyActionOutcome {
+    let Ok(outcome) = outcome else {
+        tracing::error!(signal = ?event.signal, "hotkey action panicked");
+        return HotkeyActionOutcome::Other;
     };
-    let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    let phase = snapshot.workflow.phase;
-    let Some(command) = command_for_hotkey(mode, event.signal, phase, request_id) else {
-        tracing::info!(
-            request_id,
-            ?mode,
+    if let TriggerOutcome::Failed(error) = &outcome {
+        tracing::error!(
+            %error,
             signal = ?event.signal,
-            ?phase,
             device_id = event.device.id,
             device_path = %event.device.path.display(),
-            "hotkey signal produced no command"
+            device_name = %event.device.name,
+            "hotkey action failed"
         );
-        return Ok(HotkeyActionOutcome::Other);
-    };
-    let command_tag = command.kind();
-    let starts_recording = command_tag == ClientCommandTag::StartRecording;
-    let action = match command_tag {
-        ClientCommandTag::StartRecording => "start_recording",
-        ClientCommandTag::StopRecording => "stop_recording",
-        ClientCommandTag::Cancel => "cancel",
-        _ => "unexpected",
-    };
-    tracing::info!(
-        request_id,
-        ?mode,
-        action,
-        signal = ?event.signal,
-        ?phase,
-        device_id = event.device.id,
-        device_path = %event.device.path.display(),
-        device_name = %event.device.name,
-        "dispatching hotkey command"
-    );
-    let response = client.send(command)?;
-    let toggle_recording_started = match response.kind {
-        ServerMessageKind::CommandRejected { error, .. } => anyhow::bail!(error),
-        ServerMessageKind::Snapshot { snapshot, .. } => {
-            tracing::info!(
-                request_id,
-                action,
-                resulting_phase = ?snapshot.workflow.phase,
-                "hotkey command completed"
-            );
-            mode == RecordingMode::Toggle
-                && starts_recording
-                && matches!(snapshot.workflow.phase, WorkflowPhase::Recording { .. })
-        }
-        ServerMessageKind::Workspace { .. }
-        | ServerMessageKind::HistoryPage { .. }
-        | ServerMessageKind::HotkeyCaptured { .. } => false,
-    };
-    Ok(if toggle_recording_started {
-        HotkeyActionOutcome::ToggleRecordingStarted
     } else {
-        HotkeyActionOutcome::Other
-    })
-}
-
-fn update_hotkey_status(runtime: &Path, readiness: HotkeyReadiness) -> anyhow::Result<()> {
-    let (mut client, _) = IpcClient::connect(runtime)?;
-    let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    let response = client.send(agentdictate_core::ClientCommand::hotkey_status_changed(
-        request_id, readiness,
-    ))?;
-    if let ServerMessageKind::CommandRejected { error, .. } = response.kind {
-        anyhow::bail!(error)
+        tracing::info!(signal = ?event.signal, ?outcome, "hotkey action completed");
     }
-    Ok(())
+    match outcome {
+        TriggerOutcome::Started { toggle: true, .. } => HotkeyActionOutcome::ToggleRecordingStarted,
+        _ => HotkeyActionOutcome::Other,
+    }
 }
 
 #[cfg(test)]

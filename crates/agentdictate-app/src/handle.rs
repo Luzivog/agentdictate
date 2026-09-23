@@ -4,10 +4,14 @@
 //! 1. Work done while holding the process lock is bounded; network I/O never
 //!    runs under it. Transcription runs from a `ProcessingTicket` after the
 //!    lock is released.
-//! 2. Processing threads take the lock only to complete their job. Nothing
+//! 2. The hotkey dispatch loop and the recorder owner thread never wait for
+//!    the lock: saving settings holds it while it waits for the dispatch loop,
+//!    and stopping a recording holds it while it waits for the recorder
+//!    owner. They read `DaemonStatus` and send events through channels.
+//! 3. Processing threads take the lock only to complete their job. Nothing
 //!    that holds the lock waits for a processing thread, except `quit`, which
 //!    waits on a condition variable and so releases the lock meanwhile.
-//! 3. A poisoned lock ends the process with `EXIT_LOCK_POISONED`, so systemd
+//! 4. A poisoned lock ends the process with `EXIT_LOCK_POISONED`, so systemd
 //!    restarts the daemon. The recorder's parent-death signal stops any
 //!    recording, and startup reconciliation keeps its audio.
 
@@ -19,22 +23,120 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use agentdictate_core::{ClientCommand, ClientCommandKind, ServerMessage};
+use agentdictate_core::{
+    ClientCommand, ClientCommandKind, DictationMode, JobId, ProcessingStage, RecordingMode,
+    ServerMessage, WorkflowPhase,
+};
+use agentdictate_linux::hotkey::HotkeySignal;
 use agentdictate_runtime::{IpcClient, IpcHandler, RecordingJob};
 
 use crate::daemon::copied;
 use crate::process::{Followup, HOTKEY_CAPTURE_TIMEOUT, Reply, request_id};
 use crate::{
-    AgentProcess, DaemonDeliverer, DaemonError, ProcessingTicket, ProductionTranscriber,
-    RecorderEvent, RecordingController, SystemDeliverer, SystemRecordingController, Transcriber,
-    TranscriptionCompletion,
+    AgentProcess, DaemonDeliverer, DaemonError, DaemonStatus, ProcessingTicket,
+    ProductionTranscriber, RecorderEvent, RecordingController, SystemDeliverer,
+    SystemRecordingController, Transcriber, TranscriptionCompletion,
 };
 
 /// The exit status after the process lock was poisoned by a panic.
-pub const EXIT_LOCK_POISONED: i32 = 70;
+const EXIT_LOCK_POISONED: i32 = 70;
 /// How long `quit` waits for a transcription in progress to be delivered.
 /// A job still transcribing after that is recovered at the next start.
 const SHUTDOWN_PROCESSING_GRACE: Duration = Duration::from_secs(3);
+
+/// User intent from inside the daemon process: the hotkey and the tray.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Trigger {
+    Hotkey(HotkeySignal),
+    TrayToggle,
+    TrayStartLiteral,
+    TrayCancel,
+}
+
+/// What a trigger asks the daemon to do.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleAction {
+    /// Start a recording, optionally in another dictation mode.
+    Start(Option<DictationMode>),
+    Stop,
+    /// Discard the recording, as Esc does.
+    Discard,
+    /// Stop waiting for the transcription; its result goes to Recovery.
+    CancelProcessing,
+}
+
+/// What a trigger did.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TriggerOutcome {
+    /// `toggle` is set in toggle mode, where the press that started the
+    /// recording must not stop it again at once.
+    Started {
+        job_id: JobId,
+        toggle: bool,
+    },
+    Stopped {
+        job_id: JobId,
+    },
+    Discarded {
+        job_id: JobId,
+    },
+    ProcessingCancelled {
+        job_id: JobId,
+    },
+    /// Nothing to do in this phase.
+    Ignored {
+        phase: WorkflowPhase,
+    },
+    Failed(String),
+}
+
+/// What `trigger` does in each workflow phase. A dictation waiting in
+/// Recovery never blocks a new one. Presses while a dictation stops or
+/// transcribes do nothing and are never replayed later, and Esc only
+/// cancels a recording: a transcription is cancelled only from the tray or
+/// `agentdictate cancel`.
+#[must_use]
+pub const fn lifecycle_action(
+    trigger: Trigger,
+    mode: RecordingMode,
+    phase: WorkflowPhase,
+) -> Option<LifecycleAction> {
+    let idle = matches!(
+        phase,
+        WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. }
+    );
+    let recording = matches!(
+        phase,
+        WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
+    );
+    let transcribing = matches!(
+        phase,
+        WorkflowPhase::Processing {
+            stage: ProcessingStage::Transcribing,
+            ..
+        }
+    );
+    match (trigger, mode) {
+        (Trigger::Hotkey(HotkeySignal::Pressed), _) | (Trigger::TrayToggle, _) if idle => {
+            Some(LifecycleAction::Start(None))
+        }
+        (Trigger::TrayStartLiteral, _) if idle => {
+            Some(LifecycleAction::Start(Some(DictationMode::Literal)))
+        }
+        (Trigger::Hotkey(HotkeySignal::Pressed), RecordingMode::Toggle)
+        | (Trigger::Hotkey(HotkeySignal::Released), RecordingMode::Hold)
+        | (Trigger::TrayToggle, _)
+            if recording =>
+        {
+            Some(LifecycleAction::Stop)
+        }
+        (Trigger::Hotkey(HotkeySignal::Cancelled) | Trigger::TrayCancel, _) if recording => {
+            Some(LifecycleAction::Discard)
+        }
+        (Trigger::TrayCancel, _) if transcribing => Some(LifecycleAction::CancelProcessing),
+        _ => None,
+    }
+}
 
 /// Shares the daemon between threads. Clone it freely; every method holds
 /// the process lock only for bounded work.
@@ -48,6 +150,7 @@ pub struct DaemonHandle<
 
 struct Shared<R, T, D> {
     process: Mutex<AgentProcess<R, T, D>>,
+    status: Arc<DaemonStatus>,
     /// Notified after every completed transcription, for `quit`.
     processing_settled: Condvar,
     /// Set when shutdown begins; commands that would start work are refused.
@@ -76,6 +179,7 @@ where
     pub fn new(process: AgentProcess<R, T, D>, runtime_directory: PathBuf) -> Self {
         Self {
             shared: Arc::new(Shared {
+                status: process.daemon().status(),
                 process: Mutex::new(process),
                 processing_settled: Condvar::new(),
                 quitting: AtomicBool::new(false),
@@ -83,6 +187,59 @@ where
                 runtime_directory,
             }),
         }
+    }
+
+    /// State readable without the process lock.
+    #[must_use]
+    pub fn status(&self) -> Arc<DaemonStatus> {
+        Arc::clone(&self.shared.status)
+    }
+
+    /// Acts on user intent. The phase is read and acted on under one lock,
+    /// so a press can never act on a phase that changed meanwhile. A stopped
+    /// recording is transcribed on its own thread.
+    pub fn trigger(&self, trigger: Trigger) -> TriggerOutcome {
+        if self.shared.quitting.load(Ordering::Acquire) {
+            return TriggerOutcome::Failed(DaemonError::ShuttingDown.to_string());
+        }
+        let (outcome, ticket) = {
+            let mut process = self.lock();
+            let mode = process.recording_mode();
+            let phase = process.daemon().phase();
+            let Some(action) = lifecycle_action(trigger, mode, phase) else {
+                return TriggerOutcome::Ignored { phase };
+            };
+            let daemon = process.daemon_mut();
+            let acted = match action {
+                LifecycleAction::Start(dictation_mode) => {
+                    daemon.start_recording_in_mode(dictation_mode).map(|job| {
+                        let toggle = mode == RecordingMode::Toggle;
+                        (
+                            TriggerOutcome::Started {
+                                job_id: job.id,
+                                toggle,
+                            },
+                            None,
+                        )
+                    })
+                }
+                LifecycleAction::Stop => daemon.stop_recording().map(|ticket| {
+                    let job_id = ticket.job_id();
+                    (TriggerOutcome::Stopped { job_id }, Some(ticket))
+                }),
+                LifecycleAction::Discard => daemon
+                    .discard_recording()
+                    .map(|job| (TriggerOutcome::Discarded { job_id: job.id }, None)),
+                LifecycleAction::CancelProcessing => daemon
+                    .cancel_processing()
+                    .map(|job_id| (TriggerOutcome::ProcessingCancelled { job_id }, None)),
+            };
+            acted.unwrap_or_else(|error| (TriggerOutcome::Failed(error.to_string()), None))
+        };
+        if let Some(ticket) = ticket {
+            self.spawn_processing(ticket);
+        }
+        outcome
     }
 
     /// Runs `f` under the process lock, for composition and tests.

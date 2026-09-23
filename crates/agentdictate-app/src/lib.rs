@@ -20,10 +20,11 @@ mod window_instance;
 mod workspace;
 
 pub use daemon::{
-    CapturedRecording, Daemon, DaemonDeliverer, DaemonError, RecorderEvent, RecordingController,
+    CapturedRecording, Daemon, DaemonDeliverer, DaemonError, DaemonStatus, RecorderEvent,
+    RecordingController,
 };
 pub use diagnostics::init_file_logging;
-pub use handle::{DaemonHandle, EXIT_LOCK_POISONED};
+pub use handle::{DaemonHandle, LifecycleAction, Trigger, TriggerOutcome, lifecycle_action};
 pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
@@ -39,9 +40,7 @@ pub use overlay_process::{
     OverlayProcessAction, OverlayProcessState, OverlayTeardownError, OverlayUpdate,
     is_overlay_helper_argument, start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
-pub use process::{
-    AgentProcess, HotkeyControl, ProductionDaemon, ProductionTranscriber, command_for_hotkey,
-};
+pub use process::{AgentProcess, HotkeyControl, ProductionTranscriber};
 pub use processing::{ProcessingTicket, Transcriber, TranscriptionCompletion};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
@@ -49,7 +48,6 @@ pub use startup::{
 pub use system::{SystemDeliverer, SystemRecordingController};
 pub use tray::{
     SystemTrayHandle, TrayAction, settings_executable_for_current_process, start_system_tray,
-    tray_command_for_phase,
 };
 pub use window_instance::{WindowInstance, WindowLock, raise_open_window};
 pub use workspace::{WorkspaceClient, WorkspaceError};
