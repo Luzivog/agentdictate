@@ -63,16 +63,9 @@ CREATE TABLE IF NOT EXISTS replacement_mappings (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS daily_stats (
-    date TEXT PRIMARY KEY,
-    total_sessions INTEGER NOT NULL DEFAULT 0,
-    total_words INTEGER NOT NULL DEFAULT 0,
-    total_audio_seconds REAL NOT NULL DEFAULT 0,
-    average_wpm REAL NOT NULL DEFAULT 0,
-    estimated_transcription_cost REAL NOT NULL DEFAULT 0,
-    estimated_cleanup_cost REAL NOT NULL DEFAULT 0,
-    estimated_total_cost REAL NOT NULL DEFAULT 0
-);
+-- Caches that usage and pricing no longer keep.
+DROP TABLE IF EXISTS daily_stats;
+DROP TABLE IF EXISTS pricing_settings;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON dictation_sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON transcript_history(created_at);

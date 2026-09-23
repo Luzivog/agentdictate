@@ -2,7 +2,7 @@ use agentdictate_core::{AppliedReplacement, TranscriptionProvider, count_words_a
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
-use crate::history::{recompute_daily_stats, serialize_replacements};
+use crate::history::serialize_replacements;
 use crate::{Runtime, RuntimeError, timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,7 +129,6 @@ impl Runtime {
             "#,
             params![source, receipt.source_id, timestamp(Utc::now()), session_id],
         )?;
-        recompute_daily_stats(&transaction, receipt.started_at.date_naive())?;
         transaction.commit()?;
         Ok(ExternalDictationImportOutcome::Imported {
             session_id,

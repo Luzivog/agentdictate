@@ -36,4 +36,3 @@ pub use settings_store::{load_settings, save_settings};
 mod startup_cleanup;
 pub use startup_cleanup::FinishedJobCleanup;
 mod usage;
-pub use usage::{UsageAggregate, UsageMetric, UsagePoint, UsageSummary, UsageWeek};

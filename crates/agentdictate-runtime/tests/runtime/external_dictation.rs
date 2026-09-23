@@ -45,14 +45,10 @@ fn external_dictation_import_is_idempotent_and_feeds_usage_and_history() {
     ));
     assert_eq!(duplicate, ExternalDictationImportOutcome::AlreadyImported);
 
-    let usage = runtime.usage_summary().unwrap();
-    assert_eq!(usage.all_time.total_sessions, 1);
-    assert_eq!(usage.all_time.total_words, 5);
-    assert_eq!(usage.all_time.total_audio_seconds, 30.5);
-    assert_eq!(
-        usage.most_used_transcription_model.as_deref(),
-        Some("Managed by ChatGPT")
-    );
+    let usage = runtime.usage().unwrap();
+    assert_eq!(usage.all_time.dictations, 1);
+    assert_eq!(usage.all_time.words, 5);
+    assert_eq!(usage.all_time.audio_seconds, 30.5);
 
     let connection = rusqlite::Connection::open(database_path).unwrap();
     let stored: (String, u64, u64, f64) = connection
@@ -93,7 +89,7 @@ fn clearing_history_does_not_make_old_external_receipts_importable_again() {
         runtime.import_external_dictation(&receipt).unwrap(),
         ExternalDictationImportOutcome::AlreadyImported
     );
-    assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 0);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 0);
 }
 
 #[test]
@@ -106,7 +102,7 @@ fn invalid_external_receipts_are_rejected_before_writing_usage() {
     let error = runtime.import_external_dictation(&invalid).unwrap_err();
 
     assert!(error.to_string().contains("duration"));
-    assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 0);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 0);
 }
 
 #[test]

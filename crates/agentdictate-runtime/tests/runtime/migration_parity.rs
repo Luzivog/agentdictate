@@ -68,7 +68,6 @@ fn fresh_database_contains_the_complete_python_compatible_schema() {
         "transcript_history",
         "external_dictation_imports",
         "replacement_mappings",
-        "daily_stats",
         "dictation_jobs",
     ] {
         let exists = connection

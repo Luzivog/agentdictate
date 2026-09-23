@@ -264,37 +264,23 @@ impl Runtime {
         self.query_one_history("h.id = ?1", id)
     }
 
+    /// Deletes one History entry and its usage session.
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
-        let row: Option<(i64, String)> = self
-            .connection
-            .query_row(
-                r#"
-                SELECT h.session_id, s.started_at
-                FROM transcript_history h
-                JOIN dictation_sessions s ON s.id = h.session_id
-                WHERE h.id = ?1
-                "#,
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let Some((session_id, started_at)) = row else {
-            return Ok(false);
-        };
-        let day = parse_timestamp(&started_at)?.date_naive();
-        let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM dictation_sessions WHERE id = ?1", [session_id])?;
-        recompute_daily_stats(&transaction, day)?;
-        transaction.commit()?;
-        self.history_search_cache.borrow_mut().invalidate();
-        Ok(true)
+        let deleted = self.connection.execute(
+            "DELETE FROM dictation_sessions
+             WHERE id = (SELECT session_id FROM transcript_history WHERE id = ?1)",
+            [id],
+        )?;
+        if deleted > 0 {
+            self.history_search_cache.borrow_mut().invalidate();
+        }
+        Ok(deleted > 0)
     }
 
     pub fn clear_history(&mut self) -> Result<(), RuntimeError> {
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM transcript_history", [])?;
         transaction.execute("DELETE FROM dictation_sessions", [])?;
-        transaction.execute("DELETE FROM daily_stats", [])?;
         transaction.commit()?;
         self.history_search_cache.borrow_mut().invalidate();
         Ok(())
@@ -381,7 +367,7 @@ fn record_session(
             ],
         )?;
     }
-    recompute_daily_stats(transaction, job.started_at.date_naive())
+    Ok(())
 }
 
 fn history_query_parameters(query: &HistoryQuery) -> (String, String) {
@@ -460,68 +446,6 @@ pub(crate) fn row_to_history(
             cleanup_error: row.get(26)?,
         })
     })())
-}
-
-pub(super) fn recompute_daily_stats(
-    connection: &rusqlite::Connection,
-    day: NaiveDate,
-) -> Result<(), RuntimeError> {
-    let day = day.to_string();
-    let aggregate: (u64, u64, f64, f64, f64, f64) = connection.query_row(
-        r#"
-        SELECT COUNT(*), COALESCE(SUM(final_word_count), 0),
-               COALESCE(SUM(duration_seconds), 0),
-               COALESCE(SUM(estimated_transcription_cost), 0),
-               COALESCE(SUM(estimated_cleanup_cost), 0),
-               COALESCE(SUM(estimated_total_cost), 0)
-        FROM dictation_sessions
-        WHERE substr(started_at, 1, 10) = ?1
-        "#,
-        [&day],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-            ))
-        },
-    )?;
-    let average_wpm = if aggregate.2 > 0.0 {
-        aggregate.1 as f64 / (aggregate.2 / 60.0)
-    } else {
-        0.0
-    };
-    connection.execute(
-        r#"
-        INSERT INTO daily_stats (
-            date, total_sessions, total_words, total_audio_seconds,
-            average_wpm, estimated_transcription_cost,
-            estimated_cleanup_cost, estimated_total_cost
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-        ON CONFLICT(date) DO UPDATE SET
-            total_sessions = excluded.total_sessions,
-            total_words = excluded.total_words,
-            total_audio_seconds = excluded.total_audio_seconds,
-            average_wpm = excluded.average_wpm,
-            estimated_transcription_cost = excluded.estimated_transcription_cost,
-            estimated_cleanup_cost = excluded.estimated_cleanup_cost,
-            estimated_total_cost = excluded.estimated_total_cost
-        "#,
-        params![
-            day,
-            aggregate.0,
-            aggregate.1,
-            aggregate.2,
-            average_wpm,
-            aggregate.3,
-            aggregate.4,
-            aggregate.5,
-        ],
-    )?;
-    Ok(())
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]

@@ -84,6 +84,31 @@ pub struct UsageTotalsSnapshot {
     pub estimated_cost: f64,
 }
 
+impl std::ops::Add for UsageTotalsSnapshot {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            dictations: self.dictations + other.dictations,
+            words: self.words + other.words,
+            audio_seconds: self.audio_seconds + other.audio_seconds,
+            estimated_cost: self.estimated_cost + other.estimated_cost,
+        }
+    }
+}
+
+impl std::ops::AddAssign for UsageTotalsSnapshot {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl std::iter::Sum for UsageTotalsSnapshot {
+    fn sum<I: Iterator<Item = Self>>(totals: I) -> Self {
+        totals.fold(Self::default(), std::ops::Add::add)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageDaySnapshot {
     pub date: NaiveDate,

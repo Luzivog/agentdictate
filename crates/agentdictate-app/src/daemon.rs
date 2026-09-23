@@ -7,15 +7,13 @@ use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot,
-    HotkeyReadiness, JobId, JobStage, RecoverySnapshot, ReplacementRule, Settings,
-    UsageDaySnapshot, UsageSnapshot, UsageTotalsSnapshot, Workflow, WorkflowError, WorkflowPhase,
-    WorkflowSignal, WorkspaceSnapshot,
+    HotkeyReadiness, JobId, JobStage, RecoverySnapshot, ReplacementRule, Settings, Workflow,
+    WorkflowError, WorkflowPhase, WorkflowSignal, WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, HistoryCursor, HistoryEntry, HistoryQuery,
-    Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError, Transcriber, UsageAggregate,
-    UsageMetric,
+    Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError, Transcriber,
 };
 use chrono::Utc;
 use thiserror::Error;
@@ -527,7 +525,7 @@ where
             })?
             .rows;
         let replacements = self.runtime.replacement_rules()?;
-        let usage = self.usage_snapshot()?;
+        let usage = self.runtime.usage()?;
         Ok(WorkspaceSnapshot {
             overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
             recoveries,
@@ -851,69 +849,4 @@ where
             }
         }
     }
-
-    fn usage_snapshot(&self) -> Result<UsageSnapshot, RuntimeError> {
-        let summary = self.runtime.usage_summary()?;
-        let sessions = self.runtime.usage_series(30, UsageMetric::Sessions)?;
-        let words = self.runtime.usage_series(30, UsageMetric::Words)?;
-        let audio = self.runtime.usage_series(30, UsageMetric::AudioMinutes)?;
-        let costs = self.runtime.usage_series(30, UsageMetric::EstimatedCost)?;
-        let activity = sessions
-            .into_iter()
-            .zip(words)
-            .zip(audio)
-            .zip(costs)
-            .map(|(((sessions, words), audio), cost)| UsageDaySnapshot {
-                date: sessions.date,
-                totals: UsageTotalsSnapshot {
-                    dictations: sessions.value.round().max(0.0) as u64,
-                    words: words.value.round().max(0.0) as u64,
-                    audio_seconds: (audio.value * 60.0).max(0.0),
-                    estimated_cost: cost.value.max(0.0),
-                },
-            })
-            .collect::<Vec<_>>();
-        let last_30_days = sum_usage(activity.iter().map(|day| day.totals));
-        let last_7_days = sum_usage(activity.iter().rev().take(7).map(|day| day.totals));
-        let weekly_activity = self
-            .runtime
-            .usage_weekly_series()?
-            .into_iter()
-            .map(|week| UsageDaySnapshot {
-                date: week.week_start,
-                totals: UsageTotalsSnapshot {
-                    dictations: week.total_sessions,
-                    words: week.total_words,
-                    audio_seconds: week.total_audio_seconds,
-                    estimated_cost: week.estimated_total_cost,
-                },
-            })
-            .collect();
-        Ok(UsageSnapshot {
-            last_7_days,
-            last_30_days,
-            all_time: usage_totals(summary.all_time),
-            activity,
-            weekly_activity,
-        })
-    }
-}
-
-fn usage_totals(aggregate: UsageAggregate) -> UsageTotalsSnapshot {
-    UsageTotalsSnapshot {
-        dictations: aggregate.total_sessions,
-        words: aggregate.total_words,
-        audio_seconds: aggregate.total_audio_seconds,
-        estimated_cost: aggregate.estimated_total_cost,
-    }
-}
-
-fn sum_usage(values: impl Iterator<Item = UsageTotalsSnapshot>) -> UsageTotalsSnapshot {
-    values.fold(UsageTotalsSnapshot::default(), |mut total, value| {
-        total.dictations += value.dictations;
-        total.words += value.words;
-        total.audio_seconds += value.audio_seconds;
-        total.estimated_cost += value.estimated_cost;
-        total
-    })
 }

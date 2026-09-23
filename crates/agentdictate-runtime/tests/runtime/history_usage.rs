@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use agentdictate_core::{ReplacementRule, Settings, TranscriptionProvider};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
-    HistoryQuery, JobStage, RecordingJob, Runtime, Transcriber, Transcript, UsageMetric,
+    HistoryQuery, JobStage, RecordingJob, Runtime, Transcriber, Transcript,
 };
-use chrono::{Datelike, Days, Utc};
 use tempfile::TempDir;
 
 use crate::support::{ReadyRecorder, request, request_with_provider};
@@ -150,61 +149,10 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     let history = runtime.list_history(HistoryQuery::default()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0], first);
-    let usage = runtime.usage_summary().unwrap();
-    assert_eq!(usage.all_time.total_sessions, 1);
-    assert_eq!(usage.all_time.total_words, 4);
-    assert_eq!(usage.all_time.total_audio_seconds, 60.0);
-    assert_eq!(usage.all_time.average_wpm, 4.0);
-    assert_eq!(
-        usage.most_used_transcription_model.as_deref(),
-        Some(TRANSCRIPTION_MODEL)
-    );
-
-    let series = runtime.usage_series(1, UsageMetric::Words).unwrap();
-    assert_eq!(series.len(), 1);
-}
-
-#[test]
-fn all_time_usage_is_aggregated_into_complete_monday_based_weeks() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let runtime = Runtime::open(&database_path).unwrap();
-    let connection = rusqlite::Connection::open(&database_path).unwrap();
-    let today = Utc::now().date_naive();
-    let current_monday = today
-        .checked_sub_days(Days::new(today.weekday().num_days_from_monday().into()))
-        .unwrap();
-    let previous_sunday = current_monday.checked_sub_days(Days::new(1)).unwrap();
-    let current_tuesday = current_monday.checked_add_days(Days::new(1)).unwrap();
-    for (date, sessions, words, seconds, cost) in [
-        (previous_sunday, 2, 20, 60.0, 0.2),
-        (current_monday, 3, 30, 90.0, 0.3),
-        (current_tuesday, 4, 40, 120.0, 0.4),
-    ] {
-        connection
-            .execute(
-                r#"
-                INSERT INTO daily_stats (
-                    date, total_sessions, total_words, total_audio_seconds,
-                    estimated_total_cost
-                ) VALUES (?1, ?2, ?3, ?4, ?5)
-                "#,
-                rusqlite::params![date.to_string(), sessions, words, seconds, cost],
-            )
-            .unwrap();
-    }
-
-    let weeks = runtime.usage_weekly_series().unwrap();
-
-    assert_eq!(weeks.len(), 2);
-    assert_eq!(weeks[0].week_start, current_monday - Days::new(7));
-    assert_eq!(weeks[0].total_sessions, 2);
-    assert_eq!(weeks[0].total_words, 20);
-    assert_eq!(weeks[1].week_start, current_monday);
-    assert_eq!(weeks[1].total_sessions, 7);
-    assert_eq!(weeks[1].total_words, 70);
-    assert_eq!(weeks[1].total_audio_seconds, 210.0);
-    assert!((weeks[1].estimated_total_cost - 0.7).abs() < f64::EPSILON);
+    let usage = runtime.usage().unwrap();
+    assert_eq!(usage.all_time.dictations, 1);
+    assert_eq!(usage.all_time.words, 4);
+    assert_eq!(usage.all_time.audio_seconds, 60.0);
 }
 
 #[test]
@@ -227,7 +175,7 @@ fn delivery_interrupted_before_completion_is_recorded_exactly_once() {
     let history = runtime.list_history(HistoryQuery::default()).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].job_id, Some(delivered.id));
-    assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 1);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 1);
     assert!(runtime.job(delivered.id).unwrap().is_none());
 }
 
@@ -275,9 +223,9 @@ fn history_off_keeps_usage_numbers_but_no_transcript_after_delivery() {
             .is_none()
     );
 
-    let usage = runtime.usage_summary().unwrap();
-    assert_eq!(usage.all_time.total_sessions, 1);
-    assert_eq!(usage.all_time.total_words, 4);
+    let usage = runtime.usage().unwrap();
+    assert_eq!(usage.all_time.dictations, 1);
+    assert_eq!(usage.all_time.words, 4);
     // Job rows and History are the only tables that hold transcript text.
     let connection = rusqlite::Connection::open(&database_path).unwrap();
     for table in ["dictation_jobs", "transcript_history"] {
@@ -326,7 +274,7 @@ fn history_query_and_delete_keep_daily_usage_consistent() {
 
     assert!(runtime.delete_history(entry.id).unwrap());
     assert!(!runtime.delete_history(entry.id).unwrap());
-    assert_eq!(runtime.usage_summary().unwrap().all_time.total_sessions, 0);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 0);
     assert!(
         runtime
             .list_history(HistoryQuery::default())
@@ -885,43 +833,6 @@ fn insert_external_history(
         )
         .unwrap();
     transaction.commit().unwrap();
-}
-
-#[test]
-fn deleting_cross_midnight_history_repairs_the_session_start_day() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let delivered = delivered_job(&mut runtime, &directory);
-    let entry = runtime
-        .complete_delivered(delivered.id, &Settings::default())
-        .unwrap()
-        .unwrap();
-    let connection = rusqlite::Connection::open(&database_path).unwrap();
-    connection
-        .execute(
-            "UPDATE dictation_sessions SET started_at = '2026-08-17T23:59:30Z' WHERE id = ?1",
-            [entry.session_id],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE transcript_history SET created_at = '2026-08-18T00:00:30Z' WHERE id = ?1",
-            [entry.id],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE daily_stats SET date = '2026-08-17' WHERE date = '2026-08-18'",
-            [],
-        )
-        .unwrap();
-    drop(connection);
-
-    assert!(runtime.delete_history(entry.id).unwrap());
-
-    let points = runtime.usage_series(2, UsageMetric::Sessions).unwrap();
-    assert!(points.iter().all(|point| point.value == 0.0));
 }
 
 #[test]
