@@ -197,8 +197,9 @@ impl Runtime {
     /// `KEPT_CANCEL_SECONDS` becomes a `Cancelled` Recovery item with its
     /// audio, which expires after a day, so a mistaken Esc after a long take
     /// loses nothing. A shorter one is deleted: with `keep_audio` (the
-    /// "Preserve temporary audio" setting) only the job is deleted and the
-    /// WAV stays, like the audio of a completed dictation. Otherwise the
+    /// "Keep audio recordings" setting) only the job is deleted and the WAV
+    /// stays, like the audio of a completed dictation, or of an expired
+    /// Recovery item. Otherwise the
     /// shared recovery deletion path moves the audio into quarantine before
     /// deleting the job row, so a failed delete never strands a retryable
     /// row without its only audio copy.
@@ -222,10 +223,7 @@ impl Runtime {
         if !keep_audio {
             return self.delete_recovery(id);
         }
-        self.connection.execute(
-            "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
-            [id.to_string()],
-        )?;
+        self.delete_job_keeping_audio(id)?;
         let deleted = RecordingJob {
             stage: JobStage::Deleted,
             updated_at: Utc::now(),
@@ -234,6 +232,16 @@ impl Runtime {
             ..current
         };
         Ok(deleted)
+    }
+
+    /// Deletes a job's row but not its audio, which "Keep audio recordings"
+    /// keeps like a completed dictation's.
+    pub(crate) fn delete_job_keeping_audio(&mut self, id: JobId) -> Result<(), RuntimeError> {
+        self.connection.execute(
+            "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+            [id.to_string()],
+        )?;
+        Ok(())
     }
 
     /// Moves a captured job to `transcribing`: the last checkpoint before its

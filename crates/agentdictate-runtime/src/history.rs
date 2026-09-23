@@ -27,7 +27,7 @@ impl Runtime {
         settings: &Settings,
     ) -> Result<(), RuntimeError> {
         self.complete_delivered_job(job_id, settings)?;
-        self.apply_retention(settings.keep_transcripts, Utc::now())?;
+        self.apply_retention(settings, Utc::now())?;
         Ok(())
     }
 

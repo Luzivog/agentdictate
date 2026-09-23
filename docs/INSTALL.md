@@ -123,9 +123,9 @@ language. A request that fails before OpenAI answers is sent once more.
   **Delete all history…**, next to **Keep transcripts** in **Settings**, does that for
   every item. Deleted text is overwritten on disk.
 - A failed dictation keeps its text and recording in Recovery until you retry it or
-  delete it, for at most 7 days after it last changed. Then both are deleted. A
-  recording longer than 5 seconds that you cancel with Esc stays there, with its
-  audio, for 24 hours.
+  delete it, for at most 7 days after it last changed. Then both are deleted, unless
+  **Keep audio recordings** keeps the recording. A recording longer than 5 seconds
+  that you cancel with Esc stays there, with its audio, for 24 hours.
 - Before it converts the database to a new format, AgentDictate keeps a copy of the
   old one next to it, named after the new format, such as
   `agentdictate.sqlite.pre-v2`. The copy is deleted the next time AgentDictate

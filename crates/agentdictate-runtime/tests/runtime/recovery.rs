@@ -158,3 +158,40 @@ fn a_cancelled_recording_expires_after_a_day_not_a_week() {
     assert_eq!(runtime.recoveries().unwrap()[0].job_id, failed);
     assert!(failed_audio.exists());
 }
+
+/// "Keep audio recordings" keeps every recording's audio, so an expired
+/// Recovery item, cancelled or failed, leaves its audio behind.
+#[test]
+fn keeping_audio_keeps_it_when_a_recovery_item_expires() {
+    let directory = TempDir::new().unwrap();
+    let database = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let cancelled_audio = directory.path().join("cancelled.wav");
+    let failed_audio = directory.path().join("failed.wav");
+    fs::write(&cancelled_audio, b"RIFF").unwrap();
+    fs::write(&failed_audio, b"RIFF").unwrap();
+    let cancelled = insert_job(
+        &connection,
+        &cancelled_audio,
+        "cancelled",
+        "cancelled",
+        &days_ago(2),
+    );
+    let failed = insert_job(&connection, &failed_audio, "failed", "failed", &days_ago(8));
+    let settings = Settings {
+        preserve_temp_audio: true,
+        ..Settings::default()
+    };
+
+    let cleanup = runtime
+        .clean_up_finished_jobs(&settings, directory.path())
+        .unwrap();
+
+    assert_eq!(cleanup.expired_recoveries, 2);
+    assert!(runtime.recoveries().unwrap().is_empty());
+    assert!(runtime.job(cancelled).unwrap().is_none());
+    assert!(runtime.job(failed).unwrap().is_none());
+    assert!(cancelled_audio.exists());
+    assert!(failed_audio.exists());
+}

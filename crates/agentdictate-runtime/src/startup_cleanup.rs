@@ -126,7 +126,7 @@ impl Runtime {
         if !settings.preserve_temp_audio {
             self.remove_orphan_recordings(recordings, &mut cleanup)?;
         }
-        let retention = self.apply_retention(settings.keep_transcripts, Utc::now())?;
+        let retention = self.apply_retention(settings, Utc::now())?;
         cleanup.purged_transcripts = retention.purged_transcripts;
         cleanup.expired_recoveries = retention.expired_recoveries;
         cleanup.failed_removals += retention.failed_expiries;

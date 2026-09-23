@@ -102,8 +102,8 @@ in the tray menu.
   numbers. Deleted text is overwritten on disk, not just hidden, and the copy of the
   database kept while AgentDictate updates its format is deleted too.
 - A failed dictation waits in **Recovery**, with its text and audio, for 7 days, then
-  both are deleted. A recording you cancelled with <kbd>Esc</kbd> after more than 5
-  seconds waits there for a day.
+  both are deleted, unless **Keep audio recordings** keeps the audio. A recording you
+  cancelled with <kbd>Esc</kbd> after more than 5 seconds waits there for a day.
 - Usage numbers, such as minutes and estimated cost, stay after **Keep transcripts**
   removes the text.
 - Logs can contain transcript text.

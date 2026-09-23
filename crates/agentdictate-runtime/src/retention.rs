@@ -1,11 +1,13 @@
 //! How long finished work stays on this computer. Transcript text follows
-//! the Keep transcripts setting, and a Recovery item, text and audio, lasts
-//! `recovery_lifetime` after its last change. Both rules run at daemon start
-//! and after each completed dictation; nothing runs on a timer.
+//! the Keep transcripts setting, and a Recovery item lasts
+//! `recovery_lifetime` after its last change; its audio goes with it unless
+//! "Keep audio recordings" keeps it, as it keeps a completed dictation's.
+//! Both rules run at daemon start and after each completed dictation;
+//! nothing runs on a timer.
 
 use std::path::Path;
 
-use agentdictate_core::{JobId, JobStage, KeepTranscripts};
+use agentdictate_core::{JobId, JobStage, Settings};
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::migrations::remove_backups;
@@ -49,16 +51,17 @@ pub(crate) struct Retention {
 }
 
 impl Runtime {
-    /// Deletes the text of dictations older than `keep` allows, keeping
-    /// their usage numbers, and deletes expired Recovery items as the user's
-    /// Delete would. When anything was removed, the write-ahead log is
-    /// truncated so the removed text leaves the disk too.
+    /// Deletes the text of dictations older than Keep transcripts allows,
+    /// keeping their usage numbers, and deletes expired Recovery items as
+    /// the user's Delete would, except that "Keep audio recordings" keeps
+    /// their audio. When anything was removed, the removed text leaves the
+    /// disk too.
     pub(crate) fn apply_retention(
         &mut self,
-        keep: KeepTranscripts,
+        settings: &Settings,
         now: DateTime<Utc>,
     ) -> Result<Retention, RuntimeError> {
-        let purged_transcripts = match keep.limit() {
+        let purged_transcripts = match settings.keep_transcripts.limit() {
             Some(limit) => self.connection.execute(
                 r#"
                 UPDATE dictations
@@ -74,8 +77,13 @@ impl Runtime {
             ..Retention::default()
         };
         for id in self.expired_recoveries(now)? {
-            match self.delete_recovery(id) {
-                Ok(_) => retention.expired_recoveries += 1,
+            let expired = if settings.preserve_temp_audio {
+                self.delete_job_keeping_audio(id)
+            } else {
+                self.delete_recovery(id).map(drop)
+            };
+            match expired {
+                Ok(()) => retention.expired_recoveries += 1,
                 Err(error @ RuntimeError::Database(_)) => return Err(error),
                 Err(_) => retention.failed_expiries += 1,
             }

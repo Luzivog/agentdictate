@@ -214,7 +214,9 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 8. **Complete.** One transaction records the dictation, with its usage numbers always
    and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
    Then text older than **Keep transcripts** allows, Recovery items unchanged for 7
-   days, and cancelled recordings older than 24 hours are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
+   days, and cancelled recordings older than 24 hours are deleted. The WAV is then
+   deleted, and so is an expired Recovery item's, unless **Keep audio recordings** is
+   on.
 
 At startup the daemon reconciles what a crash left behind. A database SQLite cannot
 read is renamed to `agentdictate.sqlite.corrupt-<unix time>` and a fresh one

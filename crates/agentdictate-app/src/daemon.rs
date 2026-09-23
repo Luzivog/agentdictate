@@ -782,7 +782,7 @@ where
     /// Discards the active recording because the user explicitly pressed
     /// Escape. A recording longer than a few seconds waits in Recovery as
     /// `Cancelled` for a day; a shorter one is deleted with its audio, unless
-    /// "Preserve temporary audio" is on. Either way the workflow returns to
+    /// "Keep audio recordings" is on. Either way the workflow returns to
     /// Ready without asking for attention. Shutdown and platform failures
     /// must use the separate recovery preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
