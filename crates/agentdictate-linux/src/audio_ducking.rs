@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::{PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner};
 
-const RAMP_STEP_MS: u32 = 50;
+/// One pactl write per step: a default 600 ms fade takes 6 writes each way,
+/// so a dictation costs about 15 pactl calls including the snapshot and the
+/// restore check.
+const RAMP_STEP_MS: u32 = 100;
 const MAX_RAMP_STEPS: u32 = 100;
 /// Ducking is optional: a sound server that hangs must never stall a
 /// dictation, so every pactl call gets this long.
@@ -787,7 +790,7 @@ mod tests {
     #[test]
     fn ramp_is_bounded_monotonic_and_finishes_at_exact_target() {
         for (start, target) in [(vec![100, 50], vec![0, 25]), (vec![0, 25], vec![100, 50])] {
-            let ramp = ramp_plan(&start, &target, 200);
+            let ramp = ramp_plan(&start, &target, 4 * RAMP_STEP_MS);
             assert_eq!(ramp.len(), 4);
             assert_eq!(ramp.last(), Some(&target));
             for steps in ramp.windows(2) {
