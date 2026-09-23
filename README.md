@@ -73,9 +73,9 @@ in the tray menu.
   for you. See [dictation output](docs/dictation-output.md).
 - **Exact text.** **Start literal dictation** in the tray skips vocabulary and
   context for one recording.
-- **Something failed.** Open **History**. Items under **Recovery** kept their audio;
-  **Transcribe again** or **Paste again** copies the text so you can paste it with
-  <kbd>Ctrl</kbd> + <kbd>V</kbd>.
+- **Something failed.** Open **History**. Items under **Recovery** keep their audio
+  for 7 days; **Transcribe again** or **Paste again** copies the text so you can paste
+  it with <kbd>Ctrl</kbd> + <kbd>V</kbd>.
 
 ## Privacy
 
@@ -83,11 +83,16 @@ in the tray menu.
   vocabulary hints. Nothing is sent while you are not recording.
 - Your API key is stored unencrypted in `~/.config/agentdictate/config.json`,
   readable only by you.
-- After a successful paste, AgentDictate keeps the text only in History, and only
-  while **Save history** is on. The audio is deleted too, unless you turn on
+- After a successful paste, AgentDictate keeps the text only in History, for as long
+  as **Keep transcripts** says: **Forever** (the default), **30 days**, or **Don't
+  keep**. A shorter choice also deletes older saved text, the next time you dictate
+  or start AgentDictate. The audio is deleted after the paste, unless you turn on
   **Preserve temporary audio**. Both settings are under **Settings**, **Privacy**.
 - **Delete** on a History item deletes it for good, and **Delete all history…** in
-  **Settings**, **Privacy** deletes every transcript.
+  **Settings**, **Privacy** deletes every transcript. Deleted text is overwritten on
+  disk, not just hidden.
+- A failed dictation waits in **Recovery**, with its text and audio, for 7 days, then
+  both are deleted.
 - Usage numbers, such as minutes and estimated cost, are kept without text.
 - Logs can contain transcript text.
 

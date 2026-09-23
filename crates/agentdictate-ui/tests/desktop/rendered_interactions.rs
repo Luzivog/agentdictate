@@ -1167,6 +1167,7 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     harness.bounds("settings-input-ducking-fade-out");
     harness.bounds("settings-input-ducking-fade-in");
     harness.bounds("settings-input-paste-shortcut");
+    harness.bounds("settings-input-keep-transcripts");
     assert!(!harness.has("settings-save-bar"));
     harness.scroll_route_by(-120.);
     harness.scroll_to("toggle-streaming");
@@ -1345,7 +1346,7 @@ fn save_and_discard_remain_clickable_at_the_bottom_of_settings(cx: &mut TestAppC
         ..Default::default()
     });
     harness.cx.run_until_parked();
-    harness.click("toggle-save-history");
+    harness.click("toggle-preserve-audio");
 
     let scroll_area = harness.bounds("route-content");
     for selector in ["save-settings", "discard-settings"] {
@@ -1363,13 +1364,13 @@ fn save_and_discard_remain_clickable_at_the_bottom_of_settings(cx: &mut TestAppC
     assert!(commands.lock().unwrap().is_empty());
     assert_eq!(harness.bounds("route-content"), viewport);
 
-    harness.click("toggle-save-history");
+    harness.click("toggle-preserve-audio");
     harness.click("save-settings");
     let commands = commands.lock().unwrap();
     assert_eq!(commands.len(), 1);
     assert!(matches!(
         &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. } if !settings.save_history
+        ClientCommandKind::UpdateSettings { settings, .. } if settings.preserve_temp_audio
     ));
     let feedback = harness.bounds("settings-feedback");
     assert!(feedback.top() >= viewport.top());

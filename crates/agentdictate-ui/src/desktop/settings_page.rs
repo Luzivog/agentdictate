@@ -125,6 +125,7 @@ pub(super) fn surface(
             .child(delivery_section(&settings, &settings_form, theme, cx))
             .child(privacy_section(
                 &settings,
+                &settings_form,
                 pending_destructive_action.as_ref(),
                 theme,
                 cx,
@@ -477,6 +478,7 @@ fn delivery_section(
 /// What this computer keeps, and the one control that deletes all of it.
 fn privacy_section(
     settings: &SettingsDraft,
+    editor: &SettingsFormState,
     pending_destructive_action: Option<&WorkspaceAction>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
@@ -488,14 +490,13 @@ fn privacy_section(
         true,
         theme,
     )
-    .child(toggle_row(
-        "Save history",
-        "Keep delivered transcripts in your local database",
-        settings.save_history,
-        "toggle-save-history",
+    .child(select_row(
+        "Keep transcripts",
+        "How long History keeps transcripts, including saved ones. Usage numbers stay",
+        "settings-input-keep-transcripts",
+        editor.keep_transcripts.clone(),
+        false,
         theme,
-        cx,
-        |draft| draft.save_history = !draft.save_history,
     ))
     .child(toggle_row(
         "Preserve temporary audio",

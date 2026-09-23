@@ -1,11 +1,15 @@
-use agentdictate_core::{DictationOptions, HistoryPageRequest, Settings, parse_vocabulary};
+use std::path::Path;
+
+use agentdictate_core::{
+    DictationOptions, HistoryPageRequest, KeepTranscripts, Settings, parse_vocabulary,
+};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
     RecordingJob, Runtime, Transcriber, Transcript,
 };
 use tempfile::TempDir;
 
-use crate::support::{ReadyRecorder, history_rows, request, stored_dictations};
+use crate::support::{ReadyRecorder, days_ago, history_rows, request, stored_dictations};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
@@ -132,24 +136,88 @@ fn deleted_history_stays_deleted_after_a_restart() {
     assert!(history_rows(&restarted).is_empty());
 }
 
+/// Inserts a dictation that ended `days` ago, with `text` as its final and
+/// raw text.
+fn insert_aged_dictation(connection: &rusqlite::Connection, days: i64, text: &str) {
+    connection
+        .execute(
+            r#"
+            INSERT INTO dictations (
+                started_at, ended_at, duration_seconds, transcription_provider,
+                transcription_model, word_count, character_count, estimated_cost,
+                final_text, raw_text
+            ) VALUES (?1, ?1, 1, 'openai_api', 'gpt-transcribe', 3, 12, 0, ?2, ?2)
+            "#,
+            rusqlite::params![days_ago(days), text],
+        )
+        .unwrap();
+}
+
 #[test]
-fn history_off_keeps_usage_numbers_but_no_transcript_after_delivery() {
+fn completing_a_dictation_deletes_text_keep_transcripts_no_longer_allows() {
+    for (keep, kept) in [
+        (
+            KeepTranscripts::Forever,
+            &["fix the Vercel deploy", "ten days old", "forty days old"][..],
+        ),
+        (
+            KeepTranscripts::Days30,
+            &["fix the Vercel deploy", "ten days old"][..],
+        ),
+        (KeepTranscripts::Never, &[][..]),
+    ] {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("agentdictate.db");
+        let mut runtime = Runtime::open(&database_path).unwrap();
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        insert_aged_dictation(&connection, 40, "forty days old");
+        insert_aged_dictation(&connection, 10, "ten days old");
+        let delivered = delivered_job(&mut runtime, &directory);
+        let settings = Settings {
+            keep_transcripts: keep,
+            ..Settings::default()
+        };
+
+        runtime.complete_delivered(delivered.id, &settings).unwrap();
+
+        let texts = history_rows(&runtime)
+            .into_iter()
+            .map(|row| row.text)
+            .collect::<Vec<_>>();
+        assert_eq!(texts, kept, "{keep:?}");
+        assert_eq!(runtime.usage().unwrap().all_time.dictations, 3, "{keep:?}");
+        assert_eq!(
+            tables_containing(&database_path, "forty").is_empty(),
+            keep != KeepTranscripts::Forever,
+            "{keep:?}"
+        );
+    }
+}
+
+#[test]
+fn startup_deletes_text_older_than_keep_transcripts_allows() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
-    let delivered = delivered_job(&mut runtime, &directory);
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    insert_aged_dictation(&connection, 31, "a month old");
+    insert_aged_dictation(&connection, 29, "almost a month old");
     let settings = Settings {
-        save_history: false,
+        keep_transcripts: KeepTranscripts::Days30,
         ..Settings::default()
     };
 
-    runtime.complete_delivered(delivered.id, &settings).unwrap();
+    let cleanup = runtime
+        .clean_up_finished_jobs(&settings, directory.path())
+        .unwrap();
 
-    let usage = runtime.usage().unwrap();
-    assert_eq!(usage.all_time.dictations, 1);
-    assert_eq!(usage.all_time.words, 4);
-    assert!(history_rows(&runtime).is_empty());
-    assert!(tables_containing(&database_path, "deploy").is_empty());
+    assert_eq!(cleanup.purged_transcripts, 1);
+    let texts = history_rows(&runtime)
+        .into_iter()
+        .map(|row| row.text)
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["almost a month old"]);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 2);
 }
 
 #[test]
@@ -357,8 +425,22 @@ fn history_pages_stay_stable_while_new_transcripts_arrive() {
     assert_eq!(smallest.rows.len(), 1);
 }
 
+/// Whether any database file on disk holds `needle`, in live rows, free
+/// space, or the write-ahead log.
+fn database_files_contain(database: &Path, needle: &str) -> bool {
+    ["", "-wal"].into_iter().any(|suffix| {
+        let mut path = database.as_os_str().to_owned();
+        path.push(suffix);
+        std::fs::read(path).is_ok_and(|bytes| {
+            bytes
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        })
+    })
+}
+
 #[test]
-fn clearing_history_leaves_no_transcript_text_in_any_table() {
+fn deleted_and_cleared_history_text_leaves_the_database_files() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
@@ -366,10 +448,19 @@ fn clearing_history_leaves_no_transcript_text_in_any_table() {
     runtime
         .complete_delivered(delivered.id, &Settings::default())
         .unwrap();
-    assert!(!tables_containing(&database_path, "versel").is_empty());
+    assert!(database_files_contain(&database_path, "Vercel deploy"));
 
+    let entry = history_rows(&runtime).remove(0);
+    runtime.delete_history(entry.id).unwrap();
+
+    assert!(!database_files_contain(&database_path, "Vercel deploy"));
+    assert!(!database_files_contain(&database_path, "versel deploy"));
+
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    insert_history(&connection, "2026-08-18T12:00:00Z", "a private note");
+    drop(connection);
     runtime.clear_history().unwrap();
 
-    assert!(tables_containing(&database_path, "versel").is_empty());
-    assert!(tables_containing(&database_path, "Vercel").is_empty());
+    assert!(!database_files_contain(&database_path, "private note"));
+    assert!(tables_containing(&database_path, "private note").is_empty());
 }

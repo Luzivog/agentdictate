@@ -5,7 +5,7 @@ use gpui_component::{
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 
-use agentdictate_core::{PasteShortcut, RecordingMode};
+use agentdictate_core::{KeepTranscripts, PasteShortcut, RecordingMode};
 
 use crate::{SettingsDraft, settings::settings_fields};
 
@@ -335,6 +335,14 @@ fn paste_shortcut_options() -> Vec<SettingOption> {
         ("Automatic", PasteShortcut::Automatic.as_str()),
         ("Standard (Ctrl+V)", PasteShortcut::Standard.as_str()),
         ("Terminal (Ctrl+Shift+V)", PasteShortcut::Terminal.as_str()),
+    ])
+}
+
+fn keep_transcripts_options() -> Vec<SettingOption> {
+    setting_options(&[
+        ("Forever", KeepTranscripts::Forever.as_str()),
+        ("30 days", KeepTranscripts::Days30.as_str()),
+        ("Don't keep", KeepTranscripts::Never.as_str()),
     ])
 }
 

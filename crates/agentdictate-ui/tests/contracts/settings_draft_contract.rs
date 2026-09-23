@@ -1,13 +1,13 @@
 //! Settings draft contracts.
 
-use agentdictate_core::{PasteShortcut, RecordingMode, Settings, SettingsError};
+use agentdictate_core::{KeepTranscripts, PasteShortcut, RecordingMode, Settings, SettingsError};
 use agentdictate_ui::{SettingsDraft, SettingsDraftError};
 
 #[test]
 fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     let original = Settings {
         openai_api_key: "secret-kept-outside-the-form".to_owned(),
-        save_history: false,
+        keep_transcripts: KeepTranscripts::Never,
         ..Settings::default()
     };
     let mut draft = SettingsDraft::from(&original);
@@ -22,7 +22,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     draft.audio_ducking_fade_in_ms = "725".to_owned();
     draft.paste_shortcut = "terminal".to_owned();
     draft.start_on_login = false;
-    draft.save_history = true;
+    draft.keep_transcripts = "30_days".to_owned();
     draft.preserve_temp_audio = true;
 
     let updated = draft.apply_to(&original).unwrap();
@@ -38,7 +38,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     assert_eq!(updated.audio_ducking_fade_in_ms, 725);
     assert_eq!(updated.paste_shortcut, PasteShortcut::Terminal);
     assert!(!updated.start_on_login);
-    assert!(updated.save_history);
+    assert_eq!(updated.keep_transcripts, KeepTranscripts::Days30);
     assert!(updated.preserve_temp_audio);
     assert_eq!(updated.openai_api_key, original.openai_api_key);
 }
@@ -111,9 +111,6 @@ fn settings_draft_reports_unsaved_text_and_toggle_changes() {
     let mut startup = SettingsDraft::from(&persisted);
     startup.start_on_login = !startup.start_on_login;
     toggle_edits.push(startup);
-    let mut history = SettingsDraft::from(&persisted);
-    history.save_history = !history.save_history;
-    toggle_edits.push(history);
     let mut audio = SettingsDraft::from(&persisted);
     audio.preserve_temp_audio = !audio.preserve_temp_audio;
     toggle_edits.push(audio);

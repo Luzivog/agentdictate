@@ -151,14 +151,17 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    delivery ends as `submitted`, `ambiguous` (the injection itself failed), or
    `not_sent` (nothing was injected).
 9. **Complete.** One transaction records the dictation, with its usage numbers always
-   and its text only when **Save history** is on, and deletes the job row. The WAV is
-   then deleted unless **Preserve temporary audio** is on.
+   and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
+   Then text older than **Keep transcripts** allows and Recovery items unchanged for 7
+   days are deleted. The WAV is then deleted unless **Preserve temporary audio** is on.
 
 At startup the daemon reconciles what a crash left behind. Jobs that were starting,
 recording, or transcribing become `interrupted` and stay in Recovery with their audio.
 A job whose paste had started becomes `ambiguous` and is never pasted again
 automatically. Unless **Preserve temporary audio** is on, startup cleanup then deletes
-the audio of finished jobs and any WAV file older than one hour that no job owns.
+the audio of finished jobs and any WAV file older than one hour that no job owns. It
+also applies the same retention as step 9. Writers set `secure_delete`, and deleting
+or expiring text truncates the write-ahead log, so removed text leaves the disk.
 
 Recovery actions in the History page, **Transcribe again** and **Paste again**, copy
 the text to the clipboard and never paste, because AgentDictate's own window has the

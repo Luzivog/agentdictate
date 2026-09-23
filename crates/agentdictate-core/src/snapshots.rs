@@ -8,6 +8,8 @@ pub struct RecoverySnapshot {
     pub job_id: JobId,
     pub stage: JobStage,
     pub updated_at: DateTime<Utc>,
+    /// When the item, text and audio, is deleted unless the user acts first.
+    pub expires_at: DateTime<Utc>,
     pub duration_seconds: f64,
     pub raw_transcript: String,
     pub final_text: String,

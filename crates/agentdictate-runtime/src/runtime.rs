@@ -650,11 +650,14 @@ impl Runtime {
 /// Configures every connection that writes. WAL lets readers proceed while
 /// another connection writes, and `synchronous = NORMAL` drops the per-commit
 /// fsync: a process crash loses nothing, and a power cut can only lose the
-/// most recent commits, in order. Transactions begin IMMEDIATE so one that
-/// reads before it writes waits for a concurrent writer instead of failing
-/// with "database is locked".
+/// most recent commits, in order. `secure_delete` overwrites deleted content
+/// with zeros, so deleted and expired text does not linger in free space.
+/// Transactions begin IMMEDIATE so one that reads before it writes waits for
+/// a concurrent writer instead of failing with "database is locked".
 fn configure_writer(connection: &mut Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+    connection.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA secure_delete = ON;",
+    )?;
     connection.set_transaction_behavior(TransactionBehavior::Immediate);
     Ok(())
 }

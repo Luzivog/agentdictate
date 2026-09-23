@@ -283,6 +283,8 @@ fn run_post_listener_maintenance(
             recorded_deliveries = cleanup.recorded_deliveries,
             removed_jobs = cleanup.removed_jobs,
             removed_recordings = cleanup.removed_recordings,
+            purged_transcripts = cleanup.purged_transcripts,
+            expired_recoveries = cleanup.expired_recoveries,
             failed_removals = cleanup.failed_removals,
             "cleaned up finished dictations"
         ),

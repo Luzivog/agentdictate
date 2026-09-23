@@ -1,5 +1,6 @@
 use agentdictate_core::{
-    PasteShortcut, RecordingMode, Settings, SettingsError, SettingsSnapshot, TRANSCRIPTION_MODEL,
+    KeepTranscripts, PasteShortcut, RecordingMode, Settings, SettingsError, SettingsSnapshot,
+    TRANSCRIPTION_MODEL,
 };
 
 #[test]
@@ -48,6 +49,33 @@ fn retired_transcription_models_load_as_the_built_in_model() {
         assert_eq!(model(retired), TRANSCRIPTION_MODEL, "{retired:?}");
     }
     assert_eq!(model(" gpt-future-transcribe "), "gpt-future-transcribe");
+}
+
+#[test]
+fn keep_transcripts_loads_from_the_save_history_switch_it_replaced() {
+    let keep = |stored: serde_json::Value| {
+        serde_json::from_value::<Settings>(stored)
+            .unwrap()
+            .keep_transcripts
+    };
+
+    assert_eq!(keep(serde_json::json!({})), KeepTranscripts::Forever);
+    assert_eq!(
+        keep(serde_json::json!({ "save_history": true })),
+        KeepTranscripts::Forever
+    );
+    assert_eq!(
+        keep(serde_json::json!({ "save_history": false })),
+        KeepTranscripts::Never
+    );
+    let saved = serde_json::to_value(Settings {
+        keep_transcripts: KeepTranscripts::Days30,
+        ..Settings::default()
+    })
+    .unwrap();
+    assert_eq!(saved["keep_transcripts"], "30_days");
+    assert!(saved.get("save_history").is_none());
+    assert_eq!(keep(saved), KeepTranscripts::Days30);
 }
 
 #[test]

@@ -115,14 +115,20 @@ that fails before OpenAI answers is sent once more.
 - The OpenAI API key is stored in plain text in `~/.config/agentdictate/config.json`,
   readable only by you.
 - While a dictation is in progress, its text and audio are kept so it can be
-  recovered. After the paste, the text is kept only in History, and only when
-  **Save history** is on. Usage numbers, such as duration, word count, model, and
-  estimated cost, are always kept, without text.
+  recovered. After the paste, the text is kept only in History, for as long as
+  **Keep transcripts** allows: forever (the default), 30 days, or not at all. Text
+  older than that is deleted the next time you dictate or start AgentDictate. Usage
+  numbers, such as duration, word count, model, and estimated cost, are always kept,
+  without text.
 - **Delete** on a History item removes its text and its usage numbers for good.
   **Delete all history…** under **Settings**, **Privacy** does that for every item.
-  **Save history** and **Preserve temporary audio** are in the same section.
+  Deleted text is overwritten on disk. **Keep transcripts** and **Preserve temporary
+  audio** are in the same section.
 - A failed dictation keeps its text and recording in Recovery until you retry it or
-  delete it. Deleting it removes both.
+  delete it, for at most 7 days after it last changed. Then both are deleted.
+- Before it converts the database to a new format, AgentDictate keeps a copy of the
+  old one next to it, such as `agentdictate.sqlite.pre-v1`. You can delete the copy
+  once the new version works.
 - Audio is deleted after the paste unless **Preserve temporary audio** is on. Each
   daemon start also deletes leftover recordings that no dictation needs.
 - Logs can contain transcript text. The newest 14 daily files are kept.

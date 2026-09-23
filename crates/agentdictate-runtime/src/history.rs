@@ -1,7 +1,8 @@
 use agentdictate_core::{
     HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot, JobId, JobStage,
-    Settings, count_words_ascii_history, transcription_price_per_minute,
+    KeepTranscripts, Settings, count_words_ascii_history, transcription_price_per_minute,
 };
+use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::runtime::load_job;
@@ -14,16 +15,20 @@ const PREVIEW_CHARACTERS: usize = 160;
 
 impl Runtime {
     /// Moves a delivered job out of the in-flight job table. One transaction
-    /// records its dictation, with its usage numbers always and its text only
-    /// when `save_history` is on, and deletes the job row, so the text
-    /// survives only where History keeps it. Completing an already completed
-    /// job changes nothing.
+    /// records its dictation, with its usage numbers always and its text
+    /// unless `keep_transcripts` is `Never`, and deletes the job row, so the
+    /// text survives only where History keeps it. Completing an already
+    /// completed job changes nothing. Then, with the job done, it applies the
+    /// retention rules: text older than `keep_transcripts` allows and expired
+    /// Recovery items are deleted.
     pub fn complete_delivered(
         &mut self,
         job_id: JobId,
         settings: &Settings,
     ) -> Result<(), RuntimeError> {
-        self.complete_delivered_job(job_id, settings).map(|_| ())
+        self.complete_delivered_job(job_id, settings)?;
+        self.apply_retention(settings.keep_transcripts, Utc::now())?;
+        Ok(())
     }
 
     /// Returns whether this call recorded the job's dictation. It is false
@@ -54,7 +59,8 @@ impl Runtime {
             .optional()?
             .is_some();
         if !already_recorded {
-            record_dictation(&transaction, &job, settings.save_history)?;
+            let keep_text = settings.keep_transcripts != KeepTranscripts::Never;
+            record_dictation(&transaction, &job, keep_text)?;
         }
         transaction.execute(
             "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
@@ -159,17 +165,19 @@ impl Runtime {
             .flatten())
     }
 
-    /// Deletes one History entry with its usage numbers.
+    /// Deletes one History entry with its usage numbers, from the disk too.
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
         let deleted = self
             .connection
             .execute("DELETE FROM dictations WHERE id = ?1", [id])?;
+        self.truncate_write_ahead_log();
         Ok(deleted > 0)
     }
 
-    /// Deletes every dictation, text and usage numbers.
+    /// Deletes every dictation, text and usage numbers, from the disk too.
     pub fn clear_history(&mut self) -> Result<(), RuntimeError> {
         self.connection.execute("DELETE FROM dictations", [])?;
+        self.truncate_write_ahead_log();
         Ok(())
     }
 }

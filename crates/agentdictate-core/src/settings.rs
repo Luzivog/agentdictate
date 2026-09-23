@@ -33,7 +33,11 @@ pub struct Settings {
     pub start_on_login: bool,
     pub show_tray_icon: bool,
     pub preserve_temp_audio: bool,
-    pub save_history: bool,
+    #[serde(
+        alias = "save_history",
+        deserialize_with = "deserialize_keep_transcripts"
+    )]
+    pub keep_transcripts: KeepTranscripts,
     pub paste_shortcut: PasteShortcut,
 }
 
@@ -57,6 +61,8 @@ pub enum SettingsError {
     UnknownRecordingMode,
     #[error("Paste shortcut must be automatic, standard, or terminal")]
     UnknownPasteShortcut,
+    #[error("Keep transcripts must be never, 30_days, or forever")]
+    UnknownKeepTranscripts,
 }
 
 /// How the global shortcut records: press it once to start and again to
@@ -131,6 +137,54 @@ impl std::str::FromStr for PasteShortcut {
     }
 }
 
+/// How long History keeps the text of a finished dictation. Its usage
+/// numbers (duration, words, model, cost) are kept either way.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum KeepTranscripts {
+    /// No text is stored after the paste, and stored text is deleted.
+    #[serde(rename = "never")]
+    Never,
+    /// Text is deleted 30 days after its dictation.
+    #[serde(rename = "30_days")]
+    Days30,
+    #[default]
+    #[serde(rename = "forever")]
+    Forever,
+}
+
+impl KeepTranscripts {
+    /// The stored name, as config.json and the settings form spell it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Days30 => "30_days",
+            Self::Forever => "forever",
+        }
+    }
+
+    /// How long text stays after its dictation ends, or `None` for no limit.
+    #[must_use]
+    pub const fn limit(self) -> Option<chrono::TimeDelta> {
+        match self {
+            Self::Never => Some(chrono::TimeDelta::zero()),
+            Self::Days30 => Some(chrono::TimeDelta::days(30)),
+            Self::Forever => None,
+        }
+    }
+}
+
+impl std::str::FromStr for KeepTranscripts {
+    type Err = SettingsError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        [Self::Never, Self::Days30, Self::Forever]
+            .into_iter()
+            .find(|keep| keep.as_str() == value)
+            .ok_or(SettingsError::UnknownKeepTranscripts)
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -152,7 +206,7 @@ impl Default for Settings {
             start_on_login: true,
             show_tray_icon: true,
             preserve_temp_audio: false,
-            save_history: true,
+            keep_transcripts: KeepTranscripts::Forever,
             paste_shortcut: PasteShortcut::Automatic,
         }
     }
@@ -171,6 +225,25 @@ where
         || model.starts_with("gpt-4o-transcribe")
         || model.starts_with("gpt-4o-mini-transcribe");
     Ok(if retired { TRANSCRIPTION_MODEL } else { model }.to_owned())
+}
+
+/// Reads `keep_transcripts`, or the `save_history` switch it replaced: on
+/// kept transcripts forever, off kept none.
+fn deserialize_keep_transcripts<'de, D>(deserializer: D) -> Result<KeepTranscripts, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Choice(KeepTranscripts),
+        SaveHistory(bool),
+    }
+    Ok(match Stored::deserialize(deserializer)? {
+        Stored::Choice(keep) => keep,
+        Stored::SaveHistory(true) => KeepTranscripts::Forever,
+        Stored::SaveHistory(false) => KeepTranscripts::Never,
+    })
 }
 
 /// Settings projection safe to send to presentation processes and diagnostics.

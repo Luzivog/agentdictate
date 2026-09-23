@@ -34,8 +34,9 @@ fn settings_replacement_is_private_and_leaves_no_partial_file() {
     assert!(!settings_path.with_extension("json.tmp").exists());
 }
 
-/// Inserts a job row as the version before finished jobs were deleted left
-/// it, with a recording when `has_audio`. Returns the audio path.
+/// Inserts a job row, last changed a moment ago, as the version before
+/// finished jobs were deleted left it, with a recording when `has_audio`.
+/// Returns the audio path.
 fn insert_previous_version_job(
     connection: &Connection,
     recordings: &Path,
@@ -55,11 +56,16 @@ fn insert_previous_version_job(
                 duration_seconds, transcription_model, raw_transcript, final_text,
                 delivery_status
             ) VALUES (
-                ?1, '2026-08-18T12:00:00Z', '2026-08-18T12:00:30Z', ?2, ?2, ?3,
+                ?1, '2026-08-18T12:00:00Z', ?2, ?3, ?3, ?4,
                 30, 'gpt-transcribe', 'raw words', 'Final words.', 'submitted'
             )
             "#,
-            params![id.to_string(), stage, audio_path.to_string_lossy()],
+            params![
+                id.to_string(),
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                stage,
+                audio_path.to_string_lossy()
+            ],
         )
         .unwrap();
     audio_path
@@ -122,7 +128,7 @@ fn startup_cleanup_migrates_finished_jobs_and_sweeps_their_recordings() {
             recorded_deliveries: 1,
             removed_jobs: 4,
             removed_recordings: 4,
-            failed_removals: 0,
+            ..FinishedJobCleanup::default()
         }
     );
     let remaining_jobs = connection

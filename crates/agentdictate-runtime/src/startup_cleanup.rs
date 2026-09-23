@@ -2,8 +2,8 @@
 //!
 //! `dictation_jobs` only holds in-flight and recoverable dictations: delivered,
 //! empty, and deleted jobs leave it as they finish. These passes finish what a
-//! crash interrupted, and the first run migrates databases from before
-//! finished jobs were deleted.
+//! crash interrupted, the first run migrates databases from before finished
+//! jobs were deleted, and the retention rules run once at every start.
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use agentdictate_core::{JobId, Settings};
+use chrono::Utc;
 use rusqlite::{OptionalExtension, params};
 
 use crate::{Runtime, RuntimeError};
@@ -31,8 +32,13 @@ pub struct FinishedJobCleanup {
     pub recorded_deliveries: usize,
     pub removed_jobs: usize,
     pub removed_recordings: usize,
-    /// Recordings that could not be deleted. A finished job whose audio
-    /// could not be deleted keeps its row, so the next start retries it.
+    /// Dictations whose text Keep transcripts no longer allows.
+    pub purged_transcripts: usize,
+    /// Recovery items deleted because they expired.
+    pub expired_recoveries: usize,
+    /// Recordings and expired Recovery items that could not be deleted. A
+    /// finished job whose audio could not be deleted keeps its row, so the
+    /// next start retries it.
     pub failed_removals: usize,
 }
 
@@ -77,13 +83,14 @@ impl Runtime {
     }
 
     /// Removes finished jobs left in the job table and recordings no job
-    /// needs. Delivered jobs get their dictation recorded exactly once, as
-    /// `Runtime::complete_delivered` records it. Audio of finished
-    /// jobs is deleted first, unless `preserve_temp_audio` keeps it; the user
-    /// deleted `deleted` jobs, so their audio always goes. With
-    /// `preserve_temp_audio` off, `.wav` files in `recordings` that no job
-    /// owns and that are older than an hour are deleted too; a live
-    /// recording always owns a job row, so it is never one of them.
+    /// needs, then applies the retention rules. Delivered jobs get their
+    /// dictation recorded exactly once, as `Runtime::complete_delivered`
+    /// records it. Audio of finished jobs is deleted first, unless
+    /// `preserve_temp_audio` keeps it; the user deleted `deleted` jobs, so
+    /// their audio always goes. With `preserve_temp_audio` off, `.wav` files
+    /// in `recordings` that no job owns and that are older than an hour are
+    /// deleted too; a live recording always owns a job row, so it is never
+    /// one of them.
     pub fn clean_up_finished_jobs(
         &mut self,
         settings: &Settings,
@@ -119,6 +126,10 @@ impl Runtime {
         if !settings.preserve_temp_audio {
             self.remove_orphan_recordings(recordings, &mut cleanup)?;
         }
+        let retention = self.apply_retention(settings.keep_transcripts, Utc::now())?;
+        cleanup.purged_transcripts = retention.purged_transcripts;
+        cleanup.expired_recoveries = retention.expired_recoveries;
+        cleanup.failed_removals += retention.failed_expiries;
         Ok(cleanup)
     }
 

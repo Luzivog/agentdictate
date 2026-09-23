@@ -20,6 +20,7 @@ pub use ports::{
     RuntimeError, Transcriber, Transcript,
 };
 mod recovery;
+mod retention;
 mod runtime;
 pub use runtime::Runtime;
 mod schema;

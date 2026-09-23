@@ -1,6 +1,8 @@
 use std::fmt::Display;
 
-use agentdictate_core::{Hotkey, PasteShortcut, RecordingMode, Settings, SettingsError};
+use agentdictate_core::{
+    Hotkey, KeepTranscripts, PasteShortcut, RecordingMode, Settings, SettingsError,
+};
 use thiserror::Error;
 
 macro_rules! settings_fields {
@@ -29,6 +31,12 @@ macro_rules! settings_fields {
                     from: paste_shortcut_value,
                     apply: validate_field(parsed_setting),
                     options: plain(paste_shortcut_options),
+                    searchable: false,
+                },
+                keep_transcripts: String {
+                    from: keep_transcripts_value,
+                    apply: validate_field(parsed_setting),
+                    options: plain(keep_transcripts_options),
                     searchable: false,
                 },
             }
@@ -82,10 +90,6 @@ macro_rules! settings_fields {
                     apply: value(copied),
                 },
                 start_on_login: bool {
-                    from: copied,
-                    apply: value(copied),
-                },
-                save_history: bool {
                     from: copied,
                     apply: value(copied),
                 },
@@ -239,6 +243,10 @@ fn recording_mode_value(mode: &RecordingMode) -> String {
 
 fn paste_shortcut_value(shortcut: &PasteShortcut) -> String {
     shortcut.as_str().to_owned()
+}
+
+fn keep_transcripts_value(keep: &KeepTranscripts) -> String {
+    keep.as_str().to_owned()
 }
 
 /// Reads a choice the form stores by its settings name.

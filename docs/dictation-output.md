@@ -121,7 +121,8 @@ per audio minute for `gpt-live-transcribe` and $0.0045 for `gpt-transcribe`.
 
 Recovery lives in the **History** page. **Transcribe again** and **Paste again** copy
 the text to the clipboard instead of pasting, because AgentDictate's own window has
-the focus. Press Ctrl+V where you want it.
+the focus. Press Ctrl+V where you want it. An item nobody retries or deletes expires
+7 days after it last changed, with its audio.
 
 ## Evaluate a change
 
