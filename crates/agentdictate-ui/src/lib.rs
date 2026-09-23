@@ -23,7 +23,7 @@ mod workspace;
 pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
-    APPLICATION_ID, CommandSink, HotkeyCaptureSink, RecordingOverlay, SettingsShell,
+    APPLICATION_ID, HotkeyCaptureSink, RecordingOverlay, SettingsShell, SettingsSink,
     run_recording_overlay, run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
@@ -39,7 +39,7 @@ pub use overlay::{
     overlay_opacity, recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 pub use route::Route;
-pub use settings::{SettingsDraft, SettingsDraftError};
+pub use settings::SettingsRequest;
 pub use theme::{Color, ThemeTokens};
 pub use usage::{UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel};
 pub use view_model::{

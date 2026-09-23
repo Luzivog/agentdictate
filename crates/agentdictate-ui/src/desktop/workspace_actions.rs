@@ -141,10 +141,6 @@ impl SettingsShell {
         self.routes.entry_mut(route).feedback = Some(message.into());
     }
 
-    pub(super) fn clear_route_feedback(&mut self) {
-        self.clear_route_feedback_for(self.model.active_route);
-    }
-
     pub(super) fn clear_route_feedback_for(&mut self, route: Route) {
         self.routes.entry_mut(route).feedback = None;
     }

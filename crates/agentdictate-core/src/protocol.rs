@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hotkey::Hotkey;
-use crate::settings::{SecretString, Settings, SettingsSnapshot};
+use crate::settings::{SecretString, SettingChange, Settings, SettingsSnapshot};
 use crate::snapshots::{
     HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, WorkspaceSnapshot,
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -140,12 +140,10 @@ impl ClientCommand {
         })
     }
 
+    /// Changes one setting; the daemon keeps every other setting it holds.
     #[must_use]
-    pub fn update_settings(request_id: u64, settings: &Settings) -> Self {
-        Self::with_kind(ClientCommandKind::UpdateSettings {
-            request_id,
-            settings: Box::new(SettingsSnapshot::from(settings).values),
-        })
+    pub const fn change_setting(request_id: u64, change: SettingChange) -> Self {
+        Self::with_kind(ClientCommandKind::ChangeSetting { request_id, change })
     }
 
     #[must_use]
@@ -173,7 +171,7 @@ impl ClientCommand {
             ClientCommandKind::DeleteHistory { .. } => ClientCommandTag::DeleteHistory,
             ClientCommandKind::ClearHistory { .. } => ClientCommandTag::ClearHistory,
             ClientCommandKind::CopyTranscript { .. } => ClientCommandTag::CopyTranscript,
-            ClientCommandKind::UpdateSettings { .. } => ClientCommandTag::UpdateSettings,
+            ClientCommandKind::ChangeSetting { .. } => ClientCommandTag::ChangeSetting,
             ClientCommandKind::SetApiKey { .. } => ClientCommandTag::SetApiKey,
             ClientCommandKind::HotkeyStatusChanged { .. } => ClientCommandTag::HotkeyStatusChanged,
             ClientCommandKind::CaptureHotkey { .. } => ClientCommandTag::CaptureHotkey,
@@ -202,7 +200,7 @@ pub enum ClientCommandTag {
     DeleteHistory,
     ClearHistory,
     CopyTranscript,
-    UpdateSettings,
+    ChangeSetting,
     SetApiKey,
     HotkeyStatusChanged,
     CaptureHotkey,
@@ -261,9 +259,9 @@ pub enum ClientCommandKind {
         request_id: u64,
         id: i64,
     },
-    UpdateSettings {
+    ChangeSetting {
         request_id: u64,
-        settings: Box<Settings>,
+        change: SettingChange,
     },
     SetApiKey {
         request_id: u64,

@@ -19,9 +19,9 @@ Older jobs without a snapshot use the current settings.
   Use it for exact strings whose spelling you cannot predict. Speech recognition
   still cannot guarantee exact characters.
 
-Choose the default in **Settings**, **Dictation output**, **Output mode**. For one
-recording, choose **Start literal dictation** in the tray, or start it from a
-terminal, and stop it with the normal shortcut:
+To make Literal the default, turn on **Exact mode** under **Settings**, **Show
+advanced settings**. For one recording, choose **Start literal dictation** in the
+tray, or start it from a terminal, and stop it with the normal shortcut:
 
 ```bash
 agentdictate start --mode literal
@@ -77,9 +77,9 @@ word.
 
 ## Context and language
 
-**Context prompt**, under **Dictation**, describes what you usually talk about. It
-is sent as the transcription `prompt`. Keep spellings in Words. The retired
-**Current work context** setting was appended to it on upgrade.
+**About your work**, under **Settings**, **Show advanced settings**, describes what
+you usually talk about. It is sent as the transcription `prompt`. Keep spellings in
+Words. The retired **Current work context** setting was appended to it on upgrade.
 
 Nothing is collected automatically: no repository, window contents, selected text, or
 conversation.
@@ -89,9 +89,10 @@ language is sent as a `languages[]` hint.
 
 ## Streaming
 
-**Stream speech** is an experimental, OpenAI API-only option, off by default. While
-you speak, it tails the saved WAV, resamples it from 16 to 24 kHz, and streams it to
-`gpt-live-transcribe`. Stopping the recording commits the audio, and only the final
+Streaming is an experimental, OpenAI API-only option, off by default. The settings
+window does not show it; set `"streaming_enabled": true` in config.json to try it.
+While you speak, it tails the saved WAV, resamples it from 16 to 24 kHz, and streams
+it to `gpt-live-transcribe`. Stopping the recording commits the audio, and only the final
 transcript is accepted; nothing is pasted before that.
 
 If the stream fails, returns something invalid, or has no final text within 8 seconds
@@ -107,7 +108,7 @@ per audio minute for `gpt-live-transcribe` and $0.0045 for `gpt-transcribe`.
   dictation ends quietly: no paste, no History entry, no Recovery item. Near-silent
   means a PCM16 peak of at most 128 and an RMS of at most 32, roughly -48 dBFS and
   -60 dBFS. This is not a duration cutoff, so a short recognized word still pastes.
-  The audio follows the **Preserve temporary audio** setting.
+  The audio follows the **Keep audio recordings** setting.
 - **Empty result from audible audio.** The dictation goes to Recovery with its audio,
   because something was said.
 - **Network or API errors.** A request that fails before OpenAI answers is resent

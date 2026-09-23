@@ -1,7 +1,9 @@
 use gpui::{AppContext, Context, Entity, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 
-use crate::WordsEdit;
+use agentdictate_core::SettingChange;
+
+use crate::{SettingsRequest, WordsEdit};
 
 use super::{SettingsShell, settings_shell::Confirmed};
 
@@ -121,19 +123,28 @@ fn value(input: &Entity<InputState>, cx: &Context<SettingsShell>) -> String {
 }
 
 impl SettingsShell {
-    /// Applies `edit` to the saved vocabulary and saves it right away, leaving
-    /// any unsaved Settings changes alone. Returns why it was refused.
-    fn save_words(&mut self, edit: WordsEdit) -> Result<(), String> {
-        let vocabulary = edit
-            .apply(&self.settings.baseline.vocabulary)
-            .map_err(|error| error.to_string())?;
-        let mut settings = self.settings.baseline.clone();
-        settings.vocabulary = vocabulary;
-        self.send_settings(&settings)
-            .map_err(|error| format!("Could not save: {error}"))?;
-        self.settings.current.vocabulary = settings.vocabulary.clone();
-        self.settings.baseline = settings;
-        Ok(())
+    /// Applies `edit` to the vocabulary and saves it right away, then runs
+    /// `done` with the outcome: `Err` says why the edit or save was refused.
+    fn save_words(
+        &mut self,
+        edit: WordsEdit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: impl FnOnce(&mut Self, Result<(), String>, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        match edit.apply(&self.settings.shown().vocabulary) {
+            Ok(vocabulary) => self.send_settings_request(
+                SettingsRequest::Change(SettingChange::Vocabulary(vocabulary)),
+                window,
+                cx,
+                |shell, result, window, cx| {
+                    let result = result.map_err(|error| format!("Could not save: {error}"));
+                    done(shell, result, window, cx);
+                },
+            ),
+            Err(error) => done(self, Err(error.to_string()), window, cx),
+        }
+        cx.notify();
     }
 
     pub(super) fn add_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -144,17 +155,16 @@ impl SettingsShell {
             spelling: value(&new_spelling, cx),
             sounds_like: value(&new_sounds_like, cx),
         };
-        match self.save_words(edit) {
+        self.save_words(edit, window, cx, |shell, result, window, cx| match result {
             Ok(()) => {
                 for input in [new_spelling, new_sounds_like] {
                     input.update(cx, |input, cx| input.set_value("", window, cx));
                 }
-                self.routes.words.error = None;
-                self.confirm(Confirmed::WordsSaved, cx);
+                shell.routes.words.error = None;
+                shell.confirm(Confirmed::WordsSaved, cx);
             }
-            Err(message) => self.routes.words.error = Some(message),
-        }
-        cx.notify();
+            Err(message) => shell.routes.words.error = Some(message),
+        });
     }
 
     pub(super) fn open_word_editor(
@@ -163,10 +173,10 @@ impl SettingsShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(word) = self.settings.baseline.vocabulary.get(index) else {
+        let Some(word) = self.settings.shown().vocabulary.get(index).cloned() else {
             return;
         };
-        let (spelling, sounds_like) = (word.spelling.clone(), word.aliases.join(", "));
+        let (spelling, sounds_like) = (word.spelling, word.aliases.join(", "));
         let spelling = text_input(spelling, "Spelling", window, cx);
         let sounds_like = text_input(sounds_like, "Sounds like (optional)", window, cx);
         spelling.update(cx, |input, cx| input.focus(window, cx));
@@ -185,27 +195,35 @@ impl SettingsShell {
         cx.notify();
     }
 
-    pub(super) fn commit_word_editor(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn commit_word_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = &self.routes.words.editor else {
             return;
         };
+        let index = editor.form.index;
         let edit = WordsEdit::Update {
-            index: editor.form.index,
+            index,
             spelling: value(&editor.form.spelling, cx),
             sounds_like: value(&editor.form.sounds_like, cx),
         };
-        match self.save_words(edit) {
-            Ok(()) => {
-                self.routes.words.editor = None;
-                self.confirm(Confirmed::WordsSaved, cx);
-            }
-            Err(message) => {
-                if let Some(editor) = &mut self.routes.words.editor {
-                    editor.form.error = Some(message);
+        self.save_words(edit, window, cx, move |shell, result, _, cx| {
+            let editor = &mut shell.routes.words.editor;
+            match result {
+                Ok(()) => {
+                    if editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.form.index == index)
+                    {
+                        *editor = None;
+                    }
+                    shell.confirm(Confirmed::WordsSaved, cx);
+                }
+                Err(message) => {
+                    if let Some(editor) = editor {
+                        editor.form.error = Some(message);
+                    }
                 }
             }
-        }
-        cx.notify();
+        });
     }
 
     pub(super) fn close_word_editor(&mut self, cx: &mut Context<Self>) {
@@ -213,14 +231,23 @@ impl SettingsShell {
         cx.notify();
     }
 
-    pub(super) fn delete_word(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn delete_word(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Deleting shifts later words, so an open editor would edit another.
         self.routes.words.reset();
-        match self.save_words(WordsEdit::Delete { index }) {
-            Ok(()) => self.confirm(Confirmed::WordsSaved, cx),
-            Err(message) => self.routes.words.error = Some(message),
-        }
-        cx.notify();
+        self.save_words(
+            WordsEdit::Delete { index },
+            window,
+            cx,
+            |shell, result, _, cx| match result {
+                Ok(()) => shell.confirm(Confirmed::WordsSaved, cx),
+                Err(message) => shell.routes.words.error = Some(message),
+            },
+        );
     }
 
     pub(super) fn open_fix_word(
@@ -247,7 +274,7 @@ impl SettingsShell {
         cx.notify();
     }
 
-    pub(super) fn save_fix_word(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn save_fix_word(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = &self.routes.fix_word else {
             return;
         };
@@ -256,18 +283,25 @@ impl SettingsShell {
             heard: value(&editor.form.heard, cx),
             spelling: value(&editor.form.spelling, cx),
         };
-        match self.save_words(edit) {
-            Ok(()) => {
-                self.routes.fix_word = None;
-                self.confirm(Confirmed::AddedToWords(transcript_id), cx);
-            }
-            Err(message) => {
-                if let Some(editor) = &mut self.routes.fix_word {
-                    editor.form.error = Some(message);
+        self.save_words(edit, window, cx, move |shell, result, _, cx| {
+            let editor = &mut shell.routes.fix_word;
+            match result {
+                Ok(()) => {
+                    if editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.form.transcript_id == transcript_id)
+                    {
+                        *editor = None;
+                    }
+                    shell.confirm(Confirmed::AddedToWords(transcript_id), cx);
+                }
+                Err(message) => {
+                    if let Some(editor) = editor {
+                        editor.form.error = Some(message);
+                    }
                 }
             }
-        }
-        cx.notify();
+        });
     }
 
     pub(super) fn close_fix_word(&mut self, cx: &mut Context<Self>) {

@@ -246,8 +246,8 @@ fn word_row(
                         .debug_selector(move || delete_selector)
                         .small()
                         .label("Delete")
-                        .on_click(cx.listener(move |shell, _, _, cx| {
-                            shell.delete_word(index, cx);
+                        .on_click(cx.listener(move |shell, _, window, cx| {
+                            shell.delete_word(index, window, cx);
                         })),
                 ),
         )

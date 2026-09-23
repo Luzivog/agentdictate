@@ -21,8 +21,8 @@ unit. When `agentdictate` finds no daemon on the socket, it writes the unit from
 running install, starts it, and waits for the socket. If the daemon answers with a
 different protocol version, it is an older build, so the unit is restarted. At
 startup, and whenever the setting changes, the daemon enables or disables the unit
-for `graphical-session.target` to match **Start on login**. The daemon does not link
-GPUI.
+for `graphical-session.target` to match **Start AgentDictate when I log in**. The
+daemon does not link GPUI.
 
 Older versions started the daemon from an XDG autostart entry that runs
 `agentdictated --start-service`. That entry still works, and the daemon deletes it
@@ -58,7 +58,7 @@ and **Quit AgentDictate**. Opening settings launches the sibling `agentdictate`.
 
 **Development instance.** With `AGENTDICTATE_HOME` set, as `./run.sh` does, every
 data root moves under that directory and the daemon is unsupervised: nothing calls
-`systemctl`, and **Start on login** does nothing. See
+`systemctl`, and **Start AgentDictate when I log in** does nothing. See
 [Run a development build](DEVELOPMENT.md#run-a-development-build).
 
 ## Crates
@@ -119,13 +119,13 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
    node latency) writing a WAV under `recordings/`, lowers other audio on a separate
    thread, and launches the overlay helper.
-2. **Stream (optional).** With **Stream speech** on, a Realtime session tails the
+2. **Stream (optional).** With `streaming_enabled` on, a Realtime session tails the
    WAV, resamples it to 24 kHz, and sends it to `gpt-live-transcribe` while you
    speak.
 3. **Stop.** A second press, a hold release, the maximum duration, the tray, or
    `agentdictate stop` finalizes the WAV and records the `captured` checkpoint. Esc
-   discards the recording instead, and deletes its audio unless **Preserve temporary
-   audio** is on.
+   discards the recording instead, and deletes its audio unless **Keep audio
+   recordings** is on.
 4. **Transcribe.** A successful live result is used as is. Otherwise ffmpeg encodes
    the WAV to WebM/Opus at 32 kbps in speech mode, and the app posts it to
    `/v1/audio/transcriptions` with the model, `languages[]`, `keywords[]` (the
@@ -153,12 +153,12 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 9. **Complete.** One transaction records the dictation, with its usage numbers always
    and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
    Then text older than **Keep transcripts** allows and Recovery items unchanged for 7
-   days are deleted. The WAV is then deleted unless **Preserve temporary audio** is on.
+   days are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
 
 At startup the daemon reconciles what a crash left behind. Jobs that were starting,
 recording, or transcribing become `interrupted` and stay in Recovery with their audio.
 A job whose paste had started becomes `ambiguous` and is never pasted again
-automatically. Unless **Preserve temporary audio** is on, startup cleanup then deletes
+automatically. Unless **Keep audio recordings** is on, startup cleanup then deletes
 the audio of finished jobs and any WAV file older than one hour that no job owns. It
 also applies the same retention as step 9. Writers set `secure_delete`, and deleting
 or expiring text truncates the write-ahead log, so removed text leaves the disk.

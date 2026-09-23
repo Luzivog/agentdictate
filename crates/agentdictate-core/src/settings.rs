@@ -43,22 +43,95 @@ pub struct Settings {
     pub paste_shortcut: PasteShortcut,
 }
 
-impl Settings {
-    /// Rejects values that cannot work together. Loading config.json does
-    /// not validate, so a hand edit never stops the daemon from starting.
-    pub fn validate(&self) -> Result<(), SettingsError> {
-        if self.audio_ducking_volume_percent > 100 {
-            return Err(SettingsError::DuckedVolumeOutOfRange);
+/// The languages the settings window offers, as (stored code, name). The
+/// empty code detects the language; "en,fr" hints both.
+pub const LANGUAGES: [(&str, &str); 15] = [
+    ("", "Detect automatically"),
+    ("en", "English"),
+    ("en,fr", "English and French"),
+    ("fr", "French"),
+    ("es", "Spanish"),
+    ("de", "German"),
+    ("pt", "Portuguese"),
+    ("it", "Italian"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("ar", "Arabic"),
+    ("zh", "Chinese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("hi", "Hindi"),
+];
+
+/// One edit to one setting. The settings window sends one as each control
+/// changes, and the daemon applies it to the settings it holds, so edits
+/// from two windows, or from Settings and Words, never undo each other.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "setting", content = "value", rename_all = "snake_case")]
+pub enum SettingChange {
+    Language(String),
+    Hotkey(crate::Hotkey),
+    RecordingMode(RecordingMode),
+    AudioDuckingEnabled(bool),
+    KeepTranscripts(KeepTranscripts),
+    StartOnLogin(bool),
+    TranscriptionPrompt(String),
+    DictationMode(crate::DictationMode),
+    PasteShortcut(PasteShortcut),
+    MaxRecordingSeconds(u32),
+    AudioDuckingVolumePercent(u8),
+    PreserveTempAudio(bool),
+    Vocabulary(Vec<crate::VocabularyEntry>),
+}
+
+impl SettingChange {
+    /// Writes this change into `settings`, or says why its value is refused.
+    /// The daemon also checks that it can listen for a new hotkey.
+    pub fn apply(self, settings: &mut Settings) -> Result<(), SettingsError> {
+        match self {
+            Self::Language(language) => {
+                let language = language.trim();
+                if !LANGUAGES.iter().any(|(code, _)| *code == language) {
+                    return Err(SettingsError::UnknownLanguage);
+                }
+                language.clone_into(&mut settings.language);
+            }
+            Self::Hotkey(hotkey) => settings.hotkey = hotkey,
+            Self::RecordingMode(mode) => settings.recording_mode = mode,
+            Self::AudioDuckingEnabled(enabled) => settings.audio_ducking_enabled = enabled,
+            Self::KeepTranscripts(keep) => settings.keep_transcripts = keep,
+            Self::StartOnLogin(start) => settings.start_on_login = start,
+            Self::TranscriptionPrompt(prompt) => {
+                prompt.trim().clone_into(&mut settings.transcription_prompt);
+            }
+            Self::DictationMode(mode) => settings.dictation_mode = mode,
+            Self::PasteShortcut(shortcut) => settings.paste_shortcut = shortcut,
+            Self::MaxRecordingSeconds(seconds) => settings.max_recording_seconds = seconds,
+            Self::AudioDuckingVolumePercent(percent) => {
+                if percent > 100 {
+                    return Err(SettingsError::DuckedVolumeOutOfRange);
+                }
+                settings.audio_ducking_volume_percent = percent;
+            }
+            Self::PreserveTempAudio(preserve) => settings.preserve_temp_audio = preserve,
+            Self::Vocabulary(vocabulary) => {
+                crate::validate_vocabulary(&vocabulary)?;
+                settings.vocabulary = vocabulary;
+            }
         }
         Ok(())
     }
 }
 
-/// Why `Settings::validate` rejected a change.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+/// Why a `SettingChange` or a stored choice was refused.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SettingsError {
+    #[error("Choose a language from the list")]
+    UnknownLanguage,
     #[error("Ducked volume must be between 0 and 100")]
     DuckedVolumeOutOfRange,
+    #[error(transparent)]
+    Vocabulary(#[from] crate::VocabularyError),
     #[error("Recording mode must be toggle or hold")]
     UnknownRecordingMode,
     #[error("Paste shortcut must be automatic, standard, or terminal")]

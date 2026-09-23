@@ -49,6 +49,8 @@ pub enum WorkspaceError {
     UnexpectedHistoryPage,
     #[error("daemon returned a shortcut capture for a workspace request")]
     UnexpectedHotkeyCapture,
+    #[error("daemon did not answer a settings request with its settings")]
+    UnexpectedSettingsResponse,
 }
 
 pub struct WorkspaceClient {

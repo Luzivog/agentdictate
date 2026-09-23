@@ -72,7 +72,8 @@ impl RoutePageModel {
             }),
             Route::Words => {
                 let words = &shell.routes.words;
-                let vocabulary = &shell.settings.baseline.vocabulary;
+                let shown = shell.settings.shown();
+                let vocabulary = &shown.vocabulary;
                 Self::Words(WordsPageModel {
                     rows: word_rows(vocabulary, &words.filter.read(cx).value()),
                     has_words: !vocabulary.is_empty(),
@@ -84,18 +85,26 @@ impl RoutePageModel {
                     saved: shell.confirmed() == Some(Confirmed::WordsSaved),
                 })
             }
-            Route::Settings => Self::Settings(Box::new(SettingsPageModel {
-                draft: shell.settings.form.snapshot(cx),
-                settings_dirty: shell.settings.dirty,
-                has_api_key: shell.settings_commands.has_api_key,
-                api_key_input: shell.settings_commands.api_key_input.clone(),
-                api_key_feedback: shell.settings_commands.api_key_feedback.clone(),
-                feedback: shell.routes.entry(Route::Settings).feedback.clone(),
-                settings_form: shell.settings.form.clone(),
-                shortcut_capture_active: shell.settings.shortcut_capture.is_listening(),
-                shortcut_capture_error: shell.settings.shortcut_capture.failure(),
-                pending_destructive_action: shell.routes.pending_destructive_action.clone(),
-            })),
+            Route::Settings => {
+                let form = &shell.settings;
+                Self::Settings(Box::new(SettingsPageModel {
+                    settings: form.shown().into_owned(),
+                    has_api_key: form.saved.has_api_key,
+                    replacing_api_key: form.replacing_api_key,
+                    controls: form.controls.clone(),
+                    advanced_open: form.advanced_open,
+                    shortcut_capture_active: form.shortcut_capture.is_listening(),
+                    shortcut_capture_error: form.shortcut_capture.failure(),
+                    shorter_retention: form.shorter_retention,
+                    error: form.error.clone(),
+                    saved_row: match shell.confirmed() {
+                        Some(Confirmed::SettingSaved(row)) => Some(row),
+                        _ => None,
+                    },
+                    feedback: shell.routes.entry(Route::Settings).feedback.clone(),
+                    pending_destructive_action: shell.routes.pending_destructive_action.clone(),
+                }))
+            }
         }
     }
 
@@ -178,17 +187,12 @@ fn main_panel(
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
     let route = viewport.page.route();
-    let footer = match &viewport.page {
-        RoutePageModel::Settings(settings) => settings_page::footer(settings, chrome.theme, cx),
-        _ => None,
-    };
     v_flex()
         .h_full()
         .min_w_0()
         .flex_1()
         .child(shell_title_bar(route, window, chrome.theme))
         .child(route_viewport(viewport, chrome.theme, cx))
-        .when_some(footer, |panel, footer| panel.child(footer))
 }
 
 fn route_viewport(

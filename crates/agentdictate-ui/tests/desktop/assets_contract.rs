@@ -9,8 +9,6 @@ fn desktop_controls_ship_every_icon_they_request() {
         "icons/check.svg",
         "icons/chevron-down.svg",
         "icons/inbox.svg",
-        "icons/minus.svg",
-        "icons/plus.svg",
         "icons/search.svg",
     ] {
         let bytes = assets
@@ -27,5 +25,5 @@ fn desktop_controls_ship_every_icon_they_request() {
     }
 
     let listed = assets.list("icons").expect("icon list should load");
-    assert_eq!(listed.len(), 6);
+    assert_eq!(listed.len(), 4);
 }

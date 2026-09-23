@@ -1,6 +1,6 @@
 use agentdictate_core::{
-    KeepTranscripts, PasteShortcut, RecordingMode, Settings, SettingsError, SettingsSnapshot,
-    TRANSCRIPTION_MODEL,
+    KeepTranscripts, PasteShortcut, RecordingMode, SettingChange, Settings, SettingsError,
+    SettingsSnapshot, TRANSCRIPTION_MODEL, VocabularyEntry,
 };
 
 #[test]
@@ -132,11 +132,44 @@ fn every_stored_recording_mode_and_paste_label_loads() {
 }
 
 #[test]
-fn settings_that_cannot_work_together_are_rejected() {
-    assert_eq!(Settings::default().validate(), Ok(()));
-    let loud = Settings {
-        audio_ducking_volume_percent: 101,
+fn a_setting_change_edits_only_its_setting_and_refuses_invalid_values() {
+    let word = VocabularyEntry {
+        spelling: "Siobhan".into(),
+        aliases: vec!["shiv on".into()],
+    };
+    let mut settings = Settings {
+        vocabulary: vec![word.clone()],
         ..Settings::default()
     };
-    assert_eq!(loud.validate(), Err(SettingsError::DuckedVolumeOutOfRange));
+
+    SettingChange::Language(" en,fr ".into())
+        .apply(&mut settings)
+        .unwrap();
+    SettingChange::TranscriptionPrompt(" Rust and GPUI\n".into())
+        .apply(&mut settings)
+        .unwrap();
+    assert_eq!(
+        settings,
+        Settings {
+            language: "en,fr".into(),
+            transcription_prompt: "Rust and GPUI".into(),
+            vocabulary: vec![word.clone()],
+            ..Settings::default()
+        }
+    );
+
+    let before = settings.clone();
+    assert_eq!(
+        SettingChange::Language("tlh".into()).apply(&mut settings),
+        Err(SettingsError::UnknownLanguage)
+    );
+    assert_eq!(
+        SettingChange::AudioDuckingVolumePercent(101).apply(&mut settings),
+        Err(SettingsError::DuckedVolumeOutOfRange)
+    );
+    assert!(matches!(
+        SettingChange::Vocabulary(vec![word.clone(), word]).apply(&mut settings),
+        Err(SettingsError::Vocabulary(_))
+    ));
+    assert_eq!(settings, before);
 }

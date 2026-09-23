@@ -89,8 +89,9 @@ oldest glibc you want to support.
 
 Nothing runs until you open AgentDictate from the app menu or with `agentdictate`.
 The first launch writes the `agentdictated.service` systemd user unit and starts the
-daemon. While **Start on login** is on, the daemon enables the unit so it starts with
-later desktop sessions. [The README](../README.md#first-use) covers first use.
+daemon. While **Start AgentDictate when I log in** is on, the daemon enables the
+unit so it starts with later desktop sessions. [The README](../README.md#first-use)
+covers first use.
 
 Closing the settings window leaves the daemon and the global shortcut running. Stop
 them with **Quit AgentDictate** in the tray, or with:
@@ -99,16 +100,16 @@ them with **Quit AgentDictate** in the tray, or with:
 systemctl --user stop agentdictated.service
 ```
 
-Turning **Start on login** off only affects future logins.
+Turning **Start AgentDictate when I log in** off only affects future logins.
 
 ## Local data and network use
 
 **What leaves your computer.** Each dictation's audio goes to OpenAI's
 `/v1/audio/transcriptions` endpoint, with the language hint, the context text, and
 your vocabulary spellings, unless you use Literal mode, which sends only the
-language. With **Stream speech** on, audio is sent while you speak, and a failed
-stream falls back to the normal upload, which can mean paying for both. A request
-that fails before OpenAI answers is sent once more.
+language. With streaming on (`streaming_enabled` in config.json), audio is sent
+while you speak, and a failed stream falls back to the normal upload, which can mean
+paying for both. A request that fails before OpenAI answers is sent once more.
 
 **What stays on your computer.**
 
@@ -121,15 +122,14 @@ that fails before OpenAI answers is sent once more.
   numbers, such as duration, word count, model, and estimated cost, are always kept,
   without text.
 - **Delete** on a History item removes its text and its usage numbers for good.
-  **Delete all history…** under **Settings**, **Privacy** does that for every item.
-  Deleted text is overwritten on disk. **Keep transcripts** and **Preserve temporary
-  audio** are in the same section.
+  **Delete all history…**, next to **Keep transcripts** in **Settings**, does that for
+  every item. Deleted text is overwritten on disk.
 - A failed dictation keeps its text and recording in Recovery until you retry it or
   delete it, for at most 7 days after it last changed. Then both are deleted.
 - Before it converts the database to a new format, AgentDictate keeps a copy of the
   old one next to it, such as `agentdictate.sqlite.pre-v1`. You can delete the copy
   once the new version works.
-- Audio is deleted after the paste unless **Preserve temporary audio** is on. Each
+- Audio is deleted after the paste unless **Keep audio recordings** is on. Each
   daemon start also deletes leftover recordings that no dictation needs.
 - Logs can contain transcript text. The newest 14 daily files are kept.
 

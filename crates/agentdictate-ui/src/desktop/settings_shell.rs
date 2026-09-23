@@ -6,21 +6,13 @@ use gpui_component::input::{InputEvent, InputState};
 use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink};
 
 use super::{
-    CommandSink, HotkeyCaptureSink, SettingsShell,
+    HotkeyCaptureSink, SettingsShell, SettingsSink,
     history_action_lane::HistoryActionLane,
-    settings_form::SettingsFormState,
+    settings_form::{SettingRow, SettingsForm},
     words_actions::{FixWordEditor, WordsUiState},
 };
 
-pub(super) struct SettingsEditState {
-    pub(super) current: agentdictate_core::Settings,
-    pub(super) baseline: agentdictate_core::Settings,
-    pub(super) form: SettingsFormState,
-    pub(super) dirty: bool,
-    pub(super) shortcut_capture: ShortcutCapture,
-}
-
-/// The Global shortcut control. The daemon captures the shortcut from the
+/// The Dictation shortcut control. The daemon captures the shortcut from the
 /// keyboards themselves, so it keeps the physical key on any layout.
 pub(super) enum ShortcutCapture {
     Idle,
@@ -43,15 +35,6 @@ impl ShortcutCapture {
             Self::Idle | Self::Listening { .. } => None,
         }
     }
-}
-
-pub(super) struct SettingsCommandState {
-    pub(super) has_api_key: bool,
-    pub(super) api_key_input: Entity<InputState>,
-    pub(super) api_key_feedback: Option<String>,
-    pub(super) command_sink: CommandSink,
-    pub(super) hotkey_capture: HotkeyCaptureSink,
-    pub(super) next_request_id: u64,
 }
 
 pub(super) struct WorkspaceActionState {
@@ -91,6 +74,8 @@ pub(super) enum Confirmed {
     WordsSaved,
     /// "Fix a word" on transcript `id` added to Words.
     AddedToWords(i64),
+    /// A Settings text row saved its value and shows "Saved ✓".
+    SettingSaved(SettingRow),
 }
 
 /// The confirmation on screen, with the timer that clears it. Replacing it
@@ -121,37 +106,25 @@ pub(super) const fn route_index(route: Route) -> usize {
 
 impl SettingsShell {
     /// Builds the settings window's shell around the daemon's settings and the
-    /// sinks that send commands, shortcut captures and workspace actions back
+    /// sinks that send settings, shortcut captures and workspace actions back
     /// to it.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: ShellViewModel,
-        settings: agentdictate_core::Settings,
-        has_api_key: bool,
-        command_sink: CommandSink,
+        settings: agentdictate_core::SettingsSnapshot,
+        settings_sink: SettingsSink,
         hotkey_capture: HotkeyCaptureSink,
         workspace_action_sink: WorkspaceActionSink,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let api_key_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("sk-…").masked(true));
         let initial_history_search = model.workspace.history.search.clone();
         let history_search_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Search every transcript")
                 .default_value(initial_history_search)
         });
-        let form = SettingsFormState::new(&settings, window, cx);
-        let mut subscriptions = form.subscriptions(cx);
-        subscriptions.push(
-            cx.subscribe(&api_key_input, |shell, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    shell.settings_commands.api_key_feedback = None;
-                    cx.notify();
-                }
-            }),
-        );
+        let (settings, mut subscriptions) =
+            SettingsForm::new(settings, settings_sink, hotkey_capture, window, cx);
         subscriptions.push(cx.subscribe(
             &history_search_input,
             |shell, input, event: &InputEvent, cx| {
@@ -179,21 +152,7 @@ impl SettingsShell {
         Self {
             model,
             theme: ThemeTokens::default(),
-            settings: SettingsEditState {
-                current: settings.clone(),
-                baseline: settings,
-                form,
-                dirty: false,
-                shortcut_capture: ShortcutCapture::Idle,
-            },
-            settings_commands: SettingsCommandState {
-                has_api_key,
-                api_key_input,
-                api_key_feedback: None,
-                command_sink,
-                hotkey_capture,
-                next_request_id: 1,
-            },
+            settings,
             workspace_actions: WorkspaceActionState {
                 sink: workspace_action_sink,
                 in_flight: false,
@@ -257,7 +216,7 @@ impl SettingsShell {
     pub(super) fn copied_transcript(&self) -> Option<i64> {
         match self.confirmed()? {
             Confirmed::Copied(id) => Some(id),
-            Confirmed::WordsSaved | Confirmed::AddedToWords(_) => None,
+            Confirmed::WordsSaved | Confirmed::AddedToWords(_) | Confirmed::SettingSaved(_) => None,
         }
     }
 
@@ -267,7 +226,7 @@ impl SettingsShell {
         self.routes.pending_destructive_action = None;
         self.routes.words.reset();
         self.clear_route_feedback_for(previous_route);
-        self.settings_commands.api_key_feedback = None;
+        self.settings.error = None;
         cx.notify();
     }
 }

@@ -7,7 +7,8 @@ use agentdictate_app::{
 use agentdictate_core::{ClientCommand, HotkeyCaptureOutcome, ServerMessageKind};
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
-    Route, ShellViewModel, UiActionError, run_settings_shell_with_workspace_actions,
+    Route, SettingsRequest, ShellViewModel, UiActionError,
+    run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
 
@@ -94,6 +95,8 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|error| -> UiActionError { Box::new(error) })
         })
     };
+    // Settings requests and shortcut captures each use their own short-lived
+    // session.
     let send = move |command| -> Result<ServerMessageKind, UiActionError> {
         let (mut client, _) = IpcClient::connect(&runtime)
             .map_err(|error| -> UiActionError { Box::new(WorkspaceError::from(error)) })?;
@@ -107,9 +110,20 @@ fn main() -> anyhow::Result<()> {
             reply => Ok(reply),
         }
     };
-    let command_sink = {
+    // Answers with the settings the daemon holds once it made the change.
+    let settings_sink = {
         let send = send.clone();
-        Arc::new(move |command| send(command).map(drop))
+        Arc::new(move |request| -> Result<_, UiActionError> {
+            let command = match request {
+                SettingsRequest::Change(change) => ClientCommand::change_setting(1, change),
+                SettingsRequest::SetApiKey(api_key) => ClientCommand::set_api_key(1, api_key),
+                SettingsRequest::CancelHotkeyCapture => ClientCommand::cancel_hotkey_capture(1),
+            };
+            match send(command)? {
+                ServerMessageKind::Snapshot { settings, .. } => Ok(*settings),
+                _ => Err(Box::new(WorkspaceError::UnexpectedSettingsResponse)),
+            }
+        })
     };
     let hotkey_capture = Arc::new(move || -> Result<HotkeyCaptureOutcome, UiActionError> {
         match send(ClientCommand::capture_hotkey(1))? {
@@ -122,18 +136,16 @@ fn main() -> anyhow::Result<()> {
     match workspace_updates {
         Some(updates) => run_settings_shell_with_workspace_actions_and_updates(
             model,
-            settings.values,
-            settings.has_api_key,
-            command_sink,
+            settings,
+            settings_sink,
             hotkey_capture,
             workspace_action_sink,
             updates,
         ),
         None => run_settings_shell_with_workspace_actions(
             model,
-            settings.values,
-            settings.has_api_key,
-            command_sink,
+            settings,
+            settings_sink,
             hotkey_capture,
             workspace_action_sink,
         ),

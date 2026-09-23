@@ -4,6 +4,7 @@ use super::support::{self, DesktopHarness};
 
 use std::{
     cell::RefCell,
+    collections::BTreeSet,
     ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -11,14 +12,14 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, Settings,
-    VocabularyEntry, WorkflowPhase, WorkflowSnapshot, parse_vocabulary,
+    DictationMode, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, KeepTranscripts, SettingChange,
+    Settings, SettingsSnapshot, VocabularyEntry, WorkflowPhase, WorkflowSnapshot, parse_vocabulary,
 };
 use agentdictate_ui::{
-    AgentDictateWindowFrame, CommandSink, HistoryViewModel, HotkeyCaptureSink,
-    RecoveryItemViewModel, RecoveryStage, Route, SettingsShell, ShellViewModel,
-    TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel,
-    WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
+    AgentDictateWindowFrame, HistoryViewModel, HotkeyCaptureSink, RecoveryItemViewModel,
+    RecoveryStage, Route, SettingsRequest, SettingsShell, SettingsSink, ShellViewModel,
+    TranscriptViewModel, UiActionError, UsageDayViewModel, UsagePeriod, UsageTotals,
+    UsageViewModel, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -116,107 +117,46 @@ impl Harness {
         model: ShellViewModel,
         action_sink: WorkspaceActionSink,
     ) -> Self {
-        Self::open_shell(
-            cx,
-            viewport,
-            model,
-            Settings::default(),
-            false,
-            Arc::new(|_| Ok(())),
-            no_capture(),
-            action_sink,
-        )
+        let daemon = FakeDaemon::new(Settings::default());
+        Self::open_shell(cx, viewport, model, &daemon, action_sink)
     }
 
-    fn open_connected(cx: &mut TestAppContext, commands: Arc<Mutex<Vec<ClientCommand>>>) -> Self {
+    /// Opens Settings on a fake daemon.
+    fn open_connected(cx: &mut TestAppContext, daemon: &FakeDaemon) -> Self {
         Self::open_connected_with(
             cx,
-            ShellViewModel::from_snapshot(
-                Route::Settings,
-                WorkflowSnapshot {
-                    phase: WorkflowPhase::Ready,
-                },
-            ),
-            Settings::default(),
-            false,
-            commands,
+            ShellViewModel::from_snapshot(Route::Settings, ready()),
+            daemon,
         )
     }
 
     fn open_connected_with(
         cx: &mut TestAppContext,
         model: ShellViewModel,
-        settings: Settings,
-        has_api_key: bool,
-        commands: Arc<Mutex<Vec<ClientCommand>>>,
-    ) -> Self {
-        Self::open_connected_capturing(cx, model, settings, has_api_key, commands, no_capture())
-    }
-
-    /// Opens Settings on a fake daemon whose shortcut capture answers with
-    /// `hotkey_capture`.
-    fn open_connected_capturing(
-        cx: &mut TestAppContext,
-        model: ShellViewModel,
-        settings: Settings,
-        has_api_key: bool,
-        commands: Arc<Mutex<Vec<ClientCommand>>>,
-        hotkey_capture: HotkeyCaptureSink,
+        daemon: &FakeDaemon,
     ) -> Self {
         let workspace = model.workspace.clone();
         Self::open_shell(
             cx,
             size(px(1_100.), px(780.)),
             model,
-            settings,
-            has_api_key,
-            Arc::new(move |command| {
-                commands.lock().expect("command lock").push(command);
-                Ok(())
-            }),
-            hotkey_capture,
+            daemon,
             Arc::new(move |_| Ok(workspace.clone())),
         )
     }
 
-    fn open_settings(
-        cx: &mut TestAppContext,
-        commands: Arc<Mutex<Vec<ClientCommand>>>,
-        viewport: Size<Pixels>,
-    ) -> Self {
-        Self::open_shell(
-            cx,
-            viewport,
-            ShellViewModel::from_snapshot(
-                Route::Settings,
-                WorkflowSnapshot {
-                    phase: WorkflowPhase::Ready,
-                },
-            ),
-            Settings::default(),
-            false,
-            Arc::new(move |command| {
-                commands.lock().expect("command lock").push(command);
-                Ok(())
-            }),
-            no_capture(),
-            Arc::new(|_| Ok(WorkspaceViewModel::default())),
-        )
-    }
-
     /// Opens the production window composition (Root, frame, shell) headlessly.
-    #[allow(clippy::too_many_arguments)]
     fn open_shell(
         cx: &mut TestAppContext,
         viewport: Size<Pixels>,
         model: ShellViewModel,
-        settings: Settings,
-        has_api_key: bool,
-        command_sink: CommandSink,
-        hotkey_capture: HotkeyCaptureSink,
+        daemon: &FakeDaemon,
         action_sink: WorkspaceActionSink,
     ) -> Self {
         test_support::initialize(cx);
+        let settings = daemon.snapshot();
+        let settings_sink = daemon.sink();
+        let hotkey_capture = daemon.capture_sink();
         let shell_slot = Rc::new(RefCell::new(None));
         let window_slot = Rc::clone(&shell_slot);
         let window = cx.update(|cx| {
@@ -233,8 +173,7 @@ impl Harness {
                         SettingsShell::new(
                             model,
                             settings,
-                            has_api_key,
-                            command_sink,
+                            settings_sink,
                             hotkey_capture,
                             action_sink,
                             window,
@@ -255,6 +194,12 @@ impl Harness {
         let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
         cx.run_until_parked();
         Self { shell, cx }
+    }
+
+    /// The settings the window shows, with unanswered changes applied.
+    fn shown_settings(&mut self) -> Settings {
+        self.shell
+            .read_with(self.cx, |shell, _| shell.shown_settings_for_test())
     }
 
     fn move_to(&mut self, selector: &'static str) {
@@ -306,6 +251,80 @@ impl Harness {
         self.shell.read_with(self.cx, |shell, _| {
             shell.view_model().workspace.usage.period
         })
+    }
+}
+
+fn ready() -> WorkflowSnapshot {
+    WorkflowSnapshot {
+        phase: WorkflowPhase::Ready,
+    }
+}
+
+/// Stands in for the daemon behind the settings sinks: records each request
+/// and answers with the settings it then holds. Like the daemon, it refuses
+/// what core refuses, and `refused_hotkey` plays a keyboard that lacks a key.
+/// Every shortcut capture ends with `capture`.
+#[derive(Clone)]
+struct FakeDaemon {
+    settings: Arc<Mutex<SettingsSnapshot>>,
+    requests: Arc<Mutex<Vec<SettingsRequest>>>,
+    refused_hotkey: Option<&'static str>,
+    capture: HotkeyCaptureOutcome,
+}
+
+impl FakeDaemon {
+    fn new(settings: Settings) -> Self {
+        Self {
+            settings: Arc::new(Mutex::new(SettingsSnapshot::from(&settings))),
+            requests: Arc::default(),
+            refused_hotkey: None,
+            capture: HotkeyCaptureOutcome::Cancelled,
+        }
+    }
+
+    fn capture_sink(&self) -> HotkeyCaptureSink {
+        let outcome = self.capture.clone();
+        Arc::new(move || Ok(outcome.clone()))
+    }
+
+    fn snapshot(&self) -> SettingsSnapshot {
+        self.settings.lock().unwrap().clone()
+    }
+
+    fn sink(&self) -> SettingsSink {
+        let daemon = self.clone();
+        Arc::new(move |request| daemon.handle(request))
+    }
+
+    fn handle(&self, request: SettingsRequest) -> Result<SettingsSnapshot, UiActionError> {
+        self.requests.lock().unwrap().push(request.clone());
+        let mut snapshot = self.settings.lock().unwrap();
+        match request {
+            SettingsRequest::Change(SettingChange::Hotkey(hotkey))
+                if Some(hotkey.label()) == self.refused_hotkey =>
+            {
+                return Err(format!("{hotkey} is not supported by an active keyboard").into());
+            }
+            SettingsRequest::Change(change) => change.apply(&mut snapshot.values)?,
+            SettingsRequest::SetApiKey(_) => snapshot.has_api_key = true,
+            SettingsRequest::CancelHotkeyCapture => {}
+        }
+        Ok(snapshot.clone())
+    }
+
+    fn requests(&self) -> Vec<SettingsRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    /// The vocabulary each Words save sent, in order.
+    fn saved_vocabularies(&self) -> Vec<Vec<VocabularyEntry>> {
+        self.requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                SettingsRequest::Change(SettingChange::Vocabulary(vocabulary)) => Some(vocabulary),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -1139,351 +1158,278 @@ fn navigating_from_deep_history_opens_settings_at_its_own_top(cx: &mut TestAppCo
 
 #[gpui::test]
 fn settings_scrollbar_keeps_the_viewport_height_while_content_moves(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, commands);
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected(cx, &daemon);
+    harness.click("settings-show-advanced");
     let viewport = harness.bounds("route-content");
     let before = harness.bounds("route-scrollbar-settings");
     assert!((before.size.height - viewport.size.height).abs() <= px(1.));
 
-    harness.scroll_to("settings-group-recording-audio");
+    harness.scroll_to("settings-keep-audio");
 
     let after = harness.bounds("route-scrollbar-settings");
     assert_eq!(after, before);
-    assert!(harness.bounds("settings-group-recording-audio").top() < viewport.bottom());
+    assert!(harness.bounds("settings-keep-audio").top() < viewport.bottom());
 }
 
 #[gpui::test]
-fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
-    cx: &mut TestAppContext,
-) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
+fn a_switch_applies_its_setting_at_once(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected(cx, &daemon);
 
-    harness.bounds("settings-input-language");
-    harness.bounds("settings-hotkey-change");
-    harness.bounds("settings-input-recording-mode");
-    harness.bounds("settings-input-max-recording");
-    harness.bounds("settings-input-ducked-volume");
-    harness.bounds("settings-input-ducking-fade-out");
-    harness.bounds("settings-input-ducking-fade-in");
-    harness.bounds("settings-input-paste-shortcut");
-    harness.bounds("settings-input-keep-transcripts");
-    assert!(!harness.has("settings-save-bar"));
-    harness.scroll_route_by(-120.);
-    harness.scroll_to("toggle-streaming");
-    harness.click("toggle-streaming");
-    assert!(commands.lock().expect("command lock").is_empty());
-    harness.scroll_route_by(10_000.);
-    harness.bounds("settings-save-bar");
-    harness.click("save-settings");
+    harness.click("toggle-lower-sounds");
 
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.hotkey == Hotkey::default()
-                && settings.recording_mode == agentdictate_core::RecordingMode::Toggle
-                && settings.max_recording_seconds == 300
-                && settings.audio_ducking_fade_out_ms == 600
-                && settings.audio_ducking_fade_in_ms == 600
-                && settings.streaming_enabled != Settings::default().streaming_enabled
-    ));
-}
-
-#[gpui::test]
-fn shortcut_capture_saves_the_physical_key_the_daemon_captured(cx: &mut TestAppContext) {
-    // Ctrl+A on AZERTY: the physical Q key, which QWERTY names "Q".
-    let captured = Hotkey::captured(
-        std::collections::BTreeSet::from([HotkeyModifier::Ctrl]),
-        16,
-        "A",
+    assert_eq!(
+        daemon.requests(),
+        [SettingsRequest::Change(SettingChange::AudioDuckingEnabled(
+            false
+        ))]
     );
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = open_settings_capturing(
-        cx,
-        Arc::clone(&commands),
-        HotkeyCaptureOutcome::Captured {
-            hotkey: captured.clone(),
+    assert!(!daemon.snapshot().values.audio_ducking_enabled);
+    assert!(!harness.shown_settings().audio_ducking_enabled);
+
+    harness.click("toggle-lower-sounds");
+    assert!(daemon.snapshot().values.audio_ducking_enabled);
+}
+
+#[gpui::test]
+fn keeping_transcripts_for_less_time_asks_before_it_deletes(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected(cx, &daemon);
+    let choose = |harness: &mut Harness, choice| {
+        harness.shell.update(harness.cx, |shell, cx| {
+            shell.choose_keep_transcripts_for_test(choice, cx);
+        });
+        harness.cx.run_until_parked();
+    };
+
+    choose(&mut harness, KeepTranscripts::Days30);
+    assert!(harness.has("settings-keep-transcripts-warning"));
+    harness.click("settings-keep-transcripts-cancel");
+    assert!(!harness.has("settings-keep-transcripts-warning"));
+    assert!(daemon.requests().is_empty());
+
+    choose(&mut harness, KeepTranscripts::Never);
+    harness.click("settings-keep-transcripts-confirm");
+    assert_eq!(
+        daemon.requests(),
+        [SettingsRequest::Change(SettingChange::KeepTranscripts(
+            KeepTranscripts::Never
+        ))]
+    );
+    assert!(!harness.has("settings-keep-transcripts-warning"));
+
+    // Keeping more deletes nothing, so it applies at once.
+    choose(&mut harness, KeepTranscripts::Forever);
+    assert!(!harness.has("settings-keep-transcripts-warning"));
+    assert_eq!(
+        daemon.snapshot().values.keep_transcripts,
+        KeepTranscripts::Forever
+    );
+}
+
+#[gpui::test]
+fn advanced_settings_stay_folded_away_until_asked_for(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected(cx, &daemon);
+    assert!(harness.has("settings-language"));
+    assert!(harness.has("toggle-start-on-login"));
+    assert!(!harness.has("settings-advanced"));
+
+    harness.click("settings-show-advanced");
+    harness.scroll_to("toggle-exact-mode");
+    harness.click("toggle-exact-mode");
+
+    assert_eq!(
+        daemon.snapshot().values.dictation_mode,
+        DictationMode::Literal
+    );
+    harness.scroll_to("settings-show-advanced");
+    harness.click("settings-show-advanced");
+    assert!(!harness.has("settings-advanced"));
+}
+
+/// Ctrl+A on AZERTY: the physical Q key, which QWERTY names "Q".
+fn azerty_ctrl_a() -> Hotkey {
+    Hotkey::captured(BTreeSet::from([HotkeyModifier::Ctrl]), 16, "A")
+}
+
+#[gpui::test]
+fn the_shortcut_the_daemon_captures_applies_at_once(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon {
+        capture: HotkeyCaptureOutcome::Captured {
+            hotkey: azerty_ctrl_a(),
         },
-    );
+        ..FakeDaemon::new(Settings::default())
+    };
+    let mut harness = Harness::open_connected(cx, &daemon);
 
-    harness.scroll_to("settings-hotkey-change");
     harness.click("settings-hotkey-change");
 
     assert!(!harness.has("settings-hotkey-capture"));
-    assert!(!harness.has("settings-hotkey-capture-error"));
-    harness.bounds("settings-save-bar");
-    harness.scroll_route_by(10_000.);
-    harness.click("save-settings");
-
-    let commands = commands.lock().expect("command lock");
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.hotkey == captured && settings.hotkey.key() == 16
-    ));
+    assert_eq!(
+        daemon.requests(),
+        [SettingsRequest::Change(SettingChange::Hotkey(
+            azerty_ctrl_a()
+        ))]
+    );
+    assert_eq!(harness.shown_settings().hotkey.key(), 16);
 }
 
 #[gpui::test]
 fn a_capture_that_times_out_says_so_and_keeps_the_shortcut(cx: &mut TestAppContext) {
-    let mut harness = open_settings_capturing(
-        cx,
-        Arc::new(Mutex::new(Vec::new())),
-        HotkeyCaptureOutcome::TimedOut,
-    );
+    let daemon = FakeDaemon {
+        capture: HotkeyCaptureOutcome::TimedOut,
+        ..FakeDaemon::new(Settings::default())
+    };
+    let mut harness = Harness::open_connected(cx, &daemon);
 
-    harness.scroll_to("settings-hotkey-change");
     harness.click("settings-hotkey-change");
 
-    harness.bounds("settings-hotkey-capture-error");
-    harness.bounds("settings-hotkey-change");
-    assert!(!harness.has("settings-save-bar"));
-}
-
-/// A fake daemon that never captures, for tests that do not press Change.
-fn no_capture() -> HotkeyCaptureSink {
-    Arc::new(|| Ok(HotkeyCaptureOutcome::Cancelled))
-}
-
-/// Opens Settings on a fake daemon that answers every capture with `outcome`.
-fn open_settings_capturing(
-    cx: &mut TestAppContext,
-    commands: Arc<Mutex<Vec<ClientCommand>>>,
-    outcome: HotkeyCaptureOutcome,
-) -> Harness {
-    Harness::open_connected_capturing(
-        cx,
-        ShellViewModel::from_snapshot(
-            Route::Settings,
-            WorkflowSnapshot {
-                phase: WorkflowPhase::Ready,
-            },
-        ),
-        Settings::default(),
-        false,
-        commands,
-        Arc::new(move || Ok(outcome.clone())),
-    )
+    assert!(harness.has("settings-hotkey-capture-error"));
+    assert!(harness.has("settings-hotkey-change"));
+    assert!(daemon.requests().is_empty());
 }
 
 #[gpui::test]
-fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let settings = Settings {
+fn a_refused_change_says_why_and_shows_the_saved_value_again(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon {
+        refused_hotkey: Some("Ctrl+A"),
+        capture: HotkeyCaptureOutcome::Captured {
+            hotkey: azerty_ctrl_a(),
+        },
+        ..FakeDaemon::new(Settings::default())
+    };
+    let mut harness = Harness::open_connected(cx, &daemon);
+
+    harness.click("settings-hotkey-change");
+
+    let row = harness.bounds("settings-hotkey-row");
+    assert!(row.contains(&harness.bounds("settings-error").center()));
+    assert_eq!(harness.shown_settings().hotkey, Hotkey::default());
+
+    // The next change on the row clears the refusal.
+    harness.click("settings-recording-mode-hold");
+    assert!(!harness.has("settings-error"));
+    assert_eq!(
+        daemon.snapshot().values.recording_mode,
+        agentdictate_core::RecordingMode::Hold
+    );
+}
+
+#[gpui::test]
+fn about_your_work_saves_when_it_loses_focus_and_says_saved(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings {
         transcription_prompt:
             "The speaker is describing software changes, filenames, and project terminology."
                 .repeat(3),
         ..Settings::default()
+    });
+    let mut harness = Harness::open_connected(cx, &daemon);
+    // Only an active window tells inputs they lost focus.
+    harness.cx.update(|window, _| window.activate_window());
+    harness.click("settings-show-advanced");
+    harness.scroll_to("settings-about-your-work-control");
+
+    // Clicks anywhere across the wrapped text land in the box.
+    let control = harness.bounds("settings-about-your-work-control");
+    assert!(control.size.width > px(500.));
+    harness.click_at(point(
+        control.left() + control.size.width * 0.75,
+        control.center().y,
+    ));
+    harness.cx.simulate_input("Z");
+    harness.cx.run_until_parked();
+    assert!(daemon.requests().is_empty());
+
+    // Clicking the row's label, not a control, moves focus away.
+    let label = harness.bounds("settings-about-your-work").origin + point(px(8.), px(24.));
+    harness.click_at(label);
+
+    let requests = daemon.requests();
+    let [SettingsRequest::Change(SettingChange::TranscriptionPrompt(prompt))] = requests.as_slice()
+    else {
+        panic!("expected one prompt change, got {:?}", daemon.requests());
     };
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    );
-    let mut harness =
-        Harness::open_connected_with(cx, model, settings, true, Arc::clone(&commands));
-    for selector in ["settings-input-transcription-prompt-control"] {
-        harness.scroll_to(selector);
-        let control = harness.bounds(selector);
-        assert!(control.size.width > px(500.));
-        let position = point(
-            control.left() + control.size.width * 0.75,
-            control.center().y,
-        );
-        harness.cx.simulate_click(position, Modifiers::none());
-        harness.cx.simulate_input("Z");
-        harness.cx.run_until_parked();
-        harness.click("save-settings");
-    }
-    let commands = commands.lock().unwrap();
-    let commands: Vec<_> = commands
-        .iter()
-        .filter(|command| matches!(command.kind, ClientCommandKind::UpdateSettings { .. }))
-        .collect();
-    assert_eq!(commands.len(), 1);
-    assert!(
-        matches!(&commands[0].kind, ClientCommandKind::UpdateSettings { settings, .. }
-        if settings.transcription_prompt.contains('Z'))
-    );
+    assert!(prompt.contains('Z'));
+    assert!(harness.has("settings-saved"));
+
+    harness
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(1_600));
+    harness.cx.run_until_parked();
+    assert!(!harness.has("settings-saved"));
+
+    // Enter saves too, without adding a line.
+    harness.click("settings-about-your-work-control");
+    harness.cx.simulate_keystrokes("end Y enter");
+    harness.cx.run_until_parked();
+    assert!(matches!(
+        daemon.requests().last(),
+        Some(SettingsRequest::Change(SettingChange::TranscriptionPrompt(prompt)))
+            if prompt.ends_with('Y')
+    ));
 }
 
 #[gpui::test]
-fn successful_api_key_save_clears_the_secret_field(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
+fn saving_an_api_key_shows_the_key_is_saved_with_a_way_to_replace_it(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected(cx, &daemon);
+
+    harness.click("save-api-key");
+    assert!(harness.has("settings-error"));
+    assert!(daemon.requests().is_empty());
 
     harness.type_text("settings-api-key-input", "sk-test-secret");
     harness.click("save-api-key");
-    assert!(!harness.has("settings-feedback"));
-    harness.click("save-api-key");
-    harness.bounds("api-key-feedback");
 
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::SetApiKey { api_key, .. }
-            if api_key.expose_secret() == "sk-test-secret"
-    ));
+    assert_eq!(
+        daemon.requests(),
+        [SettingsRequest::SetApiKey("sk-test-secret".to_owned())]
+    );
+    assert!(harness.has("settings-api-key-saved"));
+    assert!(!harness.has("settings-api-key-input"));
+    assert!(!harness.has("settings-error"));
+
+    harness.click("settings-api-key-replace");
+    assert!(harness.has("settings-api-key-input"));
 }
 
-#[gpui::test]
-fn save_and_discard_remain_clickable_at_the_bottom_of_settings(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_settings(cx, Arc::clone(&commands), size(px(720.), px(520.)));
-    let viewport = harness.bounds("route-content");
-    harness.cx.simulate_event(ScrollWheelEvent {
-        position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
-        ..Default::default()
-    });
-    harness.cx.run_until_parked();
-    harness.click("toggle-preserve-audio");
-
-    let scroll_area = harness.bounds("route-content");
-    for selector in ["save-settings", "discard-settings"] {
-        let button = harness.bounds(selector);
-        assert!(
-            button.top() >= scroll_area.bottom(),
-            "{selector} scrolled out of view"
-        );
-        assert!(
-            button.bottom() <= px(520.),
-            "{selector} is below the window"
-        );
-    }
-    harness.click("discard-settings");
-    assert!(commands.lock().unwrap().is_empty());
-    assert_eq!(harness.bounds("route-content"), viewport);
-
-    harness.click("toggle-preserve-audio");
-    harness.click("save-settings");
-    let commands = commands.lock().unwrap();
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. } if settings.preserve_temp_audio
-    ));
-    let feedback = harness.bounds("settings-feedback");
-    assert!(feedback.top() >= viewport.top());
-    assert!(feedback.bottom() <= px(520.));
-}
-
-#[gpui::test]
-fn maximum_recording_step_buttons_are_real_click_targets(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness =
-        Harness::open_settings(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
-    harness.scroll_to("settings-input-max-recording-control");
-    let control = harness.bounds("settings-input-max-recording-control");
-
-    harness.click_at(point(control.right() - px(14.), control.center().y));
-    harness.click("save-settings");
-    assert!(matches!(
-        &commands.lock().expect("command lock")[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.max_recording_seconds == Settings::default().max_recording_seconds + 1
-    ));
-
-    let viewport = harness.bounds("route-content");
-    harness.cx.simulate_event(ScrollWheelEvent {
-        position: viewport.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
-        ..Default::default()
-    });
-    harness.cx.run_until_parked();
-    let control = harness.bounds("settings-input-max-recording-control");
-    harness.click_at(point(control.left() + px(14.), control.center().y));
-    harness.click("save-settings");
-    assert!(matches!(
-        &commands.lock().expect("command lock")[1].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.max_recording_seconds == Settings::default().max_recording_seconds
-    ));
-}
-
-#[gpui::test]
-fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness =
-        Harness::open_settings(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
-
-    harness.scroll_to("toggle-streaming");
-    harness.click("toggle-streaming");
-    harness.bounds("settings-save-bar");
-    harness.click("discard-settings");
-
-    assert!(commands.lock().expect("command lock").is_empty());
-
-    // A second toggle must start from the persisted `true` value. Saving it as
-    // `false` proves that Discard restored the draft instead of leaving the
-    // first click in memory.
-    harness.scroll_to("toggle-streaming");
-    harness.click("toggle-streaming");
-    harness.click("save-settings");
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. } if settings.streaming_enabled
-    ));
-}
-
-/// Opens `route` with `vocabulary` saved and records every daemon command.
+/// Opens `model` with `vocabulary` saved on a fake daemon.
 fn open_with_vocabulary(
     cx: &mut TestAppContext,
     model: ShellViewModel,
     vocabulary: &str,
-) -> (Harness, Arc<Mutex<Vec<ClientCommand>>>) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let settings = Settings {
+) -> (Harness, FakeDaemon) {
+    let daemon = FakeDaemon::new(Settings {
         vocabulary: parse_vocabulary(vocabulary).unwrap(),
         ..Settings::default()
-    };
-    let harness = Harness::open_connected_with(cx, model, settings, false, Arc::clone(&commands));
-    (harness, commands)
+    });
+    let harness = Harness::open_connected_with(cx, model, &daemon);
+    (harness, daemon)
 }
 
-fn open_words(
-    cx: &mut TestAppContext,
-    vocabulary: &str,
-) -> (Harness, Arc<Mutex<Vec<ClientCommand>>>) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Words,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    );
-    open_with_vocabulary(cx, model, vocabulary)
-}
-
-/// The vocabulary each settings update sent, in order.
-fn saved_vocabularies(commands: &Mutex<Vec<ClientCommand>>) -> Vec<Vec<VocabularyEntry>> {
-    commands
-        .lock()
-        .expect("command lock")
-        .iter()
-        .filter_map(|command| match &command.kind {
-            ClientCommandKind::UpdateSettings { settings, .. } => Some(settings.vocabulary.clone()),
-            _ => None,
-        })
-        .collect()
+fn open_words(cx: &mut TestAppContext, vocabulary: &str) -> (Harness, FakeDaemon) {
+    open_with_vocabulary(
+        cx,
+        ShellViewModel::from_snapshot(Route::Words, ready()),
+        vocabulary,
+    )
 }
 
 #[gpui::test]
 fn adding_a_word_saves_it_at_once_and_says_saved(cx: &mut TestAppContext) {
-    let (mut harness, commands) = open_words(cx, "");
+    let (mut harness, daemon) = open_words(cx, "");
     assert!(harness.has("words-empty"));
 
-    harness.type_text("words-new-spelling", "Leadlord");
-    harness.type_text("words-new-sounds-like", "lead lord, lead load");
+    harness.type_text("words-new-spelling", "Siobhan");
+    harness.type_text("words-new-sounds-like", "shiv on, shiv awn");
     harness.click("words-add");
 
     assert_eq!(
-        saved_vocabularies(&commands),
-        [parse_vocabulary("Leadlord = lead lord, lead load").unwrap()]
+        daemon.saved_vocabularies(),
+        [parse_vocabulary("Siobhan = shiv on, shiv awn").unwrap()]
     );
     assert!(harness.has("words-saved"));
     assert!(harness.has("word-row-0"));
@@ -1492,7 +1438,7 @@ fn adding_a_word_saves_it_at_once_and_says_saved(cx: &mut TestAppContext) {
     // The add row was cleared, so adding again asks for a spelling.
     harness.click("words-add");
     assert!(harness.has("words-error"));
-    assert_eq!(saved_vocabularies(&commands).len(), 1);
+    assert_eq!(daemon.saved_vocabularies().len(), 1);
 
     harness
         .cx
@@ -1504,18 +1450,18 @@ fn adding_a_word_saves_it_at_once_and_says_saved(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editing_a_word_saves_its_new_sounds_like(cx: &mut TestAppContext) {
-    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord\nClaude Code");
+    let (mut harness, daemon) = open_words(cx, "Siobhan = shiv on\nKubernetes");
 
     harness.click("word-edit-0");
     harness.click("word-editor-sounds-like");
     harness.cx.simulate_keystrokes("ctrl-a");
-    harness.cx.simulate_input("lead lord, lead load");
+    harness.cx.simulate_input("shiv on, shiv awn");
     harness.cx.run_until_parked();
     harness.click("word-editor-done");
 
     assert_eq!(
-        saved_vocabularies(&commands),
-        [parse_vocabulary("Leadlord = lead lord, lead load\nClaude Code").unwrap()]
+        daemon.saved_vocabularies(),
+        [parse_vocabulary("Siobhan = shiv on, shiv awn\nKubernetes").unwrap()]
     );
     assert!(!harness.has("word-editor-done"));
     assert!(harness.has("words-saved"));
@@ -1523,13 +1469,13 @@ fn editing_a_word_saves_its_new_sounds_like(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn deleting_a_word_saves_the_rest(cx: &mut TestAppContext) {
-    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord\nClaude Code");
+    let (mut harness, daemon) = open_words(cx, "Siobhan = shiv on\nKubernetes");
 
     harness.click("word-delete-0");
 
     assert_eq!(
-        saved_vocabularies(&commands),
-        [parse_vocabulary("Claude Code").unwrap()]
+        daemon.saved_vocabularies(),
+        [parse_vocabulary("Kubernetes").unwrap()]
     );
     assert!(harness.has("word-row-0"));
     assert!(!harness.has("word-row-1"));
@@ -1537,92 +1483,48 @@ fn deleting_a_word_saves_the_rest(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_duplicate_spelling_is_refused_inline_without_saving(cx: &mut TestAppContext) {
-    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord");
+    let (mut harness, daemon) = open_words(cx, "Siobhan = shiv on");
 
-    harness.type_text("words-new-spelling", "leadlord");
+    harness.type_text("words-new-spelling", "siobhan");
     harness.click("words-add");
 
-    assert!(saved_vocabularies(&commands).is_empty());
+    assert!(daemon.saved_vocabularies().is_empty());
     assert!(harness.has("words-error"));
     assert!(!harness.has("words-saved"));
 }
 
-/// Words saves at once while Settings keeps its Save button, so neither may
-/// overwrite the other's change.
-#[gpui::test]
-fn a_words_change_leaves_unsaved_settings_for_settings_to_save(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    );
-    let (mut harness, commands) = open_with_vocabulary(cx, model, "");
-    harness.scroll_to("toggle-streaming");
-    harness.click("toggle-streaming");
-
-    harness.click(Route::Words.navigation_id());
-    harness.type_text("words-new-spelling", "Codex");
-    harness.click("words-add");
-    harness.click(Route::Settings.navigation_id());
-    harness.click("save-settings");
-
-    let commands = commands.lock().expect("command lock");
-    let [words, settings] = commands.as_slice() else {
-        panic!("expected two settings updates, got {commands:?}");
-    };
-    let codex = parse_vocabulary("Codex").unwrap();
-    assert!(matches!(
-        &words.kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.vocabulary == codex
-                && settings.streaming_enabled == Settings::default().streaming_enabled
-    ));
-    assert!(matches!(
-        &settings.kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.vocabulary == codex
-                && settings.streaming_enabled != Settings::default().streaming_enabled
-    ));
-}
-
 #[gpui::test]
 fn fix_a_word_in_an_expanded_transcript_adds_what_was_heard_to_words(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        history: history(
-            Vec::new(),
-            vec![TranscriptViewModel::new(
-                41,
-                "Today 14:18",
-                "We shipped lead lord today.",
-                5,
-                "0:04",
-            )],
-        ),
-        ..WorkspaceViewModel::default()
-    });
-    let (mut harness, commands) = open_with_vocabulary(cx, model, "Leadlord\nClaude Code");
+    let model =
+        ShellViewModel::from_snapshot(Route::History, ready()).with_workspace(WorkspaceViewModel {
+            history: history(
+                Vec::new(),
+                vec![TranscriptViewModel::new(
+                    41,
+                    "Today 14:18",
+                    "I met shiv on today.",
+                    5,
+                    "0:04",
+                )],
+            ),
+            ..WorkspaceViewModel::default()
+        });
+    let (mut harness, daemon) = open_with_vocabulary(cx, model, "Siobhan\nKubernetes");
     assert!(!harness.has("history-fix-word-41"));
 
     harness.click("history-transcript-toggle-41");
     harness.click("history-fix-word-41");
     harness.click("history-fix-word-save");
     assert!(harness.has("history-fix-word-error"));
-    assert!(saved_vocabularies(&commands).is_empty());
+    assert!(daemon.saved_vocabularies().is_empty());
 
-    harness.type_text("history-fix-word-heard", "lead lord");
-    harness.type_text("history-fix-word-spelling", "Leadlord");
+    harness.type_text("history-fix-word-heard", "shiv on");
+    harness.type_text("history-fix-word-spelling", "Siobhan");
     harness.click("history-fix-word-save");
 
     assert_eq!(
-        saved_vocabularies(&commands),
-        [parse_vocabulary("Leadlord = lead lord\nClaude Code").unwrap()]
+        daemon.saved_vocabularies(),
+        [parse_vocabulary("Siobhan = shiv on\nKubernetes").unwrap()]
     );
     assert!(!harness.has("history-fix-word-editor-41"));
     assert!(harness.has("added-history-fix-word-41"));

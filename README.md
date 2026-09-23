@@ -53,8 +53,8 @@ lag behind this repository. See [packages](docs/INSTALL.md#packages).
 ## First use
 
 1. Open **AgentDictate** from your app menu, or run `agentdictate`. This starts the
-   background service, which also starts with every later login while **Start on
-   login** is on.
+   background service, which also starts with every later login while **Start
+   AgentDictate when I log in** is on.
 2. In **Settings**, paste your OpenAI API key and click **Save key**.
 3. Click into any text field, press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and
    press it again. Keep that field focused until the text appears.
@@ -66,7 +66,7 @@ in the tray menu.
 ## Everyday use
 
 - **Shortcut.** Change it, or switch from press-to-toggle to hold-to-talk, under
-  **Settings**, **Recording & audio**.
+  **Settings**, **Dictation shortcut**. Settings apply as you change them.
 - **Spelling of names.** Add product and project names under **Words**. A
   **Sounds like** entry, such as `cube control` for `kubectl`, also fixes that
   spoken form every time. **Fix a word** on an expanded History transcript adds one
@@ -85,12 +85,12 @@ in the tray menu.
   readable only by you.
 - After a successful paste, AgentDictate keeps the text only in History, for as long
   as **Keep transcripts** says: **Forever** (the default), **30 days**, or **Don't
-  keep**. A shorter choice also deletes older saved text, the next time you dictate
-  or start AgentDictate. The audio is deleted after the paste, unless you turn on
-  **Preserve temporary audio**. Both settings are under **Settings**, **Privacy**.
+  keep**. A shorter choice asks first, then deletes older saved text the next time
+  you dictate or start AgentDictate. The audio is deleted after the paste, unless you
+  turn on **Keep audio recordings** under **Settings**, **Show advanced settings**.
 - **Delete** on a History item deletes it for good, and **Delete all history…** in
-  **Settings**, **Privacy** deletes every transcript. Deleted text is overwritten on
-  disk, not just hidden.
+  **Settings** deletes every transcript. Deleted text is overwritten on disk, not
+  just hidden.
 - A failed dictation waits in **Recovery**, with its text and audio, for 7 days, then
   both are deleted.
 - Usage numbers, such as minutes and estimated cost, are kept without text.

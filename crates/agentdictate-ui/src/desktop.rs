@@ -13,8 +13,8 @@ use std::{
 
 use crate::theme::gpui_color;
 use crate::{
-    OverlayPresentation, ShellViewModel, ThemeTokens, UiActionError, WorkspaceActionSink,
-    WorkspaceViewModel,
+    OverlayPresentation, SettingsRequest, ShellViewModel, ThemeTokens, UiActionError,
+    WorkspaceActionSink, WorkspaceViewModel,
 };
 
 mod history_action_lane;
@@ -33,7 +33,8 @@ mod words_actions;
 mod words_page;
 mod workspace_actions;
 
-use settings_shell::{RouteUiState, SettingsCommandState, SettingsEditState, WorkspaceActionState};
+use settings_form::SettingsForm;
+use settings_shell::{RouteUiState, WorkspaceActionState};
 
 pub use overlay_view::RecordingOverlay;
 
@@ -41,9 +42,13 @@ const SIDEBAR_WIDTH: f32 = 200.0;
 const ROUTE_SCROLLBAR_WIDTH: f32 = 16.0;
 pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 
-/// Sends one daemon command on behalf of the settings window.
-pub type CommandSink =
-    Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), UiActionError> + Send + Sync>;
+/// Sends one settings request to the daemon and returns the settings it then
+/// holds. The window calls it off the UI thread, one request at a time.
+pub type SettingsSink = Arc<
+    dyn Fn(SettingsRequest) -> Result<agentdictate_core::SettingsSnapshot, UiActionError>
+        + Send
+        + Sync,
+>;
 
 /// Asks the daemon to capture the next shortcut pressed on any keyboard. It
 /// blocks until the chord, Esc, a cancel or the daemon's timeout, so the
@@ -54,17 +59,15 @@ pub type HotkeyCaptureSink =
 /// Starts the settings window with connected workspace actions.
 pub fn run_settings_shell_with_workspace_actions(
     model: ShellViewModel,
-    settings: agentdictate_core::Settings,
-    has_api_key: bool,
-    command_sink: CommandSink,
+    settings: agentdictate_core::SettingsSnapshot,
+    settings_sink: SettingsSink,
     hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
 ) {
     run_settings_shell_internal(
         model,
         settings,
-        has_api_key,
-        command_sink,
+        settings_sink,
         hotkey_capture,
         action_sink,
         None,
@@ -76,9 +79,8 @@ pub fn run_settings_shell_with_workspace_actions(
 /// fixed startup snapshot.
 pub fn run_settings_shell_with_workspace_actions_and_updates(
     model: ShellViewModel,
-    settings: agentdictate_core::Settings,
-    has_api_key: bool,
-    command_sink: CommandSink,
+    settings: agentdictate_core::SettingsSnapshot,
+    settings_sink: SettingsSink,
     hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
     updates: Receiver<WorkspaceViewModel>,
@@ -86,8 +88,7 @@ pub fn run_settings_shell_with_workspace_actions_and_updates(
     run_settings_shell_internal(
         model,
         settings,
-        has_api_key,
-        command_sink,
+        settings_sink,
         hotkey_capture,
         action_sink,
         Some(updates),
@@ -96,9 +97,8 @@ pub fn run_settings_shell_with_workspace_actions_and_updates(
 
 fn run_settings_shell_internal(
     model: ShellViewModel,
-    settings: agentdictate_core::Settings,
-    has_api_key: bool,
-    command_sink: CommandSink,
+    settings: agentdictate_core::SettingsSnapshot,
+    settings_sink: SettingsSink,
     hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
     workspace_updates: Option<Receiver<WorkspaceViewModel>>,
@@ -125,8 +125,7 @@ fn run_settings_shell_internal(
                         SettingsShell::new(
                             model,
                             settings,
-                            has_api_key,
-                            command_sink,
+                            settings_sink,
                             hotkey_capture,
                             action_sink,
                             window,
@@ -293,8 +292,7 @@ pub fn run_recording_overlay(
 pub struct SettingsShell {
     model: ShellViewModel,
     theme: ThemeTokens,
-    settings: SettingsEditState,
-    settings_commands: SettingsCommandState,
+    settings: SettingsForm,
     workspace_actions: WorkspaceActionState,
     routes: RouteUiState,
     _subscriptions: Vec<Subscription>,

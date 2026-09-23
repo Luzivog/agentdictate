@@ -61,7 +61,7 @@ never replaces, restarts, or reconfigures your installed AgentDictate:
   `state`, `cache`, and `runtime` there. Export it yourself to use another
   directory.
 - Its daemon runs directly, not as `agentdictated.service`, and never calls
-  `systemctl`. **Start on login** has no effect on it.
+  `systemctl`. **Start AgentDictate when I log in** has no effect on it.
 - `./run.sh` starts that daemon in the background and opens the settings
   window. Closing the window stops the daemon. `./run.sh --service` runs only
   the daemon, in the foreground; stop it with Ctrl+C.

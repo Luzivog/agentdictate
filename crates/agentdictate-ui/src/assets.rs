@@ -13,13 +13,11 @@ macro_rules! icon {
 }
 
 /// Every icon the app's gpui-component controls request: Select (chevron,
-/// check, search, empty inbox) and NumberInput (minus, plus).
-const ICONS: [(&str, &[u8]); 6] = [
+/// check, search, empty inbox) and Radio (check).
+const ICONS: [(&str, &[u8]); 4] = [
     ("check.svg", icon!("check.svg")),
     ("chevron-down.svg", icon!("chevron-down.svg")),
     ("inbox.svg", icon!("inbox.svg")),
-    ("minus.svg", icon!("minus.svg")),
-    ("plus.svg", icon!("plus.svg")),
     ("search.svg", icon!("search.svg")),
 ];
 

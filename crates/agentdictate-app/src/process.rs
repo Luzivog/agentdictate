@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, ClientCommandTag, Hotkey, HotkeyCaptureOutcome,
-    HotkeyReadiness, RecordingMode, ServerMessage, Settings, WorkflowPhase,
+    HotkeyReadiness, RecordingMode, ServerMessage, SettingChange, Settings, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -168,15 +168,22 @@ impl AgentProcess {
         ))
     }
 
-    fn update_settings(&mut self, mut settings: Settings) -> anyhow::Result<()> {
-        settings.validate()?;
+    /// Applies one setting to the settings the daemon holds.
+    fn change_setting(&mut self, change: SettingChange) -> anyhow::Result<()> {
+        let mut settings = self.daemon.settings().clone();
+        change.apply(&mut settings)?;
+        self.update_settings(settings)
+    }
+
+    /// Saves and applies `settings`. A new hotkey must be accepted by the
+    /// live listener first, and goes back to the old one if saving fails.
+    fn update_settings(&mut self, settings: Settings) -> anyhow::Result<()> {
         let start_on_login_changed =
             settings.start_on_login != self.daemon.settings().start_on_login;
         let hotkey_changed = settings.hotkey != self.daemon.settings().hotkey;
         let recording_mode_changed =
             settings.recording_mode != self.daemon.settings().recording_mode;
         let new_hotkey = hotkey_changed.then(|| HotkeySpec::from(&settings.hotkey));
-        settings.openai_api_key = self.daemon.settings().openai_api_key.clone();
         let old_hotkey = hotkey_changed.then(|| HotkeySpec::from(&self.daemon.settings().hotkey));
         if let Some(spec) = new_hotkey.as_ref() {
             self.hotkey_control()?.reconfigure(spec.clone())?;
@@ -391,7 +398,7 @@ impl IpcHandler for AgentProcess {
                         .copy_text(&text)
                         .map_err(Into::into)
                 }),
-            ClientCommandKind::UpdateSettings { settings, .. } => self.update_settings(*settings),
+            ClientCommandKind::ChangeSetting { change, .. } => self.change_setting(change),
             ClientCommandKind::SetApiKey { api_key, .. } => {
                 self.set_api_key(api_key.expose_secret())
             }
@@ -446,7 +453,7 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
         | ClientCommandKind::DeleteHistory { request_id, .. }
         | ClientCommandKind::ClearHistory { request_id }
         | ClientCommandKind::CopyTranscript { request_id, .. }
-        | ClientCommandKind::UpdateSettings { request_id, .. }
+        | ClientCommandKind::ChangeSetting { request_id, .. }
         | ClientCommandKind::SetApiKey { request_id, .. }
         | ClientCommandKind::HotkeyStatusChanged { request_id, .. }
         | ClientCommandKind::CaptureHotkey { request_id }
@@ -498,7 +505,7 @@ mod tests {
         },
     };
 
-    use agentdictate_core::{ClientCommand, JobStage, ServerMessageKind};
+    use agentdictate_core::{ClientCommand, JobStage, KeepTranscripts, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };
@@ -644,12 +651,10 @@ mod tests {
         let mut process = AgentProcess::open(paths.clone()).unwrap();
         let control = Arc::new(RejectingHotkeyControl::default());
         process.set_hotkey_control(control.clone());
-        let changed = Settings {
-            hotkey: "F9".parse().unwrap(),
-            ..Settings::default()
-        };
-
-        let response = process.handle(ClientCommand::update_settings(7, &changed));
+        let response = process.handle(ClientCommand::change_setting(
+            7,
+            SettingChange::Hotkey("F9".parse().unwrap()),
+        ));
 
         assert!(matches!(
             response.kind,
@@ -672,12 +677,10 @@ mod tests {
         process.set_hotkey_control(control.clone());
         process.config_file = directory.path().join("not-a-file");
         std::fs::create_dir(&process.config_file).unwrap();
-        let changed = Settings {
-            hotkey: "F9".parse().unwrap(),
-            ..Settings::default()
-        };
-
-        let response = process.handle(ClientCommand::update_settings(8, &changed));
+        let response = process.handle(ClientCommand::change_setting(
+            8,
+            SettingChange::Hotkey("F9".parse().unwrap()),
+        ));
 
         assert!(matches!(
             response.kind,
@@ -695,12 +698,10 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
         let mut process = AgentProcess::open(paths.clone()).unwrap();
-        let changed = Settings {
-            audio_ducking_volume_percent: 150,
-            ..Settings::default()
-        };
-
-        let response = process.handle(ClientCommand::update_settings(6, &changed));
+        let response = process.handle(ClientCommand::change_setting(
+            6,
+            SettingChange::AudioDuckingVolumePercent(150),
+        ));
 
         assert!(matches!(
             response.kind,
@@ -715,6 +716,39 @@ mod tests {
         );
     }
 
+    /// Each window sends only the setting it changed, so one window cannot
+    /// revert another's edit or the saved API key.
+    #[test]
+    fn a_setting_change_keeps_every_other_saved_setting() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        paths.ensure_directories().unwrap();
+        let saved = Settings {
+            openai_api_key: "sk-kept".into(),
+            vocabulary: vec![agentdictate_core::VocabularyEntry {
+                spelling: "Siobhan".into(),
+                aliases: vec!["shiv on".into()],
+            }],
+            ..Settings::default()
+        };
+        save_settings(&paths.config_file, &saved).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap();
+
+        let response = process.handle(ClientCommand::change_setting(
+            10,
+            SettingChange::KeepTranscripts(KeepTranscripts::Never),
+        ));
+
+        assert!(matches!(response.kind, ServerMessageKind::Snapshot { .. }));
+        assert_eq!(
+            load_settings(&paths.config_file).unwrap(),
+            Settings {
+                keep_transcripts: KeepTranscripts::Never,
+                ..saved
+            }
+        );
+    }
+
     #[test]
     fn shortcut_is_persisted_only_after_the_live_listener_accepts_it() {
         let directory = tempdir().unwrap();
@@ -725,12 +759,10 @@ mod tests {
             observed_hotkey: Mutex::new(None),
         });
         process.set_hotkey_control(control.clone());
-        let changed = Settings {
-            hotkey: "F9".parse().unwrap(),
-            ..Settings::default()
-        };
-
-        let response = process.handle(ClientCommand::update_settings(9, &changed));
+        let response = process.handle(ClientCommand::change_setting(
+            9,
+            SettingChange::Hotkey("F9".parse().unwrap()),
+        ));
 
         assert!(matches!(response.kind, ServerMessageKind::Snapshot { .. }));
         assert_eq!(
