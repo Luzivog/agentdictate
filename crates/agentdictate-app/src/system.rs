@@ -874,7 +874,7 @@ mod tests {
                 "#!/bin/sh\n\
                  for output do :; done\n\
                  trap 'printf stopped > \"{}\"; exit 0' INT TERM\n\
-                 printf 'RIFF0000WAVEfmt 00000000000000000000data0000000000000000' > \"$output\"\n\
+                 printf 'RIFF\\000\\000\\000\\000WAVEfmt \\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\000\\175\\000\\000\\002\\000\\020\\000data\\000\\000\\000\\000' > \"$output\"\n\
                  while :; do printf '0000000000000000' >> \"$output\"; sleep 0.01; done\n",
                 stopped.display()
             ),
@@ -919,7 +919,7 @@ mod tests {
         starter.join().unwrap().unwrap();
         let observation_deadline = Instant::now() + Duration::from_millis(200);
         while !stopped.exists() && Instant::now() < observation_deadline {
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(2));
         }
         assert!(
             !stopped.exists(),

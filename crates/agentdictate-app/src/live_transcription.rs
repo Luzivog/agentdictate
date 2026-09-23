@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::captured_audio::data_start;
+use agentdictate_linux::wav::data_start;
 
 use agentdictate_core::{DictationOptions, JobId};
 use agentdictate_runtime::ExternalError;

@@ -1,18 +1,21 @@
 use std::{
     error::Error,
     ffi::OsString,
-    fmt, fs, io,
+    fmt,
+    fs::{self, File},
+    io,
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     path::{Path, PathBuf},
     process::{Child, ExitStatus},
-    thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::command::{SystemCommandRunner, pidfd_open};
 
-const WAV_HEADER_BYTES: u64 = 44;
-const DROP_FINALIZATION_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+const DROP_FINALIZATION_GRACE: Duration = Duration::from_millis(500);
+/// How often start checks the file for its first samples. The wait wakes at
+/// once if the recorder exits instead.
+const READINESS_CHECK_INTERVAL: Duration = Duration::from_millis(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingStatus {
@@ -143,46 +146,96 @@ impl PwRecordRecorder {
                 program: self.program.clone(),
                 source,
             })?;
-
-        loop {
-            if let Some(status) = child.try_wait().map_err(|source| RecorderError::Inspect {
+        let process_id = child.id();
+        let exit = match pidfd_open(process_id) {
+            Ok(exit) => exit,
+            Err(source) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RecorderError::ObserveExit { process_id, source });
+            }
+        };
+        match wait_for_first_samples(&mut child, exit.as_fd(), output, deadline) {
+            Ok(data_start) => Ok(Recording {
+                runner: self.runner,
+                child,
+                exit,
                 path: output.to_path_buf(),
-                source,
-            })? {
-                return Err(RecorderError::ExitedBeforeReady { status });
-            }
-            if recording_bytes(output)? > WAV_HEADER_BYTES {
-                // The file and the child must both be live in the same observed
-                // readiness cycle; a helper that wrote a header and died is not
-                // a usable recording session.
-                if let Some(status) = child.try_wait().map_err(|source| RecorderError::Inspect {
-                    path: output.to_path_buf(),
-                    source,
-                })? {
-                    return Err(RecorderError::ExitedBeforeReady { status });
+                data_start,
+            }),
+            Err(error) => {
+                if matches!(child.try_wait(), Ok(None)) {
+                    stop_child(&self.runner, &mut child, exit.as_fd(), deadline);
                 }
-                return Ok(Recording {
-                    runner: self.runner,
-                    child,
-                    path: output.to_path_buf(),
-                });
+                Err(error)
             }
-            if Instant::now() >= deadline {
-                stop_child(&self.runner, &mut child, deadline);
-                return Err(RecorderError::ReadinessDeadline);
-            }
-            // Readiness is the file/liveness condition above, never this yield.
-            // Yielding merely avoids starving the recorder while checking it.
-            thread::yield_now();
         }
     }
+}
+
+/// Waits until the recorder has written samples past its WAV header and
+/// returns the offset of the first sample. Fails if it exits first.
+fn wait_for_first_samples(
+    child: &mut Child,
+    exit: BorrowedFd<'_>,
+    output: &Path,
+    deadline: Instant,
+) -> Result<u64, RecorderError> {
+    let inspect = |source| RecorderError::Inspect {
+        path: output.to_path_buf(),
+        source,
+    };
+    loop {
+        if let Some(status) = child.try_wait().map_err(inspect)? {
+            return Err(RecorderError::ExitedBeforeReady { status });
+        }
+        if let Some(data_start) = first_samples(output)? {
+            // The file and the child must both be live in the same observed
+            // readiness cycle; a helper that wrote a header and died is not
+            // a usable recording session.
+            if let Some(status) = child.try_wait().map_err(inspect)? {
+                return Err(RecorderError::ExitedBeforeReady { status });
+            }
+            return Ok(data_start);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(RecorderError::ReadinessDeadline);
+        }
+        wait_for_pidfd(exit, Some(remaining.min(READINESS_CHECK_INTERVAL))).map_err(inspect)?;
+    }
+}
+
+/// The offset of the first sample once `path` holds at least one byte past
+/// its header. A header still being written means not yet.
+fn first_samples(path: &Path) -> Result<Option<u64>, RecorderError> {
+    let inspect = |source| RecorderError::Inspect {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(inspect(source)),
+    };
+    let data_start = match crate::wav::data_start(&mut file) {
+        Ok(data_start) => data_start,
+        Err(source) if source.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(source) => return Err(inspect(source)),
+    };
+    let bytes = file.metadata().map_err(inspect)?.len();
+    Ok((bytes > data_start).then_some(data_start))
 }
 
 #[derive(Debug)]
 pub struct Recording {
     runner: SystemCommandRunner,
     child: Child,
+    /// Becomes readable when the recorder exits; never reaps it.
+    exit: OwnedFd,
     path: PathBuf,
+    /// Offset of the first sample, found when the recording became ready.
+    data_start: u64,
 }
 
 /// An independent kernel handle that becomes readable when the recorder exits.
@@ -210,35 +263,59 @@ impl RecordingExitObserver {
     /// Blocks on the pidfd until the kernel reports process exit. No process is
     /// reaped here, and no polling interval or correctness delay is involved.
     pub fn wait(&self) -> io::Result<()> {
+        wait_for_pidfd(self.pidfd.as_fd(), None).map(drop)
+    }
+}
+
+/// Blocks until the process behind `pidfd` exits, for at most `timeout`
+/// (forever when `None`). Returns whether it exited. Never reaps it.
+fn wait_for_pidfd(pidfd: BorrowedFd<'_>, timeout: Option<Duration>) -> io::Result<bool> {
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        let timeout_millis = deadline.map_or(-1, |deadline| {
+            // Round up so a sub-millisecond remainder cannot become a busy loop.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            i32::try_from(remaining.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
+        });
         let mut descriptor = libc::pollfd {
-            fd: self.pidfd.as_raw_fd(),
+            fd: pidfd.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        loop {
-            // SAFETY: `descriptor` points to one initialized pollfd for the
-            // duration of the call. A negative timeout blocks for fd activity.
-            let result = unsafe { libc::poll(&mut descriptor, 1, -1) };
-            if result > 0 {
-                if descriptor.revents & libc::POLLNVAL != 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "recording pidfd is invalid",
-                    ));
-                }
-                if descriptor.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-                    return Ok(());
-                }
-                continue;
+        // SAFETY: `descriptor` points to one initialized pollfd for the
+        // duration of the call. A negative timeout blocks for fd activity.
+        let result = unsafe { libc::poll(&mut descriptor, 1, timeout_millis) };
+        if result > 0 {
+            if descriptor.revents & libc::POLLNVAL != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recording pidfd is invalid",
+                ));
             }
-            if result == 0 {
-                continue;
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
+            return Ok(true);
         }
+        if result == 0 {
+            return Ok(false);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// Waits until `child` exits or `deadline` passes, reaping it on exit.
+/// Returns whether it exited.
+fn wait_until_exit(child: &mut Child, exit: BorrowedFd<'_>, deadline: Instant) -> io::Result<bool> {
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        wait_for_pidfd(exit, Some(remaining))?;
     }
 }
 
@@ -258,7 +335,9 @@ impl Recording {
     pub fn exit_observer(&self) -> Result<RecordingExitObserver, RecorderError> {
         let process_id = self.child.id();
         // The child remains owned by `Recording`; the pidfd only observes it.
-        let pidfd = pidfd_open(process_id)
+        let pidfd = self
+            .exit
+            .try_clone()
             .map_err(|source| RecorderError::ObserveExit { process_id, source })?;
         Ok(RecordingExitObserver { process_id, pidfd })
     }
@@ -301,25 +380,21 @@ impl Recording {
             return Err(RecorderError::Interrupt(source));
         }
 
-        while self
-            .child
-            .try_wait()
-            .map_err(|source| RecorderError::Inspect {
-                path: self.path.clone(),
-                source,
-            })?
-            .is_none()
-        {
-            if Instant::now() >= deadline {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                return Err(RecorderError::StopDeadline);
-            }
-            thread::yield_now();
+        let exited =
+            wait_until_exit(&mut self.child, self.exit.as_fd(), deadline).map_err(|source| {
+                RecorderError::Inspect {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+        if !exited {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            return Err(RecorderError::StopDeadline);
         }
 
         let bytes = recording_bytes(&self.path)?;
-        if bytes <= WAV_HEADER_BYTES {
+        if bytes <= self.data_start {
             return Err(RecorderError::EmptyRecording {
                 path: self.path.clone(),
                 bytes,
@@ -338,6 +413,7 @@ impl Drop for Recording {
             stop_child(
                 &self.runner,
                 &mut self.child,
+                self.exit.as_fd(),
                 Instant::now() + DROP_FINALIZATION_GRACE,
             );
         }
@@ -355,12 +431,16 @@ fn recording_bytes(path: &Path) -> Result<u64, RecorderError> {
     }
 }
 
-fn stop_child(runner: &SystemCommandRunner, child: &mut Child, deadline: Instant) {
+/// Interrupts the recorder so it can finalize its file, and kills it if it
+/// is still running at `deadline`.
+fn stop_child(
+    runner: &SystemCommandRunner,
+    child: &mut Child,
+    exit: BorrowedFd<'_>,
+    deadline: Instant,
+) {
     let _ = runner.interrupt_group(child.id());
-    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
-        thread::yield_now();
-    }
-    if matches!(child.try_wait(), Ok(None)) {
+    if !wait_until_exit(child, exit, deadline).unwrap_or(false) {
         let _ = child.kill();
     }
     let _ = child.wait();

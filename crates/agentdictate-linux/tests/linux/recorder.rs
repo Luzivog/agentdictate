@@ -14,18 +14,24 @@ use agentdictate_linux::{
 };
 use support::TestDirectory;
 
+/// A 16 kHz mono PCM16 WAV header as a printf format, the way pw-record
+/// starts its file.
+const WAV_HEADER: &str = r"RIFF\000\000\000\000WAVEfmt \020\000\000\000\001\000\001\000\200\076\000\000\000\175\000\000\002\000\020\000data\000\000\000\000";
+
+/// A fake pw-record that writes a header plus `samples`, then records forever.
+fn fake_recorder(directory: &TestDirectory, samples: &str) -> std::path::PathBuf {
+    directory.executable(
+        "pw-record",
+        &format!(
+            "#!/bin/sh\nfor output do :; done\nprintf '{WAV_HEADER}{samples}' > \"$output\"\nexec tail -f /dev/null\n"
+        ),
+    )
+}
+
 #[test]
 fn recorder_becomes_ready_only_after_audio_bytes_exist_and_finalizes_on_stop() {
     let directory = TestDirectory::new();
-    let fake_pw_record = directory.executable(
-        "pw-record",
-        concat!(
-            "#!/bin/sh\n",
-            "for output do :; done\n",
-            "printf 'RIFF1234567890123456789012345678901234567890audio' > \"$output\"\n",
-            "exec tail -f /dev/null\n",
-        ),
-    );
+    let fake_pw_record = fake_recorder(&directory, "audio");
     let output = directory.path().join("recording.wav");
     let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
 
@@ -45,15 +51,41 @@ fn recorder_becomes_ready_only_after_audio_bytes_exist_and_finalizes_on_stop() {
 }
 
 #[test]
+fn a_header_longer_than_44_bytes_is_not_mistaken_for_audio() {
+    let directory = TestDirectory::new();
+    // pw-record may add chunks before `data`; this header is 56 bytes.
+    let header = WAV_HEADER.replace("data", r"LIST\004\000\000\000abcddata");
+    let fake_pw_record = directory.executable(
+        "pw-record",
+        &format!(
+            "#!/bin/sh\nfor output do :; done\nprintf '{header}' > \"$output\"\nexec tail -f /dev/null\n"
+        ),
+    );
+    let output = directory.path().join("recording.wav");
+    let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
+
+    let error = recorder
+        .start(&output, Instant::now() + Duration::from_millis(200))
+        .expect_err("a header without samples is not a started recording");
+
+    assert!(matches!(error, RecorderError::ReadinessDeadline));
+    assert_eq!(fs::metadata(&output).unwrap().len(), 56);
+}
+
+#[test]
 fn stale_audio_at_the_output_path_never_satisfies_new_capture_readiness() {
     let directory = TestDirectory::new();
     let fake_pw_record = directory.executable("pw-record", "#!/bin/sh\nexec tail -f /dev/null\n");
     let output = directory.path().join("recording.wav");
-    fs::write(
-        &output,
-        b"RIFF1234567890123456789012345678901234567890stale",
-    )
-    .expect("stale recording fixture");
+    let status = Command::new("sh")
+        .args([
+            "-c",
+            &format!("printf '{WAV_HEADER}stale' > \"$0\""),
+            output.to_str().unwrap(),
+        ])
+        .status()
+        .expect("stale recording fixture");
+    assert!(status.success() && fs::metadata(&output).unwrap().len() > 44);
     let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
 
     let error = recorder
@@ -66,15 +98,7 @@ fn stale_audio_at_the_output_path_never_satisfies_new_capture_readiness() {
 #[test]
 fn pidfd_exit_observer_wakes_without_consuming_the_child_needed_by_stop() {
     let directory = TestDirectory::new();
-    let fake_pw_record = directory.executable(
-        "pw-record",
-        concat!(
-            "#!/bin/sh\n",
-            "for output do :; done\n",
-            "printf 'RIFF1234567890123456789012345678901234567890audio' > \"$output\"\n",
-            "exec tail -f /dev/null\n",
-        ),
-    );
+    let fake_pw_record = fake_recorder(&directory, "audio");
     let output = directory.path().join("observed.wav");
     let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
     let recording = recorder
@@ -106,10 +130,11 @@ fn dropping_a_live_recording_gives_sigint_time_to_finalize() {
                 "#!/bin/sh\n",
                 "for output do :; done\n",
                 "trap 'head -c 65536 /dev/zero > \"{}\"; exit 0' INT\n",
-                "printf 'RIFF1234567890123456789012345678901234567890audio' > \"$output\"\n",
+                "printf '{}audio' > \"$output\"\n",
                 "while :; do :; done\n",
             ),
             finalized.display(),
+            WAV_HEADER,
         ),
     );
     let output = directory.path().join("dropped.wav");
@@ -155,10 +180,11 @@ fn abrupt_owner_death_sends_sigint_to_the_recorder_process_group() {
                 "#!/bin/sh\n",
                 "for output do :; done\n",
                 "printf '%s' $$ > '{}'\n",
-                "printf 'RIFF1234567890123456789012345678901234567890audio' > \"$output\"\n",
+                "printf '{}audio' > \"$output\"\n",
                 "exec tail -f /dev/null\n",
             ),
             child_pid.display(),
+            WAV_HEADER,
         ),
     );
     let output = directory.path().join("abrupt.wav");

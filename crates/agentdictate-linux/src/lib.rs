@@ -11,3 +11,4 @@ pub mod native_hotkey;
 pub mod overlay_placement;
 pub mod paste;
 pub mod recorder;
+pub mod wav;
