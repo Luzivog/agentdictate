@@ -6,7 +6,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use agentdictate_core::{ClientCommand, PROTOCOL_VERSION, ServerMessage};
@@ -30,19 +29,11 @@ pub enum IpcError {
     AlreadyRunning { path: PathBuf },
 }
 
-/// A reply that waits on something outside the handler, such as the user
-/// pressing a shortcut. It runs after the handler lock is released.
-pub type DeferredReply = Box<dyn FnOnce() -> ServerMessage + Send>;
-
+/// Answers IPC sessions. Sessions can run concurrently, so a handler does
+/// its own locking and holds a lock only while a command needs it.
 pub trait IpcHandler {
     fn snapshot(&self, request_id: u64) -> ServerMessage;
-    fn handle(&mut self, command: ClientCommand) -> ServerMessage;
-
-    /// Takes a command whose reply must wait, so the wait never blocks
-    /// other sessions; `handle` answers every command this leaves alone.
-    fn deferred_reply(&self, _command: &ClientCommand) -> Option<DeferredReply> {
-        None
-    }
+    fn handle(&self, command: ClientCommand) -> ServerMessage;
 }
 
 pub struct IpcServer {
@@ -123,38 +114,25 @@ impl IpcServer {
         Ok(fs::metadata(&self.socket_path)?.permissions().mode() & 0o777)
     }
 
-    /// Serves one connected UI session. A current snapshot is sent before
-    /// waiting for commands, so reconnects never depend on replayed events.
-    pub fn serve_next(&self, handler: &mut impl IpcHandler) -> Result<(), IpcError> {
-        let (mut stream, _) = self.listener.accept()?;
-        write_message(&mut stream, &handler.snapshot(0))?;
-
-        let reader_stream = stream.try_clone()?;
-        let mut reader = BufReader::new(reader_stream);
-        while let Some(command) = read_message::<ClientCommand>(&mut reader)? {
-            check_version(command.protocol_version)?;
-            let response = match handler.deferred_reply(&command) {
-                Some(reply) => reply(),
-                None => handler.handle(command),
-            };
-            check_version(response.protocol_version)?;
-            write_message(&mut stream, &response)?;
-        }
-        Ok(())
+    /// Serves the next connected UI session on this thread.
+    pub fn serve_next(&self, handler: &impl IpcHandler) -> Result<(), IpcError> {
+        let (stream, _) = self.listener.accept()?;
+        serve_session(stream, handler)
     }
 
-    /// Accepts one session and serves it on its own thread. Only individual
-    /// commands hold the handler lock, so a connected but silent UI cannot
-    /// block hotkeys, recorder-exit notifications, or other clients.
+    /// Accepts one session and serves it on its own thread, so a connected
+    /// but silent UI cannot block other clients.
     pub fn serve_next_concurrent<H>(
         &self,
-        handler: Arc<Mutex<H>>,
+        handler: H,
     ) -> Result<JoinHandle<Result<(), IpcError>>, IpcError>
     where
         H: IpcHandler + Send + 'static,
     {
         let (stream, _) = self.listener.accept()?;
-        Ok(std::thread::spawn(move || serve_shared(stream, &handler)))
+        Ok(std::thread::Builder::new()
+            .name("agentdictate-ipc-session".into())
+            .spawn(move || serve_session(stream, &handler))?)
     }
 }
 
@@ -234,26 +212,15 @@ fn read_message<T: serde::de::DeserializeOwned>(
     Ok(Some(serde_json::from_str(&line)?))
 }
 
-fn serve_shared<H>(mut stream: UnixStream, handler: &Arc<Mutex<H>>) -> Result<(), IpcError>
-where
-    H: IpcHandler,
-{
-    let lock = || {
-        handler
-            .lock()
-            .map_err(|_| std::io::Error::other("IPC handler lock is poisoned"))
-    };
-    let initial = lock()?.snapshot(0);
-    write_message(&mut stream, &initial)?;
+/// Serves one UI session. A current snapshot is sent before waiting for
+/// commands, so reconnects never depend on replayed events.
+fn serve_session(mut stream: UnixStream, handler: &impl IpcHandler) -> Result<(), IpcError> {
+    write_message(&mut stream, &handler.snapshot(0))?;
     let reader_stream = stream.try_clone()?;
     let mut reader = BufReader::new(reader_stream);
     while let Some(command) = read_message::<ClientCommand>(&mut reader)? {
         check_version(command.protocol_version)?;
-        let deferred = lock()?.deferred_reply(&command);
-        let response = match deferred {
-            Some(reply) => reply(),
-            None => lock()?.handle(command),
-        };
+        let response = handler.handle(command);
         check_version(response.protocol_version)?;
         write_message(&mut stream, &response)?;
     }

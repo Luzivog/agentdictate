@@ -1,5 +1,7 @@
 #[path = "app/daemon_flow.rs"]
 mod daemon_flow;
+#[path = "app/daemon_handle.rs"]
+mod daemon_handle;
 #[path = "app/diagnostics.rs"]
 mod diagnostics;
 #[path = "app/hotkey_dispatch.rs"]

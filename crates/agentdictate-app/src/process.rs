@@ -3,19 +3,18 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ClientCommandTag, Hotkey, HotkeyCaptureOutcome,
+    ClientCommand, ClientCommandKind, HistoryPageRequest, Hotkey, HotkeyCaptureOutcome,
     HotkeyReadiness, RecordingMode, ServerMessage, SettingChange, Settings, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
-    DeferredReply, FinishedJobCleanup, IpcClient, IpcHandler, Runtime, RuntimeError, load_settings,
-    save_settings,
+    FinishedJobCleanup, Runtime, RuntimeError, load_settings, save_settings,
 };
 
 use crate::{
-    AppPaths, Daemon, OverlayController, ReqwestOpenAiTransport, SystemDeliverer,
-    SystemRecordingController, Transcriber, TranscriptionPipeline, daemon::copied,
-    startup::LoginStartup,
+    AppPaths, Daemon, DaemonDeliverer, OverlayController, ProcessingTicket, RecordingController,
+    ReqwestOpenAiTransport, SystemDeliverer, SystemRecordingController, Transcriber,
+    TranscriptionPipeline, startup::LoginStartup,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
@@ -23,7 +22,7 @@ pub type ProductionDaemon =
     Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
 /// How long a shortcut capture waits for a key press.
-const HOTKEY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HOTKEY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Control seam over the live shortcut listener, used by settings updates
 /// and the settings window's shortcut capture.
@@ -36,16 +35,42 @@ pub trait HotkeyControl: Send + Sync {
     fn cancel_capture(&self) -> anyhow::Result<()>;
 }
 
-pub struct AgentProcess {
-    daemon: ProductionDaemon,
+/// The daemon plus what it needs from the running process: the config file,
+/// login startup, and the live hotkey listener. `DaemonHandle` shares it
+/// between threads.
+pub struct AgentProcess<
+    R = SystemRecordingController,
+    T = ProductionTranscriber,
+    D = SystemDeliverer,
+> {
+    daemon: Daemon<R, T, D>,
     config_file: PathBuf,
     login_startup: LoginStartup,
     database_file: PathBuf,
     recordings_directory: PathBuf,
-    runtime_directory: PathBuf,
     hotkey_control: Option<Arc<dyn HotkeyControl>>,
     recording_mode_control: Option<Arc<RwLock<RecordingMode>>>,
-    should_quit: bool,
+}
+
+/// What an IPC command answers with, rendered once the command's work is done.
+pub(crate) enum Reply {
+    Snapshot,
+    Workspace,
+    HistoryPage(HistoryPageRequest),
+    HotkeyCaptured(HotkeyCaptureOutcome),
+    Rejected(String),
+}
+
+/// Work an IPC command leaves for after the process lock is released.
+pub(crate) enum Followup<T> {
+    None,
+    /// Transcribe on a processing thread; the reply does not wait.
+    Process(ProcessingTicket<T>),
+    /// Transcribe, then reply with the copied result (Recovery retries).
+    ProcessThenReply(ProcessingTicket<T>),
+    /// Wait for the user to press a shortcut, then reply with it.
+    CaptureHotkey(Arc<dyn HotkeyControl>),
+    Quit,
 }
 
 impl AgentProcess {
@@ -65,29 +90,45 @@ impl AgentProcess {
             &paths.ducking_state_file,
         );
         let deliverer = SystemDeliverer::for_environment(settings.paste_shortcut);
-        Ok(Self {
-            daemon: Daemon::new(
-                runtime,
-                settings,
-                paths.clone(),
-                recorder,
-                transcriber,
-                deliverer,
-            ),
-            login_startup: LoginStartup::new(&paths),
-            config_file: paths.config_file,
-            database_file: paths.database_file,
-            recordings_directory: paths.recordings,
-            runtime_directory: paths.runtime,
+        let daemon = Daemon::new(
+            runtime,
+            settings,
+            paths.clone(),
+            recorder,
+            transcriber,
+            deliverer,
+        );
+        Ok(Self::from_parts(daemon, &paths))
+    }
+}
+
+impl<R, T, D> AgentProcess<R, T, D>
+where
+    R: RecordingController,
+    T: Transcriber,
+    D: DaemonDeliverer,
+{
+    /// Wraps an assembled daemon; `open` builds the production one.
+    #[must_use]
+    pub fn from_parts(daemon: Daemon<R, T, D>, paths: &AppPaths) -> Self {
+        Self {
+            daemon,
+            login_startup: LoginStartup::new(paths),
+            config_file: paths.config_file.clone(),
+            database_file: paths.database_file.clone(),
+            recordings_directory: paths.recordings.clone(),
             hotkey_control: None,
             recording_mode_control: None,
-            should_quit: false,
-        })
+        }
     }
 
     #[must_use]
-    pub const fn should_quit(&self) -> bool {
-        self.should_quit
+    pub const fn daemon(&self) -> &Daemon<R, T, D> {
+        &self.daemon
+    }
+
+    pub const fn daemon_mut(&mut self) -> &mut Daemon<R, T, D> {
+        &mut self.daemon
     }
 
     #[must_use]
@@ -147,26 +188,119 @@ impl AgentProcess {
             })
     }
 
-    fn snapshot_message(&self, request_id: u64) -> ServerMessage {
-        ServerMessage::snapshot(request_id, self.daemon.snapshot(), self.daemon.settings())
+    /// Runs the part of an IPC command that needs the process lock. Anything
+    /// slow, such as transcription, is returned as a follow-up for the
+    /// caller to run after releasing the lock.
+    pub(crate) fn handle_locked(&mut self, command: ClientCommandKind) -> (Reply, Followup<T>) {
+        let daemon = &mut self.daemon;
+        let handled: anyhow::Result<(Reply, Followup<T>)> = match command {
+            ClientCommandKind::GetSnapshot { .. } => Ok((Reply::Snapshot, Followup::None)),
+            ClientCommandKind::GetWorkspace { .. } => Ok((Reply::Workspace, Followup::None)),
+            ClientCommandKind::GetHistoryPage { request, .. } => {
+                Ok((Reply::HistoryPage(request), Followup::None))
+            }
+            ClientCommandKind::StartRecording { mode, .. } => daemon
+                .start_recording_in_mode(mode)
+                .map(|_| (Reply::Snapshot, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::StopRecording { .. } => daemon
+                .stop_recording()
+                .map(|ticket| (Reply::Snapshot, Followup::Process(ticket)))
+                .map_err(Into::into),
+            // Cancels a recording, or detaches the transcription in progress.
+            ClientCommandKind::Cancel { .. } if daemon.is_processing() => daemon
+                .cancel_processing()
+                .map(|_| (Reply::Snapshot, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::Cancel { .. } => daemon
+                .discard_recording()
+                .map(|_| (Reply::Snapshot, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::RecorderExited { job_id, .. } => daemon
+                .recorder_exited(job_id)
+                .map(|_| (Reply::Snapshot, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::RetryTranscription { job_id, .. } => daemon
+                .retry_transcription(job_id)
+                .map(|ticket| (Reply::Workspace, Followup::ProcessThenReply(ticket)))
+                .map_err(Into::into),
+            ClientCommandKind::RetryDelivery { job_id, .. } => daemon
+                .retry_delivery(job_id)
+                .map(|_| (Reply::Workspace, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::DeleteRecovery { job_id, .. } => daemon
+                .delete_recovery(job_id)
+                .map(|_| (Reply::Workspace, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::DeleteHistory { id, .. } => daemon
+                .delete_history(id)
+                .map_err(anyhow::Error::from)
+                .and_then(|deleted| {
+                    deleted
+                        .then_some((Reply::Workspace, Followup::None))
+                        .ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
+                }),
+            ClientCommandKind::ClearHistory { .. } => daemon
+                .clear_history()
+                .map(|()| (Reply::Workspace, Followup::None))
+                .map_err(Into::into),
+            ClientCommandKind::CopyTranscript { id, .. } => daemon
+                .transcript_text(id)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| {
+                    text.ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
+                })
+                .and_then(|text| daemon.deliverer_mut().copy_text(&text).map_err(Into::into))
+                .map(|()| (Reply::Workspace, Followup::None)),
+            ClientCommandKind::ChangeSetting { change, .. } => self
+                .change_setting(change)
+                .map(|()| (Reply::Snapshot, Followup::None)),
+            ClientCommandKind::SetApiKey { api_key, .. } => self
+                .set_api_key(api_key.expose_secret())
+                .map(|()| (Reply::Snapshot, Followup::None)),
+            ClientCommandKind::HotkeyStatusChanged { readiness, .. } => {
+                daemon.set_hotkey_readiness(readiness);
+                Ok((Reply::Snapshot, Followup::None))
+            }
+            ClientCommandKind::CaptureHotkey { .. } => self.hotkey_control().map(|control| {
+                (
+                    Reply::Snapshot,
+                    Followup::CaptureHotkey(Arc::clone(control)),
+                )
+            }),
+            ClientCommandKind::CancelHotkeyCapture { .. } => self
+                .hotkey_control()
+                .and_then(|control| control.cancel_capture())
+                .map(|()| (Reply::Snapshot, Followup::None)),
+            ClientCommandKind::Quit { .. } => Ok((Reply::Snapshot, Followup::Quit)),
+        };
+        handled.unwrap_or_else(|error| (Reply::Rejected(error.to_string()), Followup::None))
     }
 
-    fn workspace_message(&self, request_id: u64) -> Result<ServerMessage, RuntimeError> {
-        Ok(ServerMessage::workspace(
-            request_id,
-            self.daemon.workspace_snapshot()?,
-        ))
-    }
-
-    fn history_page_message(
-        &self,
-        request_id: u64,
-        request: &agentdictate_core::HistoryPageRequest,
-    ) -> Result<ServerMessage, RuntimeError> {
-        Ok(ServerMessage::history_page(
-            request_id,
-            self.daemon.history_page(request)?,
-        ))
+    /// Renders an IPC reply from the current state.
+    pub(crate) fn render(&self, request_id: u64, reply: Reply) -> ServerMessage {
+        let rendered = match reply {
+            Reply::Snapshot => Ok(ServerMessage::snapshot(
+                request_id,
+                self.daemon.snapshot(),
+                self.daemon.settings(),
+            )),
+            Reply::Workspace => self
+                .daemon
+                .workspace_snapshot()
+                .map(|workspace| ServerMessage::workspace(request_id, workspace)),
+            Reply::HistoryPage(request) => self
+                .daemon
+                .history_page(&request)
+                .map(|page| ServerMessage::history_page(request_id, page)),
+            Reply::HotkeyCaptured(outcome) => {
+                Ok(ServerMessage::hotkey_captured(request_id, outcome))
+            }
+            Reply::Rejected(error) => Ok(ServerMessage::command_rejected(request_id, error)),
+        };
+        rendered.unwrap_or_else(|error: RuntimeError| {
+            ServerMessage::command_rejected(request_id, error.to_string())
+        })
     }
 
     /// Applies one setting to the settings the daemon holds.
@@ -214,9 +348,7 @@ impl AgentProcess {
         }
         self.daemon.transcriber_mut().update_settings(&settings);
         self.daemon.recorder_mut().update_settings(&settings);
-        self.daemon
-            .deliverer_mut()
-            .update_shortcut(settings.paste_shortcut);
+        self.daemon.deliverer_mut().update_settings(&settings);
         self.daemon.update_settings(settings);
         if recording_mode_changed && let Some(mode) = &self.recording_mode_control {
             *mode
@@ -294,151 +426,7 @@ fn run_post_listener_maintenance(
     }
 }
 
-impl IpcHandler for AgentProcess {
-    fn snapshot(&self, request_id: u64) -> ServerMessage {
-        self.snapshot_message(request_id)
-    }
-
-    /// A shortcut capture waits up to `HOTKEY_CAPTURE_TIMEOUT` for the user,
-    /// so it runs without the daemon lock.
-    fn deferred_reply(&self, command: &ClientCommand) -> Option<DeferredReply> {
-        let ClientCommandKind::CaptureHotkey { request_id } = command.kind else {
-            return None;
-        };
-        let control = self.hotkey_control().cloned();
-        Some(Box::new(move || {
-            match control.and_then(|control| control.capture(HOTKEY_CAPTURE_TIMEOUT)) {
-                Ok(outcome) => ServerMessage::hotkey_captured(request_id, outcome),
-                Err(error) => ServerMessage::command_rejected(request_id, error.to_string()),
-            }
-        }))
-    }
-
-    fn handle(&mut self, command: ClientCommand) -> ServerMessage {
-        let command_tag = command.kind();
-        let request_id = request_id(&command.kind);
-        let history_request = match &command.kind {
-            ClientCommandKind::GetHistoryPage { request, .. } => Some(request.clone()),
-            _ => None,
-        };
-        let returns_workspace = matches!(
-            command_tag,
-            ClientCommandTag::GetWorkspace
-                | ClientCommandTag::RetryTranscription
-                | ClientCommandTag::RetryDelivery
-                | ClientCommandTag::DeleteRecovery
-                | ClientCommandTag::DeleteHistory
-                | ClientCommandTag::ClearHistory
-                | ClientCommandTag::CopyTranscript
-        );
-        let result: anyhow::Result<()> = match command.kind {
-            ClientCommandKind::GetSnapshot { .. } => Ok(()),
-            ClientCommandKind::GetWorkspace { .. } => Ok(()),
-            ClientCommandKind::GetHistoryPage { .. } => Ok(()),
-            ClientCommandKind::StartRecording { mode, .. } => self
-                .daemon
-                .start_recording_in_mode(mode)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::StopRecording { .. } => self
-                .daemon
-                .stop_recording()
-                .and_then(|ticket| self.daemon.complete_transcription(ticket.run()))
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::Cancel { .. } => self
-                .daemon
-                .discard_recording()
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::RecorderExited { job_id, .. } => self
-                .daemon
-                .recorder_exited(job_id)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::RetryTranscription { job_id, .. } => self
-                .daemon
-                .retry_transcription(job_id)
-                .and_then(|ticket| self.daemon.complete_transcription(ticket.run()))
-                .and_then(copied)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::RetryDelivery { job_id, .. } => self
-                .daemon
-                .retry_delivery(job_id)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::DeleteRecovery { job_id, .. } => self
-                .daemon
-                .delete_recovery(job_id)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::DeleteHistory { id, .. } => self
-                .daemon
-                .delete_history(id)
-                .map_err(anyhow::Error::from)
-                .and_then(|deleted| {
-                    deleted
-                        .then_some(())
-                        .ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
-                }),
-            ClientCommandKind::ClearHistory { .. } => {
-                self.daemon.clear_history().map_err(Into::into)
-            }
-            ClientCommandKind::CopyTranscript { id, .. } => self
-                .daemon
-                .transcript_text(id)
-                .map_err(anyhow::Error::from)
-                .and_then(|text| {
-                    text.ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
-                })
-                .and_then(|text| {
-                    self.daemon
-                        .deliverer_mut()
-                        .copy_text(&text)
-                        .map_err(Into::into)
-                }),
-            ClientCommandKind::ChangeSetting { change, .. } => self.change_setting(change),
-            ClientCommandKind::SetApiKey { api_key, .. } => {
-                self.set_api_key(api_key.expose_secret())
-            }
-            ClientCommandKind::HotkeyStatusChanged { readiness, .. } => {
-                self.daemon.set_hotkey_readiness(readiness);
-                Ok(())
-            }
-            ClientCommandKind::CaptureHotkey { .. } => Err(anyhow::anyhow!(
-                "shortcut capture must be answered by its deferred reply"
-            )),
-            ClientCommandKind::CancelHotkeyCapture { .. } => self
-                .hotkey_control()
-                .and_then(|control| control.cancel_capture()),
-            ClientCommandKind::Quit { .. } => self
-                .daemon
-                .shutdown()
-                .map(|()| {
-                    self.should_quit = true;
-                    let _ = IpcClient::wake(&self.runtime_directory);
-                })
-                .map_err(Into::into),
-        };
-        match result {
-            Ok(()) if history_request.is_some() => self
-                .history_page_message(request_id, &history_request.expect("checked above"))
-                .unwrap_or_else(|error| {
-                    ServerMessage::command_rejected(request_id, error.to_string())
-                }),
-            Ok(()) if returns_workspace => {
-                self.workspace_message(request_id).unwrap_or_else(|error| {
-                    ServerMessage::command_rejected(request_id, error.to_string())
-                })
-            }
-            Ok(()) => self.snapshot_message(request_id),
-            Err(error) => ServerMessage::command_rejected(request_id, error.to_string()),
-        }
-    }
-}
-
-const fn request_id(command: &ClientCommandKind) -> u64 {
+pub(crate) const fn request_id(command: &ClientCommandKind) -> u64 {
     match command {
         ClientCommandKind::GetSnapshot { request_id }
         | ClientCommandKind::GetWorkspace { request_id }
@@ -505,7 +493,7 @@ mod tests {
         },
     };
 
-    use agentdictate_core::{ClientCommand, JobStage, KeepTranscripts, ServerMessageKind};
+    use agentdictate_core::{JobStage, KeepTranscripts, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };
@@ -586,9 +574,11 @@ mod tests {
         }
     }
 
-    /// Captures F9 at once and counts cancellations.
+    /// Captures F9 once the test releases it, and counts cancellations.
     #[derive(Default)]
     struct CapturingHotkeyControl {
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
         cancels: AtomicUsize,
     }
 
@@ -598,6 +588,12 @@ mod tests {
         }
 
         fn capture(&self, _timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(())?;
+            }
+            if let Some(release) = self.release.lock().unwrap().take() {
+                release.recv()?;
+            }
             Ok(HotkeyCaptureOutcome::Captured {
                 hotkey: "F9".parse()?,
             })
@@ -612,34 +608,45 @@ mod tests {
     #[test]
     fn shortcut_capture_replies_outside_the_daemon_lock_and_cancel_reaches_the_listener() {
         let directory = tempdir().unwrap();
-        let mut process = AgentProcess::open(app_paths(directory.path())).unwrap();
-        let unavailable = process
-            .deferred_reply(&ClientCommand::capture_hotkey(2))
-            .expect("a capture always waits outside the lock");
+        let paths = app_paths(directory.path());
+        let process = AgentProcess::open(paths.clone()).unwrap();
+        let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
         assert!(matches!(
-            unavailable().kind,
+            handle.handle(ClientCommand::capture_hotkey(2)).kind,
             ServerMessageKind::CommandRejected { request_id: 2, .. }
         ));
+        let (entered, capture_entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let control = Arc::new(CapturingHotkeyControl {
+            entered: Mutex::new(Some(entered)),
+            release: Mutex::new(Some(released)),
+            ..CapturingHotkeyControl::default()
+        });
+        handle.with_process(|process| process.set_hotkey_control(control.clone()));
+        let capturing = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.handle(ClientCommand::capture_hotkey(4)))
+        };
+        capture_entered.recv().unwrap();
 
-        let control = Arc::new(CapturingHotkeyControl::default());
-        process.set_hotkey_control(control.clone());
-        assert!(
-            process
-                .deferred_reply(&ClientCommand::get_snapshot(3))
-                .is_none()
-        );
-        let reply = process
-            .deferred_reply(&ClientCommand::capture_hotkey(4))
-            .expect("a capture always waits outside the lock");
+        let snapshot = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.snapshot(3))
+        };
         assert!(matches!(
-            reply().kind,
+            snapshot.join().unwrap().kind,
+            ServerMessageKind::Snapshot { request_id: 3, .. }
+        ));
+        release.send(()).unwrap();
+        assert!(matches!(
+            capturing.join().unwrap().kind,
             ServerMessageKind::HotkeyCaptured {
                 request_id: 4,
                 outcome: HotkeyCaptureOutcome::Captured { hotkey },
             } if hotkey.label() == "F9"
         ));
 
-        let cancelled = process.handle(ClientCommand::cancel_hotkey_capture(5));
+        let cancelled = handle.handle(ClientCommand::cancel_hotkey_capture(5));
         assert!(matches!(cancelled.kind, ServerMessageKind::Snapshot { .. }));
         assert_eq!(control.cancels.load(Ordering::Relaxed), 1);
     }
@@ -651,15 +658,10 @@ mod tests {
         let mut process = AgentProcess::open(paths.clone()).unwrap();
         let control = Arc::new(RejectingHotkeyControl::default());
         process.set_hotkey_control(control.clone());
-        let response = process.handle(ClientCommand::change_setting(
-            7,
-            SettingChange::Hotkey("F9".parse().unwrap()),
-        ));
+        let changed = SettingChange::Hotkey("F9".parse().unwrap());
 
-        assert!(matches!(
-            response.kind,
-            ServerMessageKind::CommandRejected { .. }
-        ));
+        assert!(process.change_setting(changed).is_err());
+
         assert_eq!(process.hotkey().label(), "Ctrl+Space");
         assert_eq!(
             load_settings(&paths.config_file).unwrap().hotkey.label(),
@@ -677,15 +679,10 @@ mod tests {
         process.set_hotkey_control(control.clone());
         process.config_file = directory.path().join("not-a-file");
         std::fs::create_dir(&process.config_file).unwrap();
-        let response = process.handle(ClientCommand::change_setting(
-            8,
-            SettingChange::Hotkey("F9".parse().unwrap()),
-        ));
+        let changed = SettingChange::Hotkey("F9".parse().unwrap());
 
-        assert!(matches!(
-            response.kind,
-            ServerMessageKind::CommandRejected { .. }
-        ));
+        assert!(process.change_setting(changed).is_err());
+
         assert_eq!(process.hotkey().label(), "Ctrl+Space");
         assert_eq!(
             control.attempts.lock().unwrap().as_slice(),
@@ -698,16 +695,11 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
         let mut process = AgentProcess::open(paths.clone()).unwrap();
-        let response = process.handle(ClientCommand::change_setting(
-            6,
-            SettingChange::AudioDuckingVolumePercent(150),
-        ));
+        let error = process
+            .change_setting(SettingChange::AudioDuckingVolumePercent(150))
+            .unwrap_err();
 
-        assert!(matches!(
-            response.kind,
-            ServerMessageKind::CommandRejected { ref error, .. }
-                if error.contains("Ducked volume")
-        ));
+        assert!(error.to_string().contains("Ducked volume"));
         assert_eq!(
             load_settings(&paths.config_file)
                 .unwrap()
@@ -734,12 +726,10 @@ mod tests {
         save_settings(&paths.config_file, &saved).unwrap();
         let mut process = AgentProcess::open(paths.clone()).unwrap();
 
-        let response = process.handle(ClientCommand::change_setting(
-            10,
-            SettingChange::KeepTranscripts(KeepTranscripts::Never),
-        ));
+        process
+            .change_setting(SettingChange::KeepTranscripts(KeepTranscripts::Never))
+            .unwrap();
 
-        assert!(matches!(response.kind, ServerMessageKind::Snapshot { .. }));
         assert_eq!(
             load_settings(&paths.config_file).unwrap(),
             Settings {
@@ -759,12 +749,10 @@ mod tests {
             observed_hotkey: Mutex::new(None),
         });
         process.set_hotkey_control(control.clone());
-        let response = process.handle(ClientCommand::change_setting(
-            9,
-            SettingChange::Hotkey("F9".parse().unwrap()),
-        ));
+        process
+            .change_setting(SettingChange::Hotkey("F9".parse().unwrap()))
+            .unwrap();
 
-        assert!(matches!(response.kind, ServerMessageKind::Snapshot { .. }));
         assert_eq!(
             control.observed_hotkey.lock().unwrap().as_deref(),
             Some("Ctrl+Space")

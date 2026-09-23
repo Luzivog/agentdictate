@@ -381,7 +381,7 @@ mod tests {
             thread::sleep(delay);
             IpcServer::bind(runtime)
                 .unwrap()
-                .serve_next(&mut SnapshotHandler)
+                .serve_next(&SnapshotHandler)
                 .unwrap();
         })
     }
@@ -405,7 +405,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime).unwrap();
-        let running = thread::spawn(move || server.serve_next(&mut SnapshotHandler).unwrap());
+        let running = thread::spawn(move || server.serve_next(&SnapshotHandler).unwrap());
         let supervision = supervised(directory.path());
         let systemctl = FakeSystemctl::new("enabled");
 
@@ -595,7 +595,7 @@ mod tests {
             )
         }
 
-        fn handle(&mut self, _command: ClientCommand) -> ServerMessage {
+        fn handle(&self, _command: ClientCommand) -> ServerMessage {
             panic!("startup sends no commands")
         }
     }

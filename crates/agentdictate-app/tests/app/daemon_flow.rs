@@ -953,6 +953,50 @@ fn stop_checkpoints_transcribing_and_returns_before_any_transcription() {
 }
 
 #[test]
+fn cancel_during_processing_keeps_the_transcript_for_recovery_and_never_pastes() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let started = daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+
+    assert_eq!(daemon.cancel_processing().unwrap(), started.id);
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+    let stored = daemon.complete_transcription(ticket.run()).unwrap();
+
+    assert_eq!(daemon.deliverer().attempts, 0);
+    assert_eq!(stored.stage, JobStage::ReadyToDeliver);
+    assert!(stored.audio_path.is_file());
+    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    assert_eq!(recovery.job_id, started.id);
+    assert_eq!(recovery.final_text, "Final transcript.");
+    assert_eq!(
+        recovery.error_message.as_deref(),
+        Some("Cancelled before paste")
+    );
+    assert_eq!(daemon.snapshot().recoverable_count, 1);
+}
+
+#[test]
+fn late_result_of_a_cancelled_job_does_not_disturb_the_next_recording() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    daemon.start_recording().unwrap();
+    let cancelled = daemon.stop_recording().unwrap();
+    daemon.cancel_processing().unwrap();
+    let next = daemon.start_recording().unwrap();
+
+    daemon.complete_transcription(cancelled.run()).unwrap();
+
+    assert_eq!(daemon.phase(), WorkflowPhase::Recording { job_id: next.id });
+    assert_eq!(daemon.deliverer().attempts, 0);
+    let delivered = finish(&mut daemon);
+    assert_eq!(delivered.id, next.id);
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::Paste]);
+}
+
+#[test]
 fn start_during_processing_is_rejected_as_busy_without_a_new_job() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());

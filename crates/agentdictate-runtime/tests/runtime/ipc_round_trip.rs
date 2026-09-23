@@ -4,16 +4,17 @@ use std::{fs, io};
 
 use agentdictate_core::HotkeyCaptureOutcome;
 use agentdictate_runtime::{
-    AppSnapshot, ClientCommand, ClientCommandKind, DeferredReply, HotkeyReadiness, IpcClient,
-    IpcError, IpcHandler, IpcServer, ServerMessage, ServerMessageKind, Settings, Workflow,
-    WorkflowPhase, WorkflowSignal,
+    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, IpcClient, IpcError,
+    IpcHandler, IpcServer, ServerMessage, ServerMessageKind, Settings, Workflow, WorkflowPhase,
+    WorkflowSignal,
 };
 use tempfile::TempDir;
 
+#[derive(Clone)]
 struct TestHandler {
     snapshot: Arc<Mutex<AppSnapshot>>,
     settings: Settings,
-    workflow: Workflow,
+    workflow: Arc<Mutex<Workflow>>,
 }
 
 impl IpcHandler for TestHandler {
@@ -25,7 +26,7 @@ impl IpcHandler for TestHandler {
         )
     }
 
-    fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+    fn handle(&self, command: ClientCommand) -> ServerMessage {
         match command.kind {
             ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
             ClientCommandKind::StartRecording { request_id, .. } => {
@@ -33,6 +34,8 @@ impl IpcHandler for TestHandler {
                 let job_id = agentdictate_runtime::JobId::new();
                 snapshot.workflow = self
                     .workflow
+                    .lock()
+                    .unwrap()
                     .apply(WorkflowSignal::StartRequested { job_id })
                     .unwrap();
                 ServerMessage::snapshot(request_id, snapshot.clone(), &self.settings)
@@ -59,14 +62,13 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
             openai_api_key: "must-not-cross-ipc".to_owned(),
             ..Settings::default()
         },
-        workflow,
+        workflow: Arc::new(Mutex::new(workflow)),
     };
     let server = IpcServer::bind(&runtime_directory).unwrap();
     assert_eq!(server.socket_mode().unwrap(), 0o600);
     let server_thread = thread::spawn(move || {
-        let mut handler = handler;
-        server.serve_next(&mut handler).unwrap();
-        server.serve_next(&mut handler).unwrap();
+        server.serve_next(&handler).unwrap();
+        server.serve_next(&handler).unwrap();
     });
 
     let (mut client, initial) = IpcClient::connect(&runtime_directory).unwrap();
@@ -127,18 +129,15 @@ fn silent_client_does_not_block_a_second_command_session() {
         recoverable_count: 0,
         last_transcript: None,
     }));
-    let handler = Arc::new(Mutex::new(TestHandler {
+    let handler = TestHandler {
         snapshot,
         settings: Settings::default(),
-        workflow,
-    }));
+        workflow: Arc::new(Mutex::new(workflow)),
+    };
     let server = IpcServer::bind(&runtime_directory).unwrap();
-    let server_handler = Arc::clone(&handler);
     let accepts = thread::spawn(move || {
-        let first = server
-            .serve_next_concurrent(Arc::clone(&server_handler))
-            .unwrap();
-        let second = server.serve_next_concurrent(server_handler).unwrap();
+        let first = server.serve_next_concurrent(handler.clone()).unwrap();
+        let second = server.serve_next_concurrent(handler).unwrap();
         (first, second)
     });
 
@@ -159,6 +158,7 @@ fn silent_client_does_not_block_a_second_command_session() {
 
 /// Answers shortcut captures only when the test sends an outcome, and
 /// reports each capture that starts waiting.
+#[derive(Clone)]
 struct CapturingHandler {
     waiting: mpsc::Sender<()>,
     outcomes: Arc<Mutex<mpsc::Receiver<HotkeyCaptureOutcome>>>,
@@ -175,24 +175,16 @@ impl IpcHandler for CapturingHandler {
         ServerMessage::snapshot(request_id, snapshot, &Settings::default())
     }
 
-    fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+    fn handle(&self, command: ClientCommand) -> ServerMessage {
         match command.kind {
             ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
+            ClientCommandKind::CaptureHotkey { request_id } => {
+                self.waiting.send(()).unwrap();
+                let outcome = self.outcomes.lock().unwrap().recv().unwrap();
+                ServerMessage::hotkey_captured(request_id, outcome)
+            }
             _ => panic!("test handler received an unexpected command"),
         }
-    }
-
-    fn deferred_reply(&self, command: &ClientCommand) -> Option<DeferredReply> {
-        let ClientCommandKind::CaptureHotkey { request_id } = command.kind else {
-            return None;
-        };
-        let waiting = self.waiting.clone();
-        let outcomes = Arc::clone(&self.outcomes);
-        Some(Box::new(move || {
-            waiting.send(()).unwrap();
-            let outcome = outcomes.lock().unwrap().recv().unwrap();
-            ServerMessage::hotkey_captured(request_id, outcome)
-        }))
     }
 }
 
@@ -202,13 +194,13 @@ fn a_waiting_shortcut_capture_does_not_block_other_sessions() {
     let runtime_directory = directory.path().join("runtime");
     let (waiting, capture_waiting) = mpsc::channel();
     let (send_outcome, outcomes) = mpsc::channel();
-    let handler = Arc::new(Mutex::new(CapturingHandler {
+    let handler = CapturingHandler {
         waiting,
         outcomes: Arc::new(Mutex::new(outcomes)),
-    }));
+    };
     let server = IpcServer::bind(&runtime_directory).unwrap();
     let accepts = thread::spawn(move || {
-        let first = server.serve_next_concurrent(Arc::clone(&handler)).unwrap();
+        let first = server.serve_next_concurrent(handler.clone()).unwrap();
         let second = server.serve_next_concurrent(handler).unwrap();
         (first, second)
     });
@@ -301,13 +293,13 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
         recoverable_count: 0,
         last_transcript: None,
     }));
-    let mut handler = TestHandler {
+    let handler = TestHandler {
         snapshot,
         settings: Settings::default(),
-        workflow,
+        workflow: Arc::new(Mutex::new(workflow)),
     };
     let server = IpcServer::bind(&runtime_directory).unwrap();
-    let server_thread = thread::spawn(move || server.serve_next(&mut handler).unwrap());
+    let server_thread = thread::spawn(move || server.serve_next(&handler).unwrap());
     let (mut client, _) = IpcClient::connect(&runtime_directory).unwrap();
 
     let first = client.send(ClientCommand::get_snapshot(91)).unwrap();

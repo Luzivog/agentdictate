@@ -22,7 +22,7 @@ use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob,
 };
 
-use crate::{CapturedRecording, RecordingController};
+use crate::{CapturedRecording, DaemonDeliverer, RecordingController};
 
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -243,13 +243,6 @@ impl SystemRecordingController {
             ),
         )
     }
-
-    pub fn update_settings(&mut self, settings: &Settings) {
-        self.settings = settings.clone();
-        if !settings.audio_ducking_enabled {
-            self.ducker.restore();
-        }
-    }
 }
 
 impl Recorder for SystemRecordingController {
@@ -322,6 +315,13 @@ impl RecordingController for SystemRecordingController {
         self.ducker.restore();
         result
     }
+
+    fn update_settings(&mut self, settings: &Settings) {
+        self.settings = settings.clone();
+        if !settings.audio_ducking_enabled {
+            self.ducker.restore();
+        }
+    }
 }
 
 /// Reads the active X11 window before a paste; tests substitute a fake.
@@ -382,10 +382,6 @@ impl SystemDeliverer {
         }
     }
 
-    pub fn update_shortcut(&mut self, paste_shortcut: PasteShortcut) {
-        self.shortcut_mode = paste_shortcut.into();
-    }
-
     fn observe_focus(
         &self,
         deadline: Instant,
@@ -398,16 +394,6 @@ impl SystemDeliverer {
             Err(_) if self.wayland_session => Ok(resolve_focus_target(true, None)),
             Err(error) => Err(ExternalError::new(error.to_string())),
         }
-    }
-
-    pub fn copy_text(&mut self, text: &str) -> Result<(), ExternalError> {
-        self.selections
-            .publish(
-                text,
-                &[ClipboardSelection::Clipboard],
-                Instant::now() + DELIVERY_TIMEOUT,
-            )
-            .map_err(|error| ExternalError::new(error.to_string()))
     }
 
     fn publish_delivery_text(
@@ -550,6 +536,22 @@ impl SystemDeliverer {
                 continue;
             }
         }
+    }
+}
+
+impl DaemonDeliverer for SystemDeliverer {
+    fn copy_text(&mut self, text: &str) -> Result<(), ExternalError> {
+        self.selections
+            .publish(
+                text,
+                &[ClipboardSelection::Clipboard],
+                Instant::now() + DELIVERY_TIMEOUT,
+            )
+            .map_err(|error| ExternalError::new(error.to_string()))
+    }
+
+    fn update_settings(&mut self, settings: &Settings) {
+        self.shortcut_mode = settings.paste_shortcut.into();
     }
 }
 

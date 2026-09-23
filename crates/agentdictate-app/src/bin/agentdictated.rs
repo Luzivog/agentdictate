@@ -1,12 +1,12 @@
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use agentdictate_app::{
-    AgentProcess, AppPaths, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
-    init_file_logging, settings_executable_for_current_process, start_hotkey_listener,
-    start_overlay_presenter, start_system_tray,
+    AgentProcess, AppPaths, DaemonHandle, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
+    connect_or_start_daemon, init_file_logging, settings_executable_for_current_process,
+    start_hotkey_listener, start_overlay_presenter, start_system_tray,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
 use agentdictate_runtime::{IpcClient, IpcServer, load_settings};
@@ -69,7 +69,7 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         }
     };
     let show_tray_icon = process.show_tray_icon();
-    let process = Arc::new(Mutex::new(process));
+    let handle = DaemonHandle::new(process, runtime.clone());
     let shutdown_failed = Arc::new(AtomicBool::new(false));
     // Serves IPC until a graceful Quit. It ends with an error when the daemon
     // can no longer work, so the process exits non-zero and systemd's
@@ -83,12 +83,10 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
                     if shutdown_failed.load(Ordering::Acquire) {
                         anyhow::bail!("graceful shutdown failed after a termination signal");
                     }
-                    match process.lock() {
-                        Ok(process) if process.should_quit() => return Ok(()),
-                        Ok(_) => {}
-                        Err(_) => anyhow::bail!("daemon process lock is poisoned"),
+                    if handle.should_quit() {
+                        return Ok(());
                     }
-                    if let Err(error) = server.serve_next_concurrent(Arc::clone(&process)) {
+                    if let Err(error) = server.serve_next_concurrent(handle.clone()) {
                         tracing::warn!(%error, "could not accept IPC session");
                     }
                 }

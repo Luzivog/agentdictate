@@ -6,7 +6,7 @@ pub use agentdictate_core::{
 };
 
 mod ipc;
-pub use ipc::{DeferredReply, IpcClient, IpcError, IpcHandler, IpcServer};
+pub use ipc::{IpcClient, IpcError, IpcHandler, IpcServer};
 mod fs;
 pub use fs::write_atomic;
 mod history;

@@ -729,7 +729,7 @@ mod tests {
             lifecycle_snapshot_message(request_id)
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             let ClientCommandKind::GetWorkspace { request_id } = command.kind else {
                 panic!("workspace client sent an unexpected command")
             };
@@ -762,7 +762,7 @@ mod tests {
         let server = IpcServer::bind(&runtime_directory).unwrap();
         let server_thread = std::thread::spawn(move || {
             server
-                .serve_next(&mut WorkspaceResponseHandler {
+                .serve_next(&WorkspaceResponseHandler {
                     response: WorkspaceResponse::Rejected("daemon said no".to_owned()),
                 })
                 .unwrap();
@@ -785,7 +785,7 @@ mod tests {
         let server = IpcServer::bind(&runtime_directory).unwrap();
         let server_thread = std::thread::spawn(move || {
             server
-                .serve_next(&mut WorkspaceResponseHandler {
+                .serve_next(&WorkspaceResponseHandler {
                     response: WorkspaceResponse::LifecycleSnapshot,
                 })
                 .unwrap();
@@ -818,7 +818,7 @@ mod tests {
             )
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             let ClientCommandKind::GetHistoryPage {
                 request_id,
                 request,
@@ -854,8 +854,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let runtime_directory = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime_directory).unwrap();
-        let server_thread =
-            std::thread::spawn(move || server.serve_next(&mut HistoryHandler).unwrap());
+        let server_thread = std::thread::spawn(move || server.serve_next(&HistoryHandler).unwrap());
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
@@ -907,7 +906,7 @@ mod tests {
             )
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             let ClientCommandKind::GetHistoryPage {
                 request_id,
                 request,
@@ -947,7 +946,7 @@ mod tests {
         let runtime_directory = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime_directory).unwrap();
         let server_thread =
-            std::thread::spawn(move || server.serve_next(&mut LoadMoreHistoryHandler).unwrap());
+            std::thread::spawn(move || server.serve_next(&LoadMoreHistoryHandler).unwrap());
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
@@ -991,7 +990,7 @@ mod tests {
             HistoryHandler.snapshot(request_id)
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             let ClientCommandKind::GetHistoryPage {
                 request_id,
                 request,
@@ -1030,9 +1029,7 @@ mod tests {
         let runtime_directory = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime_directory).unwrap();
         let server_thread = std::thread::spawn(move || {
-            server
-                .serve_next(&mut RestartedHistoryCursorHandler)
-                .unwrap();
+            server.serve_next(&RestartedHistoryCursorHandler).unwrap();
         });
         let client = WorkspaceClient::new(
             runtime_directory,
@@ -1071,7 +1068,7 @@ mod tests {
             HistoryHandler.snapshot(request_id)
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             match command.kind {
                 ClientCommandKind::GetHistoryPage {
                     request_id,
@@ -1112,7 +1109,7 @@ mod tests {
         let server = IpcServer::bind(&runtime_directory).unwrap();
         let server_thread = std::thread::spawn(move || {
             for _ in 0..2 {
-                server.serve_next(&mut DeleteFromSearchHandler).unwrap();
+                server.serve_next(&DeleteFromSearchHandler).unwrap();
             }
         });
         let client = WorkspaceClient::new(runtime_directory, WorkspaceSnapshot::default());
@@ -1154,7 +1151,7 @@ mod tests {
             )
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        fn handle(&self, command: ClientCommand) -> ServerMessage {
             let ClientCommandKind::GetWorkspace { request_id } = command.kind else {
                 panic!("workspace watcher sent an unexpected command")
             };
@@ -1173,7 +1170,7 @@ mod tests {
         let server_snapshot = Arc::clone(&remote_snapshot);
         let server_thread = std::thread::spawn(move || {
             server
-                .serve_next(&mut WorkspaceHandler {
+                .serve_next(&WorkspaceHandler {
                     snapshot: server_snapshot,
                 })
                 .unwrap();
@@ -1213,7 +1210,7 @@ mod tests {
         let server = IpcServer::bind(&runtime).unwrap();
         let server_thread = std::thread::spawn(move || {
             server
-                .serve_next(&mut WorkspaceHandler {
+                .serve_next(&WorkspaceHandler {
                     snapshot: Arc::new(Mutex::new(WorkspaceSnapshot {
                         overlay_unavailable: true,
                         ..WorkspaceSnapshot::default()

@@ -37,6 +37,17 @@ pub struct CapturedRecording {
 /// the Captured checkpoint is written.
 pub trait RecordingController: Recorder {
     fn finish(&mut self, job: &RecordingJob) -> Result<CapturedRecording, ExternalError>;
+
+    /// Follows saved settings, such as audio ducking.
+    fn update_settings(&mut self, _settings: &Settings) {}
+}
+
+/// The daemon's delivery adapter: the runtime's paste-or-copy step, plus
+/// copying a History entry and following the paste-shortcut setting.
+pub trait DaemonDeliverer: Deliverer {
+    fn copy_text(&mut self, text: &str) -> Result<(), ExternalError>;
+
+    fn update_settings(&mut self, _settings: &Settings) {}
 }
 
 enum OverlayDeliveryGate {
@@ -108,6 +119,10 @@ pub enum DaemonError {
     Busy { phase: WorkflowPhase },
     #[error("no recording is active")]
     NotRecording,
+    #[error("no transcription is in progress")]
+    NotProcessing,
+    #[error("AgentDictate is shutting down")]
+    ShuttingDown,
     #[error("no speech was found in this recording")]
     NoSpeech,
     #[error("{reason}")]
@@ -532,6 +547,19 @@ where
             "dictation flow completed"
         );
         Ok(result)
+    }
+
+    /// Stops waiting for the transcription in progress, so a new dictation
+    /// can start at once. Its result is stored for Recovery when it arrives
+    /// and is never pasted.
+    pub fn cancel_processing(&mut self) -> Result<JobId, DaemonError> {
+        let Activity::Processing(processing) = self.activity else {
+            return Err(DaemonError::NotProcessing);
+        };
+        let id = processing.job_id;
+        tracing::info!(job_id = %id, "transcription cancelled; its result will wait in Recovery");
+        self.settle(id, WorkflowSignal::ProcessingCancelled { job_id: id });
+        Ok(id)
     }
 
     /// Discards the active recording because the user explicitly pressed
