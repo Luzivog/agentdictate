@@ -24,11 +24,9 @@ fn durable_job_stages_have_stable_protocol_names() {
         (JobStage::Captured, "\"captured\""),
         (JobStage::Transcribing, "\"transcribing\""),
         (JobStage::ReadyToDeliver, "\"ready_to_deliver\""),
-        (JobStage::Delivering, "\"delivering\""),
         (JobStage::Delivered, "\"delivered\""),
         (JobStage::Interrupted, "\"interrupted\""),
         (JobStage::Failed, "\"failed\""),
-        (JobStage::Canceled, "\"canceled\""),
         (JobStage::Deleted, "\"deleted\""),
     ];
 
@@ -147,7 +145,7 @@ fn saved_transcript_can_retry_delivery_without_retranscribing() {
     workflow
         .apply(WorkflowSignal::Interrupted {
             job_id,
-            at: JobStage::Delivering,
+            at: JobStage::Failed,
         })
         .unwrap();
 

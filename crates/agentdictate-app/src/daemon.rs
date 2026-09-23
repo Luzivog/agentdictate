@@ -121,7 +121,6 @@ pub struct Daemon<R, T, D> {
     workflow: Workflow,
     active_job: Option<JobId>,
     active_recording: Option<ActiveRecordingUpdate>,
-    sequence: u64,
     recoverable_count: usize,
     last_transcript: Option<String>,
     hotkey: HotkeyReadiness,
@@ -157,7 +156,6 @@ where
             workflow: Workflow::new(),
             active_job: None,
             active_recording: None,
-            sequence: 0,
             recoverable_count,
             last_transcript: None,
             hotkey: HotkeyReadiness::Starting,
@@ -197,7 +195,6 @@ where
         // helper open its window in parallel with the microphone.
         self.workflow
             .apply(WorkflowSignal::StartRequested { job_id })?;
-        self.sequence += 1;
         self.publish_overlay_update();
         let job = match self.runtime.start_recording(
             RecordingRequest {
@@ -227,7 +224,6 @@ where
             started_at_unix_millis: Utc::now().timestamp_millis(),
         });
         self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
         self.publish_overlay_update();
         tracing::info!(
             job_id = %job.id,
@@ -256,7 +252,6 @@ where
             Some(at) => self.settle(job_id, WorkflowSignal::Interrupted { job_id, at }),
             None => {
                 self.workflow = Workflow::new();
-                self.sequence += 1;
                 self.publish_overlay_update();
             }
         }
@@ -268,7 +263,6 @@ where
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
         tracing::info!(job_id = %id, "recording stop requested");
-        self.sequence += 1;
         self.publish_overlay_update();
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
@@ -312,7 +306,6 @@ where
         self.workflow
             .apply(WorkflowSignal::CaptureFinalized { job_id: id })?;
         self.active_recording = None;
-        self.sequence += 1;
         self.publish_overlay_update();
         let mut gate = Timed::new(&mut self.overlay);
         let mut deliverer = Timed::new(&mut self.deliverer);
@@ -504,7 +497,6 @@ where
             self.workflow = Workflow::new();
         }
         self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
         self.publish_overlay_update();
         Ok(result)
     }
@@ -629,7 +621,6 @@ where
     #[must_use]
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
-            sequence: self.sequence,
             workflow: self.workflow.snapshot(),
             hotkey: self.hotkey.clone(),
             recoverable_count: self.recoverable_count,
@@ -639,7 +630,6 @@ where
 
     pub fn set_hotkey_readiness(&mut self, readiness: HotkeyReadiness) {
         self.hotkey = readiness;
-        self.sequence += 1;
         self.publish_overlay_update();
     }
 
@@ -673,7 +663,6 @@ where
 
     pub fn update_settings(&mut self, settings: Settings) {
         self.settings = settings;
-        self.sequence += 1;
         self.publish_overlay_update();
     }
 
@@ -791,7 +780,6 @@ where
             self.last_transcript = Some(result.final_text.clone());
         }
         self.recoverable_count = self.attention_recovery_count()?;
-        self.sequence += 1;
         self.publish_overlay_update();
         match result.stage {
             JobStage::Delivered => Ok(result),
@@ -837,7 +825,6 @@ where
                 }
             }
         }
-        self.sequence += 1;
         self.publish_overlay_update();
     }
 

@@ -36,7 +36,6 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
     let model = ShellViewModel::from_app_snapshot(
         Route::Overview,
         AppSnapshot {
-            sequence: 42,
             workflow: WorkflowSnapshot {
                 phase: WorkflowPhase::Ready,
             },
@@ -48,7 +47,6 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
         },
     );
 
-    assert_eq!(model.snapshot_sequence, Some(42));
     assert_eq!(model.hotkey.label, "Shortcut unavailable");
     assert_eq!(model.hotkey.detail, "Permission denied");
     assert_eq!(model.hotkey.tone, StatusTone::Danger);

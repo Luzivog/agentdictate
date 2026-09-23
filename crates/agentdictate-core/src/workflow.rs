@@ -46,12 +46,10 @@ pub enum JobStage {
     Captured,
     Transcribing,
     ReadyToDeliver,
-    Delivering,
     Delivered,
     NoSpeech,
     Interrupted,
     Failed,
-    Canceled,
     Deleted,
 }
 

@@ -217,7 +217,6 @@ fn replay_live(
     let job = agentdictate_runtime::RecordingJob {
         id: agentdictate_core::JobId::new(),
         options: Some(live_options.clone()),
-        legacy_id: 0,
         started_at: now,
         updated_at: now,
         stage: agentdictate_core::JobStage::Recording,

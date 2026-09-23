@@ -34,7 +34,6 @@ fn a_stored_transcript_is_reused_without_transcribing_again() {
     let job = RecordingJob {
         options: None,
         id: JobId::new(),
-        legacy_id: 1,
         started_at: now,
         updated_at: now,
         stage: JobStage::Transcribing,
@@ -81,7 +80,6 @@ fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
     let job = RecordingJob {
         options: None,
         id: JobId::new(),
-        legacy_id: 1,
         started_at: now,
         updated_at: now,
         stage: JobStage::Transcribing,
@@ -119,7 +117,6 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
     let job = RecordingJob {
         options: None,
         id: JobId::new(),
-        legacy_id: 1,
         started_at: now,
         updated_at: now,
         stage: JobStage::Transcribing,

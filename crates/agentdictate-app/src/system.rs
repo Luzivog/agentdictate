@@ -680,7 +680,6 @@ mod tests {
         let job = RecordingJob {
             options: None,
             id: JobId::new(),
-            legacy_id: 1,
             started_at: now,
             updated_at: now,
             stage: JobStage::ReadyToDeliver,
@@ -767,7 +766,6 @@ mod tests {
         let job = RecordingJob {
             options: None,
             id: JobId::new(),
-            legacy_id: 1,
             started_at: now,
             updated_at: now,
             stage: JobStage::ReadyToDeliver,
@@ -874,7 +872,6 @@ mod tests {
         let job = RecordingJob {
             options: None,
             id: JobId::new(),
-            legacy_id: 1,
             started_at: now,
             updated_at: now,
             stage: JobStage::Starting,

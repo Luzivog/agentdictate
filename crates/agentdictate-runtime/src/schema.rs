@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS dictation_jobs (
     delivery_status TEXT NOT NULL DEFAULT 'not_attempted',
     cleaned_transcript TEXT,
     replacements_applied TEXT NOT NULL DEFAULT '[]',
-    cleanup_error TEXT
+    cleanup_error TEXT,
+    processing_options TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_dictation_jobs_state ON dictation_jobs(state);
@@ -107,36 +108,34 @@ CREATE INDEX IF NOT EXISTS idx_dictation_jobs_updated_at ON dictation_jobs(updat
 pub(crate) fn row_to_job(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<Result<RecordingJob, RuntimeError>> {
-    let legacy_id = row.get(0)?;
-    let runtime_id: String = row.get(1)?;
-    let started_at: String = row.get(2)?;
-    let updated_at: String = row.get(3)?;
-    let stage: String = row.get(4)?;
+    let runtime_id: String = row.get(0)?;
+    let started_at: String = row.get(1)?;
+    let updated_at: String = row.get(2)?;
+    let stage: String = row.get(3)?;
     Ok((|| {
         Ok(RecordingJob {
             options: row
-                .get::<_, Option<String>>(15)?
+                .get::<_, Option<String>>(14)?
                 .map(|s| serde_json::from_str(&s))
                 .transpose()?,
             id: JobId::from_str(&runtime_id)
                 .map_err(|_| RuntimeError::InvalidJobId(runtime_id.clone()))?,
-            legacy_id,
             started_at: parse_timestamp(&started_at)?,
             updated_at: parse_timestamp(&updated_at)?,
             stage: parse_stage(&stage)?,
-            audio_path: PathBuf::from(row.get::<_, String>(5)?),
-            duration_seconds: row.get(6)?,
-            transcription_model: row.get(7)?,
+            audio_path: PathBuf::from(row.get::<_, String>(4)?),
+            duration_seconds: row.get(5)?,
+            transcription_model: row.get(6)?,
             transcription_provider: row
-                .get::<_, String>(8)?
+                .get::<_, String>(7)?
                 .parse::<TranscriptionProvider>()
                 .map_err(|error| RuntimeError::InvalidTranscriptionProvider(error.to_string()))?,
-            raw_transcript: row.get(9)?,
-            final_text: row.get(10)?,
-            copied_to_clipboard: row.get(11)?,
-            paste_triggered: row.get(12)?,
-            delivery_status: parse_delivery_status(&row.get::<_, String>(13)?)?,
-            error_message: row.get(14)?,
+            raw_transcript: row.get(8)?,
+            final_text: row.get(9)?,
+            copied_to_clipboard: row.get(10)?,
+            paste_triggered: row.get(11)?,
+            delivery_status: parse_delivery_status(&row.get::<_, String>(12)?)?,
+            error_message: row.get(13)?,
         })
     })())
 }
@@ -145,7 +144,7 @@ fn parse_delivery_status(value: &str) -> Result<DeliveryStatus, RuntimeError> {
     match value {
         "not_attempted" => Ok(DeliveryStatus::NotAttempted),
         "attempting" => Ok(DeliveryStatus::Attempting),
-        "submitted" | "committed" => Ok(DeliveryStatus::Submitted),
+        "submitted" => Ok(DeliveryStatus::Submitted),
         "ambiguous" => Ok(DeliveryStatus::Ambiguous),
         other => Err(RuntimeError::InvalidJobId(format!(
             "unknown delivery status {other:?}"
@@ -170,12 +169,10 @@ pub(crate) fn stage_name(stage: JobStage) -> &'static str {
         JobStage::Captured => "captured",
         JobStage::Transcribing => "transcribing",
         JobStage::ReadyToDeliver => "ready_to_deliver",
-        JobStage::Delivering => "delivering",
         JobStage::Delivered => "delivered",
         JobStage::NoSpeech => "no_speech",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",
-        JobStage::Canceled => "canceled",
         JobStage::Deleted => "deleted",
     }
 }
@@ -188,12 +185,12 @@ fn parse_stage(value: &str) -> Result<JobStage, RuntimeError> {
         // The retired cleanup step was part of processing, like transcribing.
         "transcribing" | "cleaning" => Ok(JobStage::Transcribing),
         "ready_to_deliver" => Ok(JobStage::ReadyToDeliver),
-        "delivering" => Ok(JobStage::Delivering),
         "delivered" => Ok(JobStage::Delivered),
         "no_speech" => Ok(JobStage::NoSpeech),
-        "interrupted" => Ok(JobStage::Interrupted),
-        "failed" => Ok(JobStage::Failed),
-        "canceled" => Ok(JobStage::Canceled),
+        // The Rust app never writes these two stages. Startup reconciles a
+        // stored `delivering` row to an ambiguous failure.
+        "interrupted" | "canceled" => Ok(JobStage::Interrupted),
+        "failed" | "delivering" => Ok(JobStage::Failed),
         "deleted" => Ok(JobStage::Deleted),
         other => Err(RuntimeError::InvalidJobId(format!(
             "unknown stage {other:?}"
@@ -208,8 +205,7 @@ pub(crate) fn state_for_stage(stage: JobStage) -> &'static str {
         JobStage::Deleted => "deleted",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",
-        JobStage::Canceled => "canceled",
         JobStage::Starting | JobStage::Recording => "active",
-        _ => "captured",
+        JobStage::Captured | JobStage::Transcribing | JobStage::ReadyToDeliver => "captured",
     }
 }

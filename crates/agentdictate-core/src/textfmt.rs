@@ -19,21 +19,6 @@ pub fn format_duration_clock(seconds: f64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// Counts tokens by splitting on characters other than Unicode alphanumerics,
-/// `'`, and `-`; apostrophes and hyphens remain token characters at any
-/// position.
-///
-/// OpenAI transcript-completeness heuristics use this Unicode-aware count when
-/// comparing candidate transcript lengths.
-#[must_use]
-pub fn count_words_unicode_alphanumeric(text: &str) -> usize {
-    text.split(|character: char| {
-        !character.is_alphanumeric() && character != '\'' && character != '-'
-    })
-    .filter(|word| !word.is_empty())
-    .count()
-}
-
 /// Counts stable ASCII history tokens, including underscores and one internal
 /// apostrophe or hyphen.
 ///
@@ -70,10 +55,8 @@ mod tests {
     }
 
     #[test]
-    fn word_counts_preserve_their_distinct_unicode_semantics() {
-        assert_eq!(count_words_unicode_alphanumeric("你好 world"), 2);
-        assert_eq!(count_words_ascii_history("你好 world"), 1);
-        assert_eq!(count_words_unicode_alphanumeric("don't ship-it"), 2);
+    fn history_word_counts_keep_internal_apostrophes_and_hyphens() {
         assert_eq!(count_words_ascii_history("don't ship-it"), 2);
+        assert_eq!(count_words_ascii_history("你好 world"), 1);
     }
 }

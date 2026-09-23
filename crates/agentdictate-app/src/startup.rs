@@ -1004,7 +1004,6 @@ mod tests {
             ServerMessage::snapshot(
                 request_id,
                 AppSnapshot {
-                    sequence: 0,
                     workflow: Workflow::new().snapshot(),
                     hotkey: HotkeyReadiness::Ready,
                     recoverable_count: 0,

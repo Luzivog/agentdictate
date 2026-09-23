@@ -34,7 +34,6 @@ impl IpcHandler for TestHandler {
                     .workflow
                     .apply(WorkflowSignal::StartRequested { job_id })
                     .unwrap();
-                snapshot.sequence += 1;
                 ServerMessage::snapshot(request_id, snapshot.clone(), &self.settings)
             }
             _ => panic!("test handler received an unexpected command"),
@@ -48,7 +47,6 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
     let runtime_directory = directory.path().join("runtime");
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
-        sequence: 5,
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 2,
@@ -80,7 +78,7 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
         panic!("initial IPC message was not a snapshot")
     };
     assert_eq!(request_id, 0);
-    assert_eq!(initial_snapshot.sequence, 5);
+    assert_eq!(initial_snapshot.recoverable_count, 2);
     assert_eq!(settings.values.openai_api_key, "");
     assert!(settings.has_api_key);
 
@@ -94,7 +92,6 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
         panic!("command response was not a snapshot")
     };
     assert_eq!(request_id, 42);
-    assert_eq!(started.sequence, 6);
     assert!(matches!(
         started.workflow.phase,
         WorkflowPhase::Starting { .. }
@@ -109,7 +106,6 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
     else {
         panic!("reconnect message was not a snapshot")
     };
-    assert_eq!(reconnected.sequence, 6);
     assert!(matches!(
         reconnected.workflow.phase,
         WorkflowPhase::Starting { .. }
@@ -125,7 +121,6 @@ fn client_reads_the_kernel_authenticated_server_pid() {
     let runtime_directory = directory.path().join("runtime");
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
-        sequence: 0,
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
@@ -153,7 +148,6 @@ fn silent_client_does_not_block_a_second_command_session() {
     let runtime_directory = directory.path().join("runtime");
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
-        sequence: 1,
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
@@ -249,7 +243,6 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
     let runtime_directory = directory.path().join("runtime");
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
-        sequence: 9,
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,

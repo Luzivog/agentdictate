@@ -31,7 +31,6 @@ impl Runtime {
                         | JobStage::ReadyToDeliver
                         | JobStage::Interrupted
                         | JobStage::Failed
-                        | JobStage::Canceled
                 )
             })
             .map(|job| RecoveryEntry {

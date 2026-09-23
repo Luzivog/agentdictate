@@ -428,33 +428,6 @@ fn failed_start_compensation_does_not_mask_the_checkpoint_error() {
 }
 
 #[test]
-fn dropping_the_ui_subscription_does_not_cancel_the_recording() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path,
-        saw_durable_starting_job: false,
-    };
-    let ui_events = runtime.subscribe();
-    let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/disconnected.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
-        .unwrap();
-
-    drop(ui_events);
-    let captured = runtime.capture_recording(job.id, 14.5).unwrap();
-
-    assert_eq!(captured.stage, JobStage::Captured);
-    assert_eq!(captured.duration_seconds, 14.5);
-}
-
-#[test]
 fn transcript_is_durable_before_delivery_is_attempted() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
@@ -689,10 +662,7 @@ fn ambiguous_delivery_is_not_retried_after_restart() {
         )
         .unwrap();
     drop(runtime);
-    let mut restarted = Runtime::open(&database_path).unwrap();
-    restarted
-        .resume_safe_deliveries(&mut HeadlessDeliveryGate, &mut deliverer)
-        .unwrap();
+    let restarted = Runtime::open(&database_path).unwrap();
 
     assert_eq!(deliverer.attempts, 1);
     assert_eq!(ambiguous.delivery_status, DeliveryStatus::Ambiguous);
@@ -785,7 +755,6 @@ fn capture_finalization_failure_can_interrupt_the_recording_durably() {
         database_path: database_path.clone(),
         saw_durable_starting_job: false,
     };
-    let events = runtime.subscribe();
     let job = runtime
         .start_recording(
             request(
@@ -809,11 +778,6 @@ fn capture_finalization_failure_can_interrupt_the_recording_durably() {
         interrupted.error_message.as_deref(),
         Some("audio stream stopped before the spool was finalized")
     );
-    assert!(matches!(
-        events.try_iter().last(),
-        Some(agentdictate_runtime::RuntimeEvent::JobUpdated(updated))
-            if updated.stage == JobStage::Interrupted
-    ));
     drop(runtime);
     let restarted = Runtime::open(&database_path).unwrap();
     assert_eq!(
@@ -855,7 +819,7 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
 }
 
 #[test]
-fn startup_keeps_historical_canceled_jobs_recoverable() {
+fn startup_keeps_stored_canceled_jobs_recoverable() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
@@ -886,7 +850,7 @@ fn startup_keeps_historical_canceled_jobs_recoverable() {
 
     assert_eq!(
         restarted.job(job.id).unwrap().unwrap().stage,
-        JobStage::Canceled
+        JobStage::Interrupted
     );
     assert_eq!(restarted.recovery_entries().unwrap()[0].job_id, job.id);
 }

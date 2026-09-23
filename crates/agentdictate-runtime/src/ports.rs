@@ -99,8 +99,6 @@ impl DeliveryGateError {
 pub struct RecordingJob {
     pub options: Option<agentdictate_core::DictationOptions>,
     pub id: JobId,
-    /// Stable SQLite identifier used by the legacy Python application.
-    pub legacy_id: i64,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub stage: JobStage,
@@ -218,9 +216,4 @@ impl DeliveryGate for HeadlessDeliveryGate {
     fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum RuntimeEvent {
-    JobUpdated(RecordingJob),
 }

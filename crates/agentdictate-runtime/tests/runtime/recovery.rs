@@ -41,7 +41,6 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
     );
     insert_job(&connection, "ready.wav", "captured", "ready_to_deliver");
     insert_job(&connection, "interrupted.wav", "failed", "interrupted");
-    insert_job(&connection, "canceled.wav", "failed", "canceled");
     insert_job(&connection, "failed.wav", "failed", "failed");
     insert_job(&connection, "delivered.wav", "delivered", "delivered");
     drop(connection);
@@ -56,13 +55,7 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
 
     assert_eq!(
         stage_names,
-        vec![
-            "Canceled",
-            "Captured",
-            "Failed",
-            "Interrupted",
-            "ReadyToDeliver",
-        ],
+        vec!["Captured", "Failed", "Interrupted", "ReadyToDeliver"],
         "recoverable stages are listed and delivered work is excluded"
     );
 

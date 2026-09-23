@@ -391,7 +391,6 @@ pub enum HotkeyReadiness {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppSnapshot {
-    pub sequence: u64,
     pub workflow: WorkflowSnapshot,
     pub hotkey: HotkeyReadiness,
     pub recoverable_count: usize,

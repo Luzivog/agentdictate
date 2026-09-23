@@ -1,7 +1,6 @@
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandKind, HistoryPageCursor, HistoryPageRequest,
-    HistoryPageSnapshot, HistorySnapshot, HotkeyReadiness, JobId, ServerMessage, ServerMessageKind,
-    Settings, Workflow, WorkspaceSnapshot,
+    AppSnapshot, ClientCommand, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot,
+    HotkeyReadiness, JobId, ServerMessage, ServerMessageKind, Settings, Workflow,
 };
 
 #[test]
@@ -77,22 +76,6 @@ fn history_page_requests_are_bounded_and_typed_on_the_wire() {
 }
 
 #[test]
-fn history_page_requests_read_the_previous_limit_field_during_upgrade() {
-    let legacy = r#"{"protocol_version":2,"command":"get_history_page","request_id":12,"request":{"search":"database migration","limit":20}}"#;
-
-    let decoded: ClientCommand = serde_json::from_str(legacy).unwrap();
-    assert!(matches!(
-        decoded.kind,
-        ClientCommandKind::GetHistoryPage {
-            request_id: 12,
-            request,
-        } if request.search == "database migration"
-            && request.page_size == 20
-            && request.after.is_none()
-    ));
-}
-
-#[test]
 fn history_page_responses_round_trip_independently_from_the_workspace() {
     let page = HistoryPageSnapshot {
         search: "needle".into(),
@@ -111,43 +94,6 @@ fn history_page_responses_round_trip_independently_from_the_workspace() {
             page: decoded,
         } if *decoded == page
     ));
-}
-
-#[test]
-fn history_rows_name_display_content_as_a_preview_and_read_legacy_payloads() {
-    let legacy = serde_json::json!({
-        "id": 41,
-        "created_at": "2026-08-19T09:30:00Z",
-        "final_text": "legacy transcript preview",
-        "word_count": 3,
-        "duration_seconds": 1.5
-    });
-
-    let row: HistorySnapshot = serde_json::from_value(legacy).unwrap();
-    assert_eq!(row.preview_text, "legacy transcript preview");
-
-    let current = serde_json::to_value(row).unwrap();
-    assert_eq!(current["preview_text"], "legacy transcript preview");
-    assert!(current.get("final_text").is_none());
-}
-
-#[test]
-fn workspace_history_cursor_round_trips_and_defaults_for_legacy_snapshots() {
-    let mut legacy = serde_json::to_value(WorkspaceSnapshot::default()).unwrap();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("history_next_cursor");
-    let decoded: WorkspaceSnapshot = serde_json::from_value(legacy).unwrap();
-    assert_eq!(decoded.history_next_cursor, None);
-
-    let workspace = WorkspaceSnapshot {
-        history_next_cursor: Some(HistoryPageCursor::new("workspace-page-2")),
-        ..WorkspaceSnapshot::default()
-    };
-    let decoded: WorkspaceSnapshot =
-        serde_json::from_str(&serde_json::to_string(&workspace).unwrap()).unwrap();
-    assert_eq!(decoded.history_next_cursor, workspace.history_next_cursor);
 }
 
 #[test]
@@ -193,7 +139,6 @@ fn snapshot_messages_round_trip_without_secret_settings() {
     let message = ServerMessage::snapshot(
         9,
         AppSnapshot {
-            sequence: 42,
             workflow: Workflow::new().snapshot(),
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 3,

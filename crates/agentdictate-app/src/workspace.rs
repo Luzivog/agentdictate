@@ -515,7 +515,6 @@ pub fn workspace_view_model(
                     || matches!(
                         entry.stage,
                         agentdictate_core::JobStage::ReadyToDeliver
-                            | agentdictate_core::JobStage::Delivering
                             | agentdictate_core::JobStage::Failed
                     ));
             RecoveryItemViewModel::new(
@@ -763,7 +762,6 @@ mod tests {
         ServerMessage::snapshot(
             request_id,
             AppSnapshot {
-                sequence: 0,
                 workflow: agentdictate_core::Workflow::new().snapshot(),
                 hotkey: agentdictate_core::HotkeyReadiness::Ready,
                 recoverable_count: 0,
@@ -827,7 +825,6 @@ mod tests {
             ServerMessage::snapshot(
                 request_id,
                 AppSnapshot {
-                    sequence: 0,
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
                     recoverable_count: 0,
@@ -913,7 +910,6 @@ mod tests {
             ServerMessage::snapshot(
                 request_id,
                 AppSnapshot {
-                    sequence: 0,
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
                     recoverable_count: 0,
@@ -1083,7 +1079,6 @@ mod tests {
             ServerMessage::snapshot(
                 request_id,
                 AppSnapshot {
-                    sequence: 0,
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
                     recoverable_count: 0,

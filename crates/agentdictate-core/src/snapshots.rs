@@ -21,7 +21,6 @@ pub struct RecoverySnapshot {
 pub struct HistorySnapshot {
     pub id: i64,
     pub created_at: DateTime<Utc>,
-    #[serde(alias = "final_text")]
     pub preview_text: String,
     pub word_count: u64,
     pub duration_seconds: f64,
@@ -53,9 +52,7 @@ impl HistoryPageCursor {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HistoryPageRequest {
     pub search: String,
-    #[serde(alias = "limit")]
     pub page_size: usize,
-    #[serde(default)]
     pub after: Option<HistoryPageCursor>,
 }
 
@@ -74,9 +71,7 @@ pub struct HistoryPageSnapshot {
     pub search: String,
     pub total_matches: u64,
     /// True when an expired opaque cursor was safely restarted at page one.
-    #[serde(default)]
     pub cursor_restarted: bool,
-    #[serde(default)]
     pub next_cursor: Option<HistoryPageCursor>,
     pub rows: Vec<HistorySnapshot>,
 }
@@ -106,15 +101,12 @@ pub struct UsageSnapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
-    #[serde(default)]
     pub overlay_unavailable: bool,
     pub recoveries: Vec<RecoverySnapshot>,
-    #[serde(default)]
     pub recent_history: Vec<HistorySnapshot>,
     pub history: Vec<HistorySnapshot>,
     pub history_total: u64,
     pub history_has_more: bool,
-    #[serde(default)]
     pub history_next_cursor: Option<HistoryPageCursor>,
     pub history_search: String,
     pub replacements: Vec<ReplacementRule>,

@@ -1025,7 +1025,6 @@ mod tests {
         let expected = JobId::new();
         let later = JobId::new();
         let snapshot = AppSnapshot {
-            sequence: 1,
             workflow: agentdictate_core::WorkflowSnapshot {
                 phase: WorkflowPhase::Recording { job_id: later },
             },

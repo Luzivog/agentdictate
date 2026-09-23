@@ -126,7 +126,6 @@ pub struct ShellViewModel {
     pub status: StatusViewModel,
     pub hotkey: HotkeyViewModel,
     pub workspace: WorkspaceViewModel,
-    pub snapshot_sequence: Option<u64>,
     pub last_transcript: Option<String>,
 }
 
@@ -142,14 +141,12 @@ impl ShellViewModel {
             status: snapshot.into(),
             hotkey: HotkeyReadiness::Starting.into(),
             workspace: WorkspaceViewModel::default(),
-            snapshot_sequence: None,
             last_transcript: None,
         }
     }
 
     pub fn from_app_snapshot(active_route: Route, snapshot: AppSnapshot) -> Self {
         let AppSnapshot {
-            sequence,
             workflow,
             hotkey,
             recoverable_count,
@@ -159,7 +156,6 @@ impl ShellViewModel {
         model.hotkey = hotkey.into();
         model.workspace.history =
             HistoryViewModel::new(0, u64::try_from(recoverable_count).unwrap_or(u64::MAX));
-        model.snapshot_sequence = Some(sequence);
         model.last_transcript = last_transcript;
         model
     }

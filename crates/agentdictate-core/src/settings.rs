@@ -58,6 +58,8 @@ impl fmt::Display for ParseTranscriptionProviderError {
 
 impl std::error::Error for ParseTranscriptionProviderError {}
 
+/// The user's configuration, stored in config.json. Missing keys take their
+/// defaults and unknown keys, such as retired settings, are ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -74,19 +76,12 @@ pub struct Settings {
     pub hotkey: String,
     pub recording_mode: String,
     pub max_recording_seconds: u32,
-    pub sound_feedback: bool,
-    pub start_sound: bool,
-    pub stop_sound: bool,
     pub audio_ducking_enabled: bool,
     pub audio_ducking_volume_percent: u8,
     pub audio_ducking_fade_out_ms: u32,
     pub audio_ducking_fade_in_ms: u32,
     pub start_on_login: bool,
     pub show_tray_icon: bool,
-    pub minimize_to_tray_on_close: bool,
-    pub launch_window_on_startup: bool,
-    pub restore_clipboard_after_paste: bool,
-    pub debug_mode: bool,
     pub preserve_temp_audio: bool,
     pub save_history: bool,
     pub paste_shortcut: String,
@@ -107,19 +102,12 @@ impl Default for Settings {
             hotkey: "Ctrl+Space".into(),
             recording_mode: "toggle".into(),
             max_recording_seconds: 300,
-            sound_feedback: false,
-            start_sound: false,
-            stop_sound: false,
             audio_ducking_enabled: true,
             audio_ducking_volume_percent: 15,
             audio_ducking_fade_out_ms: 600,
             audio_ducking_fade_in_ms: 600,
             start_on_login: true,
             show_tray_icon: true,
-            minimize_to_tray_on_close: true,
-            launch_window_on_startup: false,
-            restore_clipboard_after_paste: false,
-            debug_mode: false,
             preserve_temp_audio: false,
             save_history: true,
             paste_shortcut: "Automatic".into(),

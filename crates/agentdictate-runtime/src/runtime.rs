@@ -2,8 +2,6 @@ use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::str::FromStr;
-use std::sync::mpsc::{Receiver, Sender, channel};
 
 use agentdictate_core::apply_replacements;
 use chrono::Utc;
@@ -16,12 +14,11 @@ use crate::startup_cleanup::recovery_delete_path;
 use crate::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, ExternalError,
     HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, RecordingRequest,
-    ReplacementRule, RuntimeError, RuntimeEvent, Transcriber,
+    ReplacementRule, RuntimeError, Transcriber,
 };
 
 pub struct Runtime {
     pub(crate) connection: Connection,
-    subscribers: Vec<Sender<RuntimeEvent>>,
     pub(crate) history_search_cache: RefCell<history_search::SearchCache>,
 }
 
@@ -32,22 +29,19 @@ impl Runtime {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         configure_writer(&mut connection)?;
         connection.execute_batch(SCHEMA)?;
-        ensure_runtime_id_column(&connection)?;
-        ensure_delivery_status_column(&connection)?;
-        ensure_history_columns(&connection)?;
+        add_missing_columns(&connection)?;
+        connection.execute_batch(INDEXES)?;
         if let Err(error) = history_search::ensure_schema(&mut connection)
             && !history_search::is_search_schema_unavailable(&error)
         {
             return Err(error);
         }
         remove_blank_replacements(&connection)?;
-        backfill_runtime_ids(&connection)?;
-        reconcile_legacy_python_stages(&connection)?;
+        rename_committed_deliveries(&connection)?;
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
         Ok(Self {
             connection,
-            subscribers: Vec::new(),
             history_search_cache: RefCell::new(history_search::SearchCache::default()),
         })
     }
@@ -57,7 +51,6 @@ impl Runtime {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self {
             connection,
-            subscribers: Vec::new(),
             history_search_cache: RefCell::new(history_search::SearchCache::default()),
         })
     }
@@ -70,7 +63,6 @@ impl Runtime {
         configure_writer(&mut connection)?;
         Ok(Self {
             connection,
-            subscribers: Vec::new(),
             history_search_cache: RefCell::new(history_search::SearchCache::default()),
         })
     }
@@ -81,13 +73,6 @@ impl Runtime {
     /// interrupt this otherwise monolithic transaction.
     pub fn ensure_history_search_index(&mut self) -> Result<(), RuntimeError> {
         history_search::ensure_index(&mut self.connection, &self.history_search_cache)
-    }
-
-    /// Subscriptions are observers only. Dropping one never changes job lifecycle.
-    pub fn subscribe(&mut self) -> Receiver<RuntimeEvent> {
-        let (sender, receiver) = channel();
-        self.subscribers.push(sender);
-        receiver
     }
 
     pub fn start_recording(
@@ -139,7 +124,6 @@ impl Runtime {
             return Err(checkpoint_error);
         }
         let job = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(job.clone()));
         Ok(job)
     }
 
@@ -169,7 +153,6 @@ impl Runtime {
             return Err(RuntimeError::JobNotFound(id));
         }
         let job = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(job.clone()));
         Ok(job)
     }
 
@@ -192,7 +175,6 @@ impl Runtime {
         }
         self.update_stage(id, JobStage::Interrupted, Some(error_message.into()))?;
         let interrupted = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(interrupted.clone()));
         Ok(interrupted)
     }
 
@@ -229,7 +211,6 @@ impl Runtime {
             error_message: None,
             ..current
         };
-        self.publish(RuntimeEvent::JobUpdated(deleted.clone()));
         Ok(deleted)
     }
 
@@ -296,7 +277,6 @@ impl Runtime {
                     updated_at: Utc::now(),
                     ..transcribing
                 };
-                self.publish(RuntimeEvent::JobUpdated(finished.clone()));
                 return Ok(finished);
             }
             Err(error) => {
@@ -354,7 +334,6 @@ impl Runtime {
             ],
         )?;
         let ready = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(ready.clone()));
 
         self.deliver_ready(ready, method, delivery_gate, deliverer)
     }
@@ -470,7 +449,7 @@ impl Runtime {
         }
         if !matches!(
             current.stage,
-            JobStage::Captured | JobStage::Interrupted | JobStage::Failed | JobStage::Canceled
+            JobStage::Captured | JobStage::Interrupted | JobStage::Failed
         ) {
             return Err(RuntimeError::OperationNotAllowed {
                 operation: "retry transcription for",
@@ -488,8 +467,6 @@ impl Runtime {
             "#,
             params![timestamp(Utc::now()), id.to_string()],
         )?;
-        let captured = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(captured));
         // Copying cannot reach transient AgentDictate UI, so no gate is needed.
         self.process(
             id,
@@ -526,7 +503,6 @@ impl Runtime {
                     | JobStage::Recording
                     | JobStage::Captured
                     | JobStage::Transcribing
-                    | JobStage::Delivering
                     | JobStage::Delivered
                     | JobStage::Deleted
             )
@@ -548,7 +524,6 @@ impl Runtime {
             params![timestamp(Utc::now()), id.to_string()],
         )?;
         let ready = self.job(id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(ready.clone()));
         self.deliver_ready(
             ready,
             DeliveryMethod::CopyOnly,
@@ -569,7 +544,6 @@ impl Runtime {
             JobStage::Starting
                 | JobStage::Recording
                 | JobStage::Transcribing
-                | JobStage::Delivering
                 | JobStage::Delivered
                 | JobStage::Deleted
         ) {
@@ -601,7 +575,6 @@ impl Runtime {
             error_message: None,
             ..current
         };
-        self.publish(RuntimeEvent::JobUpdated(deleted.clone()));
         if quarantined {
             // The job row is already gone. A rare unlink failure leaves a
             // deterministic quarantine file that startup reconciliation
@@ -609,40 +582,6 @@ impl Runtime {
             let _ = fs::remove_file(quarantine_path);
         }
         Ok(deleted)
-    }
-
-    /// Resumes only deliveries for which no injection attempt was started.
-    /// Attempts left in-flight by a crash are reconciled to `Ambiguous` on open.
-    pub fn resume_safe_deliveries(
-        &mut self,
-        delivery_gate: &mut impl DeliveryGate,
-        deliverer: &mut impl Deliverer,
-    ) -> Result<Vec<RecordingJob>, RuntimeError> {
-        let mut statement = self.connection.prepare(
-            r#"
-            SELECT runtime_id
-            FROM dictation_jobs
-            WHERE stage = 'ready_to_deliver' AND delivery_status = 'not_attempted'
-            ORDER BY updated_at ASC, id ASC
-            "#,
-        )?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let mut results = Vec::with_capacity(ids.len());
-        for value in ids {
-            let id =
-                JobId::from_str(&value).map_err(|_| RuntimeError::InvalidJobId(value.clone()))?;
-            let ready = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-            results.push(self.deliver_ready(
-                ready,
-                DeliveryMethod::Paste,
-                delivery_gate,
-                deliverer,
-            )?);
-        }
-        Ok(results)
     }
 
     fn deliver_ready(
@@ -665,8 +604,6 @@ impl Runtime {
                     ready.id.to_string(),
                 ],
             )?;
-            let blocked = self.job(ready.id)?.expect("updated job must be readable");
-            self.publish(RuntimeEvent::JobUpdated(blocked));
             return Err(RuntimeError::DeliveryBlocked(error));
         }
         self.connection.execute(
@@ -739,7 +676,6 @@ impl Runtime {
             }
         }
         let result = self.job(ready.id)?.expect("updated job must be readable");
-        self.publish(RuntimeEvent::JobUpdated(result.clone()));
         Ok(result)
     }
 
@@ -804,7 +740,7 @@ impl Runtime {
     pub fn recoverable_jobs(&self) -> Result<Vec<RecordingJob>, RuntimeError> {
         let mut statement = self.connection.prepare(
             r#"
-            SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
+            SELECT runtime_id, started_at, updated_at, stage, audio_path,
                    duration_seconds, transcription_model, transcription_provider,
                    raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
@@ -842,11 +778,6 @@ impl Runtime {
         )?;
         Ok(())
     }
-
-    fn publish(&mut self, event: RuntimeEvent) {
-        self.subscribers
-            .retain(|subscriber| subscriber.send(event.clone()).is_ok());
-    }
 }
 
 /// Configures every connection that writes. WAL lets readers proceed while
@@ -863,21 +794,6 @@ fn configure_writer(connection: &mut Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn ensure_runtime_id_column(connection: &Connection) -> rusqlite::Result<()> {
-    let mut statement = connection.prepare("PRAGMA table_info(dictation_jobs)")?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !columns.iter().any(|column| column == "runtime_id") {
-        connection.execute("ALTER TABLE dictation_jobs ADD COLUMN runtime_id TEXT", [])?;
-    }
-    connection.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_dictation_jobs_runtime_id ON dictation_jobs(runtime_id)",
-        [],
-    )?;
-    Ok(())
-}
-
 /// Reads one job row. Takes a connection so a transaction can use it too.
 pub(crate) fn load_job(
     connection: &Connection,
@@ -886,7 +802,7 @@ pub(crate) fn load_job(
     connection
         .query_row(
             r#"
-            SELECT id, runtime_id, started_at, updated_at, stage, audio_path,
+            SELECT runtime_id, started_at, updated_at, stage, audio_path,
                    duration_seconds, transcription_model, transcription_provider,
                    raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
@@ -901,65 +817,57 @@ pub(crate) fn load_job(
         .map_or(Ok(None), |job| job.map(Some))
 }
 
-fn ensure_delivery_status_column(connection: &Connection) -> rusqlite::Result<()> {
-    let mut statement = connection.prepare("PRAGMA table_info(dictation_jobs)")?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !columns.iter().any(|column| column == "delivery_status") {
-        connection.execute(
-            "ALTER TABLE dictation_jobs ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'not_attempted'",
-            [],
-        )?;
-    }
-    Ok(())
-}
-
-fn ensure_history_columns(connection: &Connection) -> rusqlite::Result<()> {
-    ensure_column(connection, "dictation_jobs", "processing_options", "TEXT")?;
-    ensure_column(
-        connection,
+/// Columns added after the first Rust release, for databases created
+/// before them.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("dictation_jobs", "runtime_id", "TEXT"),
+    (
+        "dictation_jobs",
+        "delivery_status",
+        "TEXT NOT NULL DEFAULT 'not_attempted'",
+    ),
+    ("dictation_jobs", "processing_options", "TEXT"),
+    (
         "dictation_jobs",
         "transcription_provider",
         "TEXT NOT NULL DEFAULT 'openai_api'",
-    )?;
-    ensure_column(
-        connection,
-        "dictation_sessions",
-        "transcription_provider",
-        "TEXT NOT NULL DEFAULT 'openai_api'",
-    )?;
-    ensure_column(connection, "dictation_jobs", "cleaned_transcript", "TEXT")?;
-    ensure_column(
-        connection,
+    ),
+    ("dictation_jobs", "cleaned_transcript", "TEXT"),
+    (
         "dictation_jobs",
         "replacements_applied",
         "TEXT NOT NULL DEFAULT '[]'",
-    )?;
-    ensure_column(connection, "dictation_sessions", "runtime_job_id", "TEXT")?;
-    ensure_column(connection, "dictation_jobs", "cleanup_error", "TEXT")?;
-    connection.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_runtime_job_id ON dictation_sessions(runtime_job_id)",
-        [],
-    )?;
-    Ok(())
-}
+    ),
+    ("dictation_jobs", "cleanup_error", "TEXT"),
+    (
+        "dictation_sessions",
+        "transcription_provider",
+        "TEXT NOT NULL DEFAULT 'openai_api'",
+    ),
+    ("dictation_sessions", "runtime_job_id", "TEXT"),
+];
 
-fn ensure_column(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    declaration: &str,
-) -> rusqlite::Result<()> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !columns.iter().any(|existing| existing == column) {
-        connection.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
-            [],
-        )?;
+/// Unique lookups the added columns need. `ALTER TABLE` cannot add a
+/// `UNIQUE` column, so older databases get these indexes instead.
+const INDEXES: &str = r#"
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dictation_jobs_runtime_id ON dictation_jobs(runtime_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_runtime_job_id ON dictation_sessions(runtime_job_id);
+"#;
+
+fn add_missing_columns(connection: &Connection) -> rusqlite::Result<()> {
+    for (table, column, declaration) in ADDED_COLUMNS {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|existing| existing == column);
+        if !exists {
+            connection.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -972,45 +880,11 @@ fn remove_blank_replacements(connection: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn backfill_runtime_ids(connection: &Connection) -> rusqlite::Result<()> {
-    let mut statement = connection
-        .prepare("SELECT id FROM dictation_jobs WHERE runtime_id IS NULL OR runtime_id = ''")?;
-    let ids = statement
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for legacy_id in ids {
-        connection.execute(
-            "UPDATE dictation_jobs SET runtime_id = ?1 WHERE id = ?2",
-            params![JobId::new().to_string(), legacy_id],
-        )?;
-    }
-    Ok(())
-}
-
-fn reconcile_legacy_python_stages(connection: &Connection) -> rusqlite::Result<()> {
-    let now = timestamp(Utc::now());
+/// Until 2026-08-21 a completed paste was stored as `committed`.
+fn rename_committed_deliveries(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute(
-        r#"
-        UPDATE dictation_jobs
-        SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
-            delivery_status = 'not_attempted', error_message = NULL
-        WHERE state = 'transcribed'
-          AND stage = 'transcribed'
-          AND final_text != ''
-        "#,
-        [&now],
-    )?;
-    connection.execute(
-        r#"
-        UPDATE dictation_jobs
-        SET state = 'interrupted', stage = 'interrupted', updated_at = ?1,
-            error_message = COALESCE(
-                error_message,
-                'AgentDictate stopped before this dictation completed'
-            )
-        WHERE stage IN ('transcribed', 'cleanup', 'replacements')
-        "#,
-        [&now],
+        "UPDATE dictation_jobs SET delivery_status = 'submitted' WHERE delivery_status = 'committed'",
+        [],
     )?;
     Ok(())
 }

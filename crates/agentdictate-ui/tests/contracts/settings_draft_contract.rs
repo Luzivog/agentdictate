@@ -150,14 +150,7 @@ fn applying_a_draft_preserves_settings_that_the_form_does_not_expose() {
     let original = Settings {
         openai_api_key: "secret".to_owned(),
         transcription_model: "private-transcriber".to_owned(),
-        sound_feedback: true,
-        start_sound: true,
-        stop_sound: true,
         show_tray_icon: false,
-        minimize_to_tray_on_close: false,
-        launch_window_on_startup: true,
-        restore_clipboard_after_paste: true,
-        debug_mode: true,
         ..Settings::default()
     };
     let mut draft = SettingsDraft::from(&original);
