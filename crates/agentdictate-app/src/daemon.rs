@@ -464,7 +464,9 @@ where
             job.id,
             WorkflowSignal::FirstAudioFrameWritten { job_id: job.id },
         );
-        self.recoverable_count = self.attention_recovery_count()?;
+        // The recording runs now, so a failed recount is only logged: an
+        // error would report a failed start for a recording that continues.
+        self.recount_recoveries();
         self.publish_overlay_update();
         tracing::info!(
             job_id = %job.id,

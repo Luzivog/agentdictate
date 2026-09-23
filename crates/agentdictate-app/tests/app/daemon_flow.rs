@@ -813,6 +813,31 @@ fn recorder_start_failure_is_published_as_recoverable_attention() {
 }
 
 #[test]
+fn a_started_recording_is_reported_as_started_when_recounting_recovery_fails() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    // Recovery cannot list a job whose id does not parse, so every recount
+    // fails, while the new job's own reads still work.
+    rusqlite::Connection::open(&paths.database_file)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO dictation_jobs (runtime_id, started_at, updated_at, state, stage, audio_path)
+             VALUES ('unreadable', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z',
+                     'interrupted', 'interrupted', '/nonexistent/unreadable.wav')",
+        )
+        .unwrap();
+
+    let started = daemon.start_recording().unwrap();
+
+    assert_eq!(
+        daemon.phase(),
+        WorkflowPhase::Recording { job_id: started.id }
+    );
+    finish(&mut daemon);
+}
+
+#[test]
 fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());
