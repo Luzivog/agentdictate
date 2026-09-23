@@ -207,9 +207,19 @@ impl DaemonStatus {
     }
 }
 
-/// A result that arrives this long after the user stopped recording is only
-/// copied: by then they may have moved on to another window.
-const STALE_PASTE_AFTER: Duration = Duration::from_secs(8);
+/// A result that arrives this long after the user stopped recording, beyond
+/// the time its length normally takes to transcribe, is only copied: by then
+/// they may have moved on to another window.
+const STALE_PASTE_MARGIN: Duration = Duration::from_secs(8);
+
+/// Upper bound on normal transcription time per second of audio (measured
+/// about 27 ms); long dictations legitimately take longer before the paste.
+const TRANSCRIPTION_TIME_PER_AUDIO_SECOND: Duration = Duration::from_millis(30);
+
+/// How long after stop a dictation of this length may still be pasted.
+pub(crate) fn stale_paste_after(audio_seconds: f64) -> Duration {
+    STALE_PASTE_MARGIN + TRANSCRIPTION_TIME_PER_AUDIO_SECOND.mul_f64(audio_seconds.max(0.0))
+}
 
 /// The one dictation the daemon may deliver.
 enum Activity {
@@ -461,8 +471,8 @@ where
     }
 
     /// Records a ticket's result. Only the job the daemon is processing is
-    /// delivered: pasted, or copied when the result arrived more than
-    /// `STALE_PASTE_AFTER` after the stop. Any other job's result is only
+    /// delivered: pasted, or copied when the result arrived later after the
+    /// stop than `stale_paste_after` allows for its length. Any other job's result is only
     /// stored, so it waits in Recovery. Returns the job as it was left.
     pub fn complete_transcription(
         &mut self,
@@ -552,7 +562,7 @@ where
         let id = ready.id;
         let waited = finished_at.saturating_duration_since(processing.stopped_at);
         let method = match processing.delivery {
-            DeliveryMethod::Paste if waited > STALE_PASTE_AFTER => {
+            DeliveryMethod::Paste if waited > stale_paste_after(ready.duration_seconds) => {
                 tracing::info!(
                     job_id = %id,
                     waited_ms = millis(waited),
@@ -1137,5 +1147,19 @@ pub(crate) fn copied(job: RecordingJob) -> Result<RecordingJob, DaemonError> {
                 .error_message
                 .unwrap_or_else(|| "the text was not copied".to_owned()),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_dictations_get_their_transcription_time_before_a_paste_is_stale() {
+        assert_eq!(stale_paste_after(0.0), Duration::from_secs(8));
+        assert!(stale_paste_after(12.0) < Duration::from_secs(9));
+        // A three-minute dictation normally takes about 5 s to transcribe, so
+        // a result 9 s after stop is still pasted.
+        assert!(stale_paste_after(180.0) > Duration::from_secs(13));
     }
 }
