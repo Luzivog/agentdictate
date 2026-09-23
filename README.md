@@ -67,9 +67,10 @@ in the tray menu.
 
 - **Shortcut.** Change it, or switch from press-to-toggle to hold-to-talk, under
   **Settings**, **Recording & audio**.
-- **Spelling of names.** Add product and project names to **Vocabulary**, one per
-  line. `kubectl = cube control` also fixes a spoken form every time. See
-  [dictation output](docs/dictation-output.md).
+- **Spelling of names.** Add product and project names under **Words**. A
+  **Sounds like** entry, such as `cube control` for `kubectl`, also fixes that
+  spoken form every time. **Fix a word** on an expanded History transcript adds one
+  for you. See [dictation output](docs/dictation-output.md).
 - **Exact text.** **Start literal dictation** in the tray skips vocabulary and
   context for one recording.
 - **Something failed.** Open **History**. Items under **Recovery** kept their audio;

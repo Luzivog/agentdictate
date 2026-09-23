@@ -31,45 +31,54 @@ agentdictate stop
 A one-off mode never changes the saved setting. The tray ignores mode starts while a
 dictation is busy, and the daemon rejects a start while it is already recording.
 
-## Vocabulary
+## Words
 
-The **Vocabulary** editor takes one spelling per line. A spelling can be followed by
-`=` and a comma-separated list of spoken forms, its aliases:
+The **Words** screen lists the spellings AgentDictate should always use. Each word
+has a **Spelling** and an optional **Sounds like**: comma-separated spoken forms,
+its aliases.
 
-```text
-Kubernetes
-PostgreSQL = postgres q l, post gress
-kubectl = cube control, cube cuttle
-GitHub Actions
-```
+| Spelling | Sounds like |
+| --- | --- |
+| Kubernetes | |
+| PostgreSQL | postgres q l, post gress |
+| kubectl | cube control, cube cuttle |
+| GitHub Actions | |
+
+Add a word in the top row, and use **Edit**, **Delete** and the filter box on the
+list. Every change is saved at once, and **Saved ✓** confirms it.
 
 - Every spelling is sent to OpenAI as a recognition keyword (`keywords[]`), which
-  makes the model more likely to write it that way. A spelling without aliases is
+  makes the model more likely to write it that way. A word without Sounds like is
   only a hint.
-- Aliases are automatic corrections. After recognition, each alias is replaced by
-  its spelling. Matching ignores case and needs whole words. At any position the
-  longest alias wins, and the pass runs once, so a correction never feeds another
-  alias.
-- Aliases never change protected spans: text in backticks or code fences, text in
-  double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
+- Sounds like entries are automatic corrections. After recognition, each one in
+  the text becomes its spelling. Matching ignores case and needs whole words. At any
+  position the longest match wins, and the pass runs once, so a correction never
+  feeds another.
+- Corrections never change protected spans: text in backticks or code fences, text
+  in double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
   starting with `--`, and words that contain a slash.
-- The editor accepts up to 100 entries. Spellings and aliases must be unique
-  regardless of case, at most 128 bytes, and free of control characters and angle
-  brackets.
+- The screen keeps up to 100 words. Spellings and Sounds like entries must be
+  unique regardless of case, at most 128 bytes, and free of control characters,
+  angle brackets and `=`. A Sounds like entry cannot contain a comma or repeat its
+  own spelling exactly; a different casing, such as `github` for `GitHub`, fixes
+  the case.
 
-When a word keeps coming out wrong, add its spelling first. Add an alias only when
-that spoken form should always mean the spelling. An alias such as `Rust = rest`
-would also rewrite every real "rest". To reproduce a failure, copy the transcript
-from History; AgentDictate never watches what you type in other apps.
+When a word keeps coming out wrong, add its spelling first. Add a Sounds like entry
+only when that spoken form should always mean the spelling: `rest` for `Rust` would
+also rewrite every real "rest". When a transcript in History got a word wrong,
+expand it and choose **Fix a word**. Type what AgentDictate heard and how it should
+be spelled, and **Add to Words** adds the heard phrase to that word's Sounds like,
+or adds the word. AgentDictate never watches what you type in other apps.
 
 The retired **Replacements** screen is gone. On the first daemon start after the
-upgrade, each enabled whole-word rule became an alias of its replacement's spelling,
-and the daemon log lists every rule it moved or could not express as vocabulary.
+upgrade, each enabled whole-word rule became a Sounds like entry of its replacement's
+spelling, and the daemon log lists every rule it moved or could not express as a
+word.
 
 ## Context and language
 
 - **Context prompt**, under **Dictation**, describes what you usually talk about.
-  It is sent as the transcription `prompt`. Keep spellings in Vocabulary.
+  It is sent as the transcription `prompt`. Keep spellings in Words.
 - **Current work context**, under **Dictation output**, is optional text about the
   task at hand. It is appended to the prompt and marked as data, not instructions.
   Clear it when you switch projects.
