@@ -38,11 +38,19 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Cargo compiles path dependencies incrementally, and the vendored GPUI is one
+# through [patch]. It never changes, so its incremental caches only fill target/.
+[profile.dev.package.gpui]
+incremental = false
+
 [profile.test]
 debug = "line-tables-only"
 
 [profile.test.package."*"]
 debug = false
+
+[profile.test.package.gpui]
+incremental = false
 
 [profile.debugging]
 inherits = "dev"
