@@ -1,4 +1,5 @@
 use std::fs;
+use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot,
@@ -7,9 +8,10 @@ use agentdictate_core::{
     WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
-    Deliverer, DeliveryGate, DeliveryGateError, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, HistoryCursor, HistoryEntry, HistoryQuery, Recorder, RecordingJob,
-    RecordingRequest, Runtime, RuntimeError, Transcriber, UsageAggregate, UsageMetric,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
+    DeliveryStatus, ExternalError, HeadlessDeliveryGate, HistoryCursor, HistoryEntry, HistoryQuery,
+    Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError, Transcriber, UsageAggregate,
+    UsageMetric,
 };
 use chrono::Utc;
 use thiserror::Error;
@@ -42,6 +44,47 @@ impl DeliveryGate for OverlayDeliveryGate {
             Self::Live(gate) => gate.confirm_ready(),
         }
     }
+}
+
+/// Wraps one delivery step to record when it ran, for the per-dictation
+/// timing log. The runtime calls the overlay gate, then the deliverer, whose
+/// return marks the moment the paste was submitted.
+struct Timed<'a, T> {
+    inner: &'a mut T,
+    ran: Option<(Instant, Instant)>,
+}
+
+impl<'a, T> Timed<'a, T> {
+    const fn new(inner: &'a mut T) -> Self {
+        Self { inner, ran: None }
+    }
+
+    fn record<R>(&mut self, step: impl FnOnce(&mut T) -> R) -> R {
+        let started = Instant::now();
+        let result = step(self.inner);
+        self.ran = Some((started, Instant::now()));
+        result
+    }
+}
+
+impl<G: DeliveryGate> DeliveryGate for Timed<'_, G> {
+    fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
+        self.record(G::confirm_ready)
+    }
+}
+
+impl<D: Deliverer> Deliverer for Timed<'_, D> {
+    fn deliver(
+        &mut self,
+        job: &RecordingJob,
+        method: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
+        self.record(|deliverer| deliverer.deliver(job, method))
+    }
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(Debug, Error)]
@@ -125,6 +168,7 @@ where
         &mut self,
         mode: Option<agentdictate_core::DictationMode>,
     ) -> Result<RecordingJob, DaemonError> {
+        let requested_at = Instant::now();
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
@@ -198,12 +242,17 @@ where
         self.recoverable_count = self.attention_recovery_count()?;
         self.sequence += 1;
         self.publish_overlay_update();
-        tracing::info!(job_id = %job.id, audio_path = %job.audio_path.display(), "recording ready");
+        tracing::info!(
+            job_id = %job.id,
+            audio_path = %job.audio_path.display(),
+            capture_ready_ms = millis(requested_at.elapsed()),
+            "recording ready"
+        );
         Ok(job)
     }
 
     pub fn stop_recording(&mut self) -> Result<RecordingJob, DaemonError> {
-        let stop_started = std::time::Instant::now();
+        let stop_started = Instant::now();
         let id = self.active_job.ok_or(DaemonError::NotRecording)?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
@@ -254,12 +303,13 @@ where
         self.active_recording = None;
         self.sequence += 1;
         self.publish_overlay_update();
-        let result = match self.runtime.process_captured(
-            id,
-            &mut self.transcriber,
-            &mut self.overlay,
-            &mut self.deliverer,
-        ) {
+        let mut gate = Timed::new(&mut self.overlay);
+        let mut deliverer = Timed::new(&mut self.deliverer);
+        let processed =
+            self.runtime
+                .process_captured(id, &mut self.transcriber, &mut gate, &mut deliverer);
+        let (gate_ran, delivery_ran) = (gate.ran, deliverer.ran);
+        let result = match processed {
             Ok(result) => result,
             Err(error) => {
                 tracing::error!(job_id = %id, %error, "dictation processing failed");
@@ -312,7 +362,9 @@ where
         tracing::info!(
             job_id = %id,
             stage = ?result.stage,
-            stop_to_paste_ms = stop_started.elapsed().as_millis() as u64,
+            gate_ms = gate_ran.map(|(started, finished)| millis(finished - started)),
+            stop_to_paste_ms = delivery_ran.map(|(_, finished)| millis(finished - stop_started)),
+            stop_to_flow_complete_ms = millis(stop_started.elapsed()),
             "dictation flow completed"
         );
         Ok(result)
@@ -409,9 +461,11 @@ where
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
-        let result =
-            self.runtime
-                .retry_transcription(id, &mut self.transcriber, &mut self.deliverer)?;
+        tracing::info!(job_id = %id, "recovery transcription retry requested");
+        let result = self
+            .runtime
+            .retry_transcription(id, &mut self.transcriber, &mut self.deliverer)
+            .inspect_err(|error| tracing::warn!(job_id = %id, %error, "recovery retry failed"))?;
         self.finish_retry(result)
     }
 
@@ -421,7 +475,11 @@ where
         if self.active_job.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
-        let result = self.runtime.retry_delivery(id, &mut self.deliverer)?;
+        tracing::info!(job_id = %id, "recovery copy retry requested");
+        let result = self
+            .runtime
+            .retry_delivery(id, &mut self.deliverer)
+            .inspect_err(|error| tracing::warn!(job_id = %id, %error, "recovery retry failed"))?;
         self.finish_retry(result)
     }
 
@@ -430,6 +488,7 @@ where
     /// the live recording, and every way to stop it, untouched.
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         let result = self.runtime.delete_recovery(id)?;
+        tracing::info!(job_id = %id, "recovery item deleted");
         if self.active_job.is_none() {
             self.workflow = Workflow::new();
         }
@@ -697,6 +756,7 @@ where
     /// the user to paste text that is not on the clipboard.
     fn finish_retry(&mut self, result: RecordingJob) -> Result<RecordingJob, DaemonError> {
         let id = result.id;
+        tracing::info!(job_id = %id, stage = ?result.stage, "recovery retry finished");
         self.workflow = Workflow::new();
         if result.stage == JobStage::Delivered
             && let Err(error) = self.runtime.complete_delivered(id, &self.settings)

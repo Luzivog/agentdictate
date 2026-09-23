@@ -274,13 +274,19 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,
-                event: NativeHotkeyEvent::DeviceError(error),
+                event: NativeHotkeyEvent::DeviceOpenFailed(failure),
             } if event_generation == generation => {
-                tracing::warn!(
-                    path = %error.path.display(),
-                    error = %error.message,
-                    "lost keyboard device"
+                tracing::debug!(
+                    path = %failure.path.display(),
+                    error = %failure.message,
+                    "could not open keyboard (will retry on device change)"
                 );
+            }
+            DispatchLoopEvent::Native {
+                generation: event_generation,
+                event: NativeHotkeyEvent::DeviceLost { path, message },
+            } if event_generation == generation => {
+                tracing::warn!(path = %path.display(), error = %message, "lost keyboard device");
             }
             DispatchLoopEvent::Native {
                 generation: event_generation,

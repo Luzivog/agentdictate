@@ -61,10 +61,22 @@ pub struct NativeHotkeySignal {
 pub enum NativeHotkeyEvent {
     Signal(NativeHotkeySignal),
     Status(HotkeyListenerStatus),
-    DeviceError(DeviceOpenFailure),
+    /// A keyboard that appeared could not be opened, usually because udev
+    /// had not granted access yet. The next device change retries it.
+    DeviceOpenFailed(DeviceOpenFailure),
+    /// An open keyboard failed while reading and was dropped.
+    DeviceLost {
+        path: PathBuf,
+        message: String,
+    },
     DiscoveryError(String),
-    Reconfigured { hotkey: String },
-    ReconfigurationRejected { hotkey: String, reason: String },
+    Reconfigured {
+        hotkey: String,
+    },
+    ReconfigurationRejected {
+        hotkey: String,
+        reason: String,
+    },
     ControlError(String),
 }
 

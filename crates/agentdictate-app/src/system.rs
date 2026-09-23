@@ -405,13 +405,18 @@ impl SystemDeliverer {
         let deadline = Instant::now() + DELIVERY_TIMEOUT;
         let mut delivery = PasteDelivery::new(self.shortcut_mode);
         let mut copied_this_attempt = false;
+        // Time per stage, logged with the submitted paste.
+        let (mut focus_time, mut clipboard_time) = (Duration::ZERO, Duration::ZERO);
         loop {
             let next = match delivery.action() {
                 DeliveryAction::ObserveFocus => {
                     if Instant::now() >= deadline {
                         delivery.advance(DeliveryObservation::DeadlineReached)
                     } else {
-                        match self.observe_focus(deadline) {
+                        let started = Instant::now();
+                        let observed = self.observe_focus(deadline);
+                        focus_time += started.elapsed();
+                        match observed {
                             Ok(target) => delivery.advance(DeliveryObservation::Focus(target)),
                             Err(error) => {
                                 return DeliveryDisposition::NotSent {
@@ -425,11 +430,11 @@ impl SystemDeliverer {
                     }
                 }
                 DeliveryAction::PublishClipboard(protocol) => {
-                    let publications = match self.publish_delivery_text(
-                        protocol,
-                        job.final_text.as_bytes(),
-                        deadline,
-                    ) {
+                    let started = Instant::now();
+                    let published =
+                        self.publish_delivery_text(protocol, job.final_text.as_bytes(), deadline);
+                    clipboard_time += started.elapsed();
+                    let publications = match published {
                         Ok(publications) => publications,
                         Err(error) => {
                             return DeliveryDisposition::NotSent {
@@ -453,12 +458,19 @@ impl SystemDeliverer {
                     // This is deliberately exactly one injection. Once the
                     // command starts, an error is ambiguous and must not retry.
                     let protocol = target.protocol();
-                    let sent = match self.injector.inject(shortcut, deadline) {
+                    let started = Instant::now();
+                    let injected = self.injector.inject(shortcut, deadline);
+                    let inject_ms = started.elapsed().as_millis() as u64;
+                    let sent = match injected {
                         Ok(()) => {
                             tracing::info!(
+                                job_id = %job.id,
                                 ?protocol,
                                 ?shortcut,
                                 method = "uinput",
+                                focus_ms = focus_time.as_millis() as u64,
+                                clipboard_ms = clipboard_time.as_millis() as u64,
+                                inject_ms,
                                 "paste command submitted"
                             );
                             true

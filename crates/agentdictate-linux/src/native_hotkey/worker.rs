@@ -118,10 +118,10 @@ impl ListenerWorker {
                         .collect::<Vec<_>>(),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => Vec::new(),
                     Err(error) => {
-                        let _ = events.send(NativeHotkeyEvent::DeviceError(DeviceOpenFailure {
+                        let _ = events.send(NativeHotkeyEvent::DeviceLost {
                             path: path.clone(),
                             message: error.to_string(),
-                        }));
+                        });
                         disconnected.push(path.clone());
                         Vec::new()
                     }
@@ -262,7 +262,7 @@ fn reconcile_devices(
                 *next_device_id += 1;
             }
             Err(error) => {
-                let _ = events.send(NativeHotkeyEvent::DeviceError(DeviceOpenFailure {
+                let _ = events.send(NativeHotkeyEvent::DeviceOpenFailed(DeviceOpenFailure {
                     path,
                     message: error.to_string(),
                 }));

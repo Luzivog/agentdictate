@@ -68,8 +68,10 @@ its format, the WAV is sent once more. A connection failure before OpenAI
 returns any status is retried once on a fresh connection; nothing is retried
 after a status arrives. The durable on-disk artifact stays WAV — recovery and
 retry are unaffected. Each transcription and cleanup request logs its payload
-size, encode time, and request time, and the daemon logs total stop-to-paste time
-per dictation.
+size, encode time, and request time. Per dictation, the daemon logs the time
+from the start command to the first audio (`capture_ready_ms`), the focus,
+clipboard, and paste-chord stages of delivery, the overlay gate wait, and both
+stop-to-paste and stop-to-flow-complete times.
 
 ## Daemon And Settings App Communication
 
@@ -125,7 +127,9 @@ Runtime data lives under XDG directories, each created with mode 0700:
   at `~/.local/share/systemd/user/agentdictated.service`.
 - `~/.local/share/agentdictate/` — SQLite history database (`agentdictate.sqlite`)
   and retained audio under `recordings/`.
-- `~/.local/state/agentdictate/logs/` — logs.
+- `~/.local/state/agentdictate/logs/` — daily logs; the newest 14 files are
+  kept for the daemon and for the settings window. Levels default to info, with the overlay's GPU crates at warn;
+  `RUST_LOG` (for example `RUST_LOG=debug`) replaces those defaults.
 - `~/.local/state/agentdictate/ducking.json` — present only while audio ducking
   has lowered an output: the sink, its original volume, and the volume
   AgentDictate set. If the daemon dies mid-recording, the next start restores
