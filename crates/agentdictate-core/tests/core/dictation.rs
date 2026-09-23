@@ -31,6 +31,36 @@ fn vocabulary_rejects_conflicting_aliases_and_round_trips_hints() {
 }
 
 #[test]
+fn vocabulary_rejects_blank_spellings_self_aliases_and_aliases_the_text_form_cannot_hold() {
+    let entry = |spelling: &str, aliases: &[&str]| VocabularyEntry {
+        spelling: spelling.to_owned(),
+        aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+    };
+
+    assert_eq!(
+        validate_vocabulary(&[entry("  ", &[])]),
+        Err(VocabularyError::BlankSpelling)
+    );
+    assert_eq!(
+        validate_vocabulary(&[entry("Leadlord", &["Leadlord"])]),
+        Err(VocabularyError::AliasIsSpelling)
+    );
+    assert_eq!(
+        validate_vocabulary(&[entry("Leadlord", &["lead, lord"])]),
+        Err(VocabularyError::InvalidAlias("lead, lord".to_owned()))
+    );
+    assert_eq!(
+        validate_vocabulary(&[entry("Leadlord", &[]), entry("leadlord", &[])]),
+        Err(VocabularyError::DuplicateSpelling("leadlord".to_owned()))
+    );
+    // A different casing is a deliberate case fix.
+    assert_eq!(
+        validate_vocabulary(&[entry("GitHub", &["github", "git hub"])]),
+        Ok(())
+    );
+}
+
+#[test]
 fn literal_options_never_include_automatic_corrections() {
     let settings = Settings {
         dictation_mode: DictationMode::Literal,

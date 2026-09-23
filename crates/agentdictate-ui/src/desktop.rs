@@ -29,6 +29,8 @@ mod settings_shell;
 mod shell_chrome;
 mod shell_render;
 pub(crate) mod single_line;
+mod words_actions;
+mod words_page;
 mod workspace_actions;
 
 use settings_shell::{RouteUiState, SettingsCommandState, SettingsEditState, WorkspaceActionState};

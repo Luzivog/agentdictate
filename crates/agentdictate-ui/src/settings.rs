@@ -33,12 +33,6 @@ macro_rules! settings_fields {
                 },
             }
             text_area {
-                vocabulary: String {
-                    from: vocabulary_display,
-                    apply: validate_field(parsed_vocabulary),
-                    placeholder: "Leadlord = lead lord\nClaude Code",
-                    rows: 3..=8,
-                },
                 project_context: String {
                     from: cloned,
                     apply: value(trimmed),
@@ -314,14 +308,6 @@ where
         .map_err(|_| SettingsDraftError::InvalidNumber { field })
 }
 
-fn vocabulary_display(value: &[agentdictate_core::VocabularyEntry]) -> String {
-    agentdictate_core::vocabulary_text(value)
-}
-fn parsed_vocabulary(
-    value: &str,
-) -> Result<Vec<agentdictate_core::VocabularyEntry>, SettingsDraftError> {
-    agentdictate_core::parse_vocabulary(value).map_err(SettingsDraftError::InvalidDictation)
-}
 fn parsed_dictation_mode(
     value: &str,
 ) -> Result<agentdictate_core::DictationMode, SettingsDraftError> {

@@ -13,7 +13,8 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, Settings, WorkflowPhase, WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, Settings, VocabularyEntry, WorkflowPhase, WorkflowSnapshot,
+    parse_vocabulary,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, CommandSink, HistoryViewModel, RecoveryItemViewModel, RecoveryStage,
@@ -1198,23 +1199,6 @@ fn shortcut_capture_accepts_a_supported_chord_and_saves_it(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn vocabulary_editor_saves_hints_and_explicit_aliases(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
-    harness.scroll_to("settings-input-vocabulary");
-    harness.type_text(
-        "settings-input-vocabulary-control",
-        "AgentDictate = agent dictate\nCodex",
-    );
-    harness.click("save-settings");
-    let commands = commands.lock().unwrap();
-    assert!(
-        matches!(&commands[0].kind, ClientCommandKind::UpdateSettings { settings, .. }
-        if settings.vocabulary == agentdictate_core::parse_vocabulary("AgentDictate = agent dictate\nCodex").unwrap())
-    );
-}
-
-#[gpui::test]
 fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut TestAppContext) {
     let commands = Arc::new(Mutex::new(Vec::new()));
     let settings = Settings {
@@ -1224,10 +1208,6 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
         project_context:
             "Current project context includes a long description that wraps across the editor."
                 .repeat(3),
-        vocabulary: agentdictate_core::parse_vocabulary(
-            "ExampleProject = example project\nSecondProject\nThirdProject\nFourthProject",
-        )
-        .unwrap(),
         ..Settings::default()
     };
     let model = ShellViewModel::from_snapshot(
@@ -1240,7 +1220,6 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
         Harness::open_connected_with(cx, model, settings, true, Arc::clone(&commands));
     for selector in [
         "settings-input-transcription-prompt-control",
-        "settings-input-vocabulary-control",
         "settings-input-project-context-control",
     ] {
         harness.scroll_to(selector);
@@ -1260,11 +1239,10 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
         .iter()
         .filter(|command| matches!(command.kind, ClientCommandKind::UpdateSettings { .. }))
         .collect();
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 2);
     assert!(
-        matches!(&commands[2].kind, ClientCommandKind::UpdateSettings { settings, .. }
-        if settings.transcription_prompt.contains('Z') && settings.project_context.contains('Z')
-            && agentdictate_core::vocabulary_text(&settings.vocabulary).contains('Z'))
+        matches!(&commands[1].kind, ClientCommandKind::UpdateSettings { settings, .. }
+        if settings.transcription_prompt.contains('Z') && settings.project_context.contains('Z'))
     );
 }
 
@@ -1387,5 +1365,160 @@ fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext
     assert!(matches!(
         &commands[0].kind,
         ClientCommandKind::UpdateSettings { settings, .. } if settings.streaming_enabled
+    ));
+}
+
+/// Opens `route` with `vocabulary` saved and records every daemon command.
+fn open_with_vocabulary(
+    cx: &mut TestAppContext,
+    model: ShellViewModel,
+    vocabulary: &str,
+) -> (Harness, Arc<Mutex<Vec<ClientCommand>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let settings = Settings {
+        vocabulary: parse_vocabulary(vocabulary).unwrap(),
+        ..Settings::default()
+    };
+    let harness = Harness::open_connected_with(cx, model, settings, false, Arc::clone(&commands));
+    (harness, commands)
+}
+
+fn open_words(
+    cx: &mut TestAppContext,
+    vocabulary: &str,
+) -> (Harness, Arc<Mutex<Vec<ClientCommand>>>) {
+    let model = ShellViewModel::from_snapshot(
+        Route::Words,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    );
+    open_with_vocabulary(cx, model, vocabulary)
+}
+
+/// The vocabulary each settings update sent, in order.
+fn saved_vocabularies(commands: &Mutex<Vec<ClientCommand>>) -> Vec<Vec<VocabularyEntry>> {
+    commands
+        .lock()
+        .expect("command lock")
+        .iter()
+        .filter_map(|command| match &command.kind {
+            ClientCommandKind::UpdateSettings { settings, .. } => Some(settings.vocabulary.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn adding_a_word_saves_it_at_once_and_says_saved(cx: &mut TestAppContext) {
+    let (mut harness, commands) = open_words(cx, "");
+    assert!(harness.has("words-empty"));
+
+    harness.type_text("words-new-spelling", "Leadlord");
+    harness.type_text("words-new-sounds-like", "lead lord, lead load");
+    harness.click("words-add");
+
+    assert_eq!(
+        saved_vocabularies(&commands),
+        [parse_vocabulary("Leadlord = lead lord, lead load").unwrap()]
+    );
+    assert!(harness.has("words-saved"));
+    assert!(harness.has("word-row-0"));
+    assert!(!harness.has("words-empty"));
+
+    // The add row was cleared, so adding again asks for a spelling.
+    harness.click("words-add");
+    assert!(harness.has("words-error"));
+    assert_eq!(saved_vocabularies(&commands).len(), 1);
+
+    harness
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(1_600));
+    harness.cx.run_until_parked();
+    assert!(!harness.has("words-saved"));
+}
+
+#[gpui::test]
+fn editing_a_word_saves_its_new_sounds_like(cx: &mut TestAppContext) {
+    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord\nClaude Code");
+
+    harness.click("word-edit-0");
+    harness.click("word-editor-sounds-like");
+    harness.cx.simulate_keystrokes("ctrl-a");
+    harness.cx.simulate_input("lead lord, lead load");
+    harness.cx.run_until_parked();
+    harness.click("word-editor-done");
+
+    assert_eq!(
+        saved_vocabularies(&commands),
+        [parse_vocabulary("Leadlord = lead lord, lead load\nClaude Code").unwrap()]
+    );
+    assert!(!harness.has("word-editor-done"));
+    assert!(harness.has("words-saved"));
+}
+
+#[gpui::test]
+fn deleting_a_word_saves_the_rest(cx: &mut TestAppContext) {
+    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord\nClaude Code");
+
+    harness.click("word-delete-0");
+
+    assert_eq!(
+        saved_vocabularies(&commands),
+        [parse_vocabulary("Claude Code").unwrap()]
+    );
+    assert!(harness.has("word-row-0"));
+    assert!(!harness.has("word-row-1"));
+}
+
+#[gpui::test]
+fn a_duplicate_spelling_is_refused_inline_without_saving(cx: &mut TestAppContext) {
+    let (mut harness, commands) = open_words(cx, "Leadlord = lead lord");
+
+    harness.type_text("words-new-spelling", "leadlord");
+    harness.click("words-add");
+
+    assert!(saved_vocabularies(&commands).is_empty());
+    assert!(harness.has("words-error"));
+    assert!(!harness.has("words-saved"));
+}
+
+/// Words saves at once while Settings keeps its Save button, so neither may
+/// overwrite the other's change.
+#[gpui::test]
+fn a_words_change_leaves_unsaved_settings_for_settings_to_save(cx: &mut TestAppContext) {
+    let model = ShellViewModel::from_snapshot(
+        Route::Settings,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    );
+    let (mut harness, commands) = open_with_vocabulary(cx, model, "");
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
+
+    harness.click(Route::Words.navigation_id());
+    harness.type_text("words-new-spelling", "Codex");
+    harness.click("words-add");
+    harness.click(Route::Settings.navigation_id());
+    harness.click("save-settings");
+
+    let commands = commands.lock().expect("command lock");
+    let [words, settings] = commands.as_slice() else {
+        panic!("expected two settings updates, got {commands:?}");
+    };
+    let codex = parse_vocabulary("Codex").unwrap();
+    assert!(matches!(
+        &words.kind,
+        ClientCommandKind::UpdateSettings { settings, .. }
+            if settings.vocabulary == codex
+                && settings.streaming_enabled == Settings::default().streaming_enabled
+    ));
+    assert!(matches!(
+        &settings.kind,
+        ClientCommandKind::UpdateSettings { settings, .. }
+            if settings.vocabulary == codex
+                && settings.streaming_enabled != Settings::default().streaming_enabled
     ));
 }

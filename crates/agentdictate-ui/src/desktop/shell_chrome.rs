@@ -85,6 +85,7 @@ fn route_accent(route: Route, theme: ThemeTokens) -> Color {
     match route {
         Route::Overview => theme.accent,
         Route::History => theme.info,
+        Route::Words => theme.success,
         Route::Settings => theme.highlight,
     }
 }

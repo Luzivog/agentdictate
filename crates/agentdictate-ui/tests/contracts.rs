@@ -8,5 +8,7 @@ mod settings_draft_contract;
 mod usage_view_model_contract;
 #[path = "contracts/view_model_contract.rs"]
 mod view_model_contract;
+#[path = "contracts/words_view_model_contract.rs"]
+mod words_view_model_contract;
 #[path = "contracts/workspace_view_model_contract.rs"]
 mod workspace_view_model_contract;

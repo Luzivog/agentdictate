@@ -317,7 +317,7 @@ fn dictation_section(editor: &SettingsFormState, theme: ThemeTokens) -> gpui::Di
     ))
     .child(prompt_row(
         "Context prompt",
-        "Describe what you are talking about; spellings belong in Vocabulary",
+        "Describe what you are talking about; spellings belong in Words",
         "settings-input-transcription-prompt",
         editor.transcription_prompt.clone(),
         false,
@@ -334,7 +334,7 @@ fn output_section(
     settings_section(
         "settings-group-cleanup",
         "Dictation output",
-        "Vocabulary and literal text.",
+        "Literal text, work context and streaming.",
         true,
         theme,
     )
@@ -343,14 +343,6 @@ fn output_section(
         "Literal skips context hints and automatic spelling corrections",
         "settings-input-dictation-mode",
         editor.dictation_mode.clone(),
-        false,
-        theme,
-    ))
-    .child(prompt_row(
-        "Vocabulary",
-        "One spelling per line. Add = spoken alias only for automatic corrections.",
-        "settings-input-vocabulary",
-        editor.vocabulary.clone(),
         false,
         theme,
     ))

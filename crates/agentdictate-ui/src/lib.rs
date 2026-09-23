@@ -15,6 +15,7 @@ mod usage;
 mod view_model;
 #[cfg(feature = "desktop")]
 mod window_frame;
+mod words;
 mod workspace;
 
 #[cfg(feature = "desktop")]
@@ -46,6 +47,7 @@ pub use view_model::{
 };
 #[cfg(feature = "desktop")]
 pub use window_frame::AgentDictateWindowFrame;
+pub use words::{WordRowViewModel, WordsEdit, word_rows};
 pub use workspace::{UiActionError, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel};
 
 #[cfg(feature = "test-support")]

@@ -4,7 +4,7 @@ use gpui::{AppContext, Context};
 
 use crate::{Route, WorkspaceAction, WorkspaceViewModel};
 
-use super::{SettingsShell, row_actions::CONFIRM_DELETE_LABEL};
+use super::{SettingsShell, row_actions::CONFIRM_DELETE_LABEL, settings_shell::Confirmed};
 
 impl SettingsShell {
     /// Atomically replaces the workspace projection received from the daemon.
@@ -59,7 +59,7 @@ impl SettingsShell {
                                 None => shell.clear_route_feedback_for(feedback_route),
                             }
                             if let Some(id) = copied_transcript {
-                                shell.show_copied(id, cx);
+                                shell.confirm(Confirmed::Copied(id), cx);
                             }
                         }
                         Err(error) => {

@@ -45,43 +45,101 @@ pub struct VocabularyEntry {
     pub aliases: Vec<String>,
 }
 
-pub fn parse_vocabulary(text: &str) -> Result<Vec<VocabularyEntry>, String> {
-    let mut entries = Vec::new();
+/// The most entries a vocabulary may hold.
+const MAX_VOCABULARY_ENTRIES: usize = 100;
+
+/// The longest spelling or alias, in bytes.
+const MAX_VOCABULARY_TERM_BYTES: usize = 128;
+
+/// Why a vocabulary was refused. The Words screen shows these messages next
+/// to the word being edited.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum VocabularyError {
+    #[error("Type a spelling")]
+    BlankSpelling,
+    #[error("“{0}” is too long or uses <, > or =")]
+    InvalidSpelling(String),
+    #[error("“{0}” is already in your words")]
+    DuplicateSpelling(String),
+    #[error("“{0}” is too long or uses <, >, = or a comma")]
+    InvalidAlias(String),
+    #[error("“{0}” is already listed under Sounds like")]
+    DuplicateAlias(String),
+    #[error("Sounds like can't be the spelling itself")]
+    AliasIsSpelling,
+    #[error("You can keep up to 100 words")]
+    TooManyEntries,
+}
+
+/// Checks the rules every vocabulary obeys, which also keep it expressible in
+/// the `Spelling = alias, alias` text form. Spellings are unique and each
+/// alias belongs to one spelling, both ignoring case. An alias may not repeat
+/// its own spelling exactly; a different casing is allowed and fixes case.
+pub fn validate_vocabulary(entries: &[VocabularyEntry]) -> Result<(), VocabularyError> {
     let mut spellings = BTreeSet::new();
     let mut aliases = BTreeSet::new();
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let (spelling, forms) = line.split_once('=').unwrap_or((line, ""));
-        let spelling = spelling.trim();
-        if spelling.is_empty()
-            || spelling.chars().any(|c| c.is_control() || "<>".contains(c))
-            || spelling.len() > 128
-        {
-            return Err("Each vocabulary spelling must be 1–128 bytes without control characters or angle brackets".into());
+    for VocabularyEntry {
+        spelling,
+        aliases: entry_aliases,
+    } in entries
+    {
+        if spelling.trim().is_empty() {
+            return Err(VocabularyError::BlankSpelling);
+        }
+        if !is_valid_term(spelling, "<>=") {
+            return Err(VocabularyError::InvalidSpelling(spelling.clone()));
         }
         if !spellings.insert(spelling.to_lowercase()) {
-            return Err(format!("Duplicate vocabulary spelling: {spelling}"));
+            return Err(VocabularyError::DuplicateSpelling(spelling.clone()));
         }
-        let mut entry = VocabularyEntry {
-            spelling: spelling.into(),
-            aliases: Vec::new(),
-        };
-        for alias in forms.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            if alias.len() > 128
-                || alias.chars().any(|c| c.is_control() || "<>=".contains(c))
-                || !aliases.insert(alias.to_lowercase())
-            {
-                return Err("Aliases must be unique and at most 128 bytes".into());
+        for alias in entry_aliases {
+            if !is_valid_term(alias, "<>=,") {
+                return Err(VocabularyError::InvalidAlias(alias.clone()));
             }
-            entry.aliases.push(alias.into());
+            if alias == spelling {
+                return Err(VocabularyError::AliasIsSpelling);
+            }
+            if !aliases.insert(alias.to_lowercase()) {
+                return Err(VocabularyError::DuplicateAlias(alias.clone()));
+            }
         }
-        entries.push(entry);
     }
-    if entries.len() > 100 {
-        return Err("Use at most 100 relevant vocabulary entries".into());
+    if entries.len() > MAX_VOCABULARY_ENTRIES {
+        return Err(VocabularyError::TooManyEntries);
     }
+    Ok(())
+}
+
+fn is_valid_term(term: &str, reserved: &str) -> bool {
+    term.len() <= MAX_VOCABULARY_TERM_BYTES
+        && !term.chars().any(|c| c.is_control() || reserved.contains(c))
+}
+
+/// Parses the text form: one `Spelling = alias, alias` entry per line, with
+/// the `= …` part optional.
+pub fn parse_vocabulary(text: &str) -> Result<Vec<VocabularyEntry>, VocabularyError> {
+    let entries: Vec<VocabularyEntry> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (spelling, forms) = line.split_once('=').unwrap_or((line, ""));
+            VocabularyEntry {
+                spelling: spelling.trim().to_owned(),
+                aliases: forms
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|alias| !alias.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            }
+        })
+        .collect();
+    validate_vocabulary(&entries)?;
     Ok(entries)
 }
 
+/// Formats entries in the text form `parse_vocabulary` reads.
 pub fn vocabulary_text(entries: &[VocabularyEntry]) -> String {
     entries
         .iter()

@@ -3,7 +3,7 @@ use gpui_component::{scroll::Scrollbar, v_flex};
 
 use crate::{
     HistoryViewModel, NavigationItemViewModel, Route, ThemeTokens, TranscriptViewModel,
-    UsageViewModel,
+    UsageViewModel, word_rows,
 };
 
 use super::{
@@ -11,8 +11,9 @@ use super::{
     history_page::{self, HistoryPageModel},
     overview,
     settings_page::{self, SettingsPageModel},
-    settings_shell::route_index,
+    settings_shell::{Confirmed, route_index},
     shell_chrome::{shell_title_bar, sidebar_view},
+    words_page::{self, WordsPageModel},
 };
 
 #[derive(Clone, Copy)]
@@ -37,6 +38,7 @@ enum RoutePageModel {
         copied_transcript: Option<i64>,
     },
     History(HistoryPageModel),
+    Words(WordsPageModel),
     Settings(Box<SettingsPageModel>),
 }
 
@@ -59,6 +61,20 @@ impl RoutePageModel {
                 expanded_transcripts: shell.routes.expanded_transcripts.clone(),
                 copied_transcript: shell.copied_transcript(),
             }),
+            Route::Words => {
+                let words = &shell.routes.words;
+                let vocabulary = &shell.settings.baseline.vocabulary;
+                Self::Words(WordsPageModel {
+                    rows: word_rows(vocabulary, &words.filter.read(cx).value()),
+                    has_words: !vocabulary.is_empty(),
+                    filter: words.filter.clone(),
+                    new_spelling: words.new_spelling.clone(),
+                    new_sounds_like: words.new_sounds_like.clone(),
+                    editor: words.editor.as_ref().map(|editor| editor.form.clone()),
+                    error: words.error.clone(),
+                    saved: shell.confirmed() == Some(Confirmed::WordsSaved),
+                })
+            }
             Route::Settings => Self::Settings(Box::new(SettingsPageModel {
                 draft: shell.settings.form.snapshot(cx),
                 settings_dirty: shell.settings.dirty,
@@ -78,13 +94,14 @@ impl RoutePageModel {
         match self {
             Self::Overview { .. } => Route::Overview,
             Self::History(_) => Route::History,
+            Self::Words(_) => Route::Words,
             Self::Settings(_) => Route::Settings,
         }
     }
 
     fn embeds_feedback(&self) -> bool {
         match self {
-            Self::Settings(_) | Self::History(_) => true,
+            Self::Settings(_) | Self::History(_) | Self::Words(_) => true,
             Self::Overview { .. } => false,
         }
     }
@@ -107,6 +124,7 @@ impl RoutePageModel {
                 cx,
             ),
             Self::History(history) => history_page::surface(history, theme, cx),
+            Self::Words(words) => words_page::surface(words, theme, cx),
             Self::Settings(settings) => settings_page::surface(*settings, theme, cx),
         }
     }

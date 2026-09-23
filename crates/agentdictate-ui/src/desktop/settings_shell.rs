@@ -7,7 +7,7 @@ use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceAction
 
 use super::{
     CommandSink, SettingsShell, history_action_lane::HistoryActionLane,
-    settings_form::SettingsFormState,
+    settings_form::SettingsFormState, words_actions::WordsUiState,
 };
 
 pub(super) struct SettingsEditState {
@@ -46,16 +46,26 @@ pub(super) struct RouteUiState {
     pub(super) overview_recent_expanded: bool,
     /// History rows showing their whole transcript.
     pub(super) expanded_transcripts: HashSet<i64>,
-    pub(super) copied_transcript: Option<CopiedTranscript>,
+    pub(super) words: WordsUiState,
+    pub(super) confirmation: Option<Confirmation>,
 }
 
-/// How long a Copy button reads "Copied ✓" after its copy succeeds.
-pub(super) const COPIED_FEEDBACK: Duration = Duration::from_millis(1_500);
+/// How long a "✓" confirmation shows after its action succeeds.
+pub(super) const CONFIRMATION_DURATION: Duration = Duration::from_millis(1_500);
 
-/// The transcript whose Copy button reads "Copied ✓", with the timer that
-/// resets it. Replacing it drops, and so cancels, the previous timer.
-pub(super) struct CopiedTranscript {
-    pub(super) id: i64,
+/// What a short "✓" confirmation is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Confirmed {
+    /// Transcript `id` was copied: its Copy buttons read "Copied ✓".
+    Copied(i64),
+    /// The Words screen saved a change and shows "Saved ✓".
+    WordsSaved,
+}
+
+/// The confirmation on screen, with the timer that clears it. Replacing it
+/// drops, and so cancels, the previous timer.
+pub(super) struct Confirmation {
+    subject: Confirmed,
     _reset: Task<()>,
 }
 
@@ -73,7 +83,8 @@ pub(super) const fn route_index(route: Route) -> usize {
     match route {
         Route::Overview => 0,
         Route::History => 1,
-        Route::Settings => 2,
+        Route::Words => 2,
+        Route::Settings => 3,
     }
 }
 
@@ -117,13 +128,17 @@ impl SettingsShell {
             },
         ));
 
+        let (words, words_subscriptions) = WordsUiState::new(window, cx);
+        subscriptions.extend(words_subscriptions);
+
         let routes = RouteUiState {
             entries: std::array::from_fn(|_| RouteUiEntry::default()),
             history_search_input,
             pending_destructive_action: None,
             overview_recent_expanded: false,
             expanded_transcripts: HashSet::new(),
-            copied_transcript: None,
+            words,
+            confirmation: None,
         };
 
         Self {
@@ -170,30 +185,42 @@ impl SettingsShell {
         cx.notify();
     }
 
-    /// Shows "Copied ✓" on transcript `id`'s Copy buttons for
-    /// [`COPIED_FEEDBACK`].
-    pub(super) fn show_copied(&mut self, id: i64, cx: &mut Context<Self>) {
+    /// Shows the confirmation for `subject` for [`CONFIRMATION_DURATION`].
+    pub(super) fn confirm(&mut self, subject: Confirmed, cx: &mut Context<Self>) {
         let reset = cx.spawn(async move |shell, cx| {
-            cx.background_executor().timer(COPIED_FEEDBACK).await;
+            cx.background_executor().timer(CONFIRMATION_DURATION).await;
             let _ = shell.update(cx, |shell, cx| {
-                shell.routes.copied_transcript = None;
+                shell.routes.confirmation = None;
                 cx.notify();
             });
         });
-        self.routes.copied_transcript = Some(CopiedTranscript { id, _reset: reset });
+        self.routes.confirmation = Some(Confirmation {
+            subject,
+            _reset: reset,
+        });
     }
 
-    pub(super) fn copied_transcript(&self) -> Option<i64> {
+    /// What the confirmation on screen is about, if one is showing.
+    pub(super) fn confirmed(&self) -> Option<Confirmed> {
         self.routes
-            .copied_transcript
+            .confirmation
             .as_ref()
-            .map(|copied| copied.id)
+            .map(|confirmation| confirmation.subject)
+    }
+
+    /// The transcript whose Copy buttons read "Copied ✓", if any.
+    pub(super) fn copied_transcript(&self) -> Option<i64> {
+        match self.confirmed()? {
+            Confirmed::Copied(id) => Some(id),
+            Confirmed::WordsSaved => None,
+        }
     }
 
     pub(super) fn select_route(&mut self, route: Route, cx: &mut Context<Self>) {
         let previous_route = self.model.active_route;
         self.model.select_route(route);
         self.routes.pending_destructive_action = None;
+        self.routes.words.reset();
         self.clear_route_feedback_for(previous_route);
         self.settings_commands.api_key_feedback = None;
         cx.notify();

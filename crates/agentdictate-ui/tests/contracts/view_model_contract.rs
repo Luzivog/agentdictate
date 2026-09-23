@@ -17,7 +17,12 @@ fn shell_view_model_derives_navigation_and_recording_status_from_domain_state() 
     assert_eq!(model.active_route, Route::History);
     assert_eq!(
         model.navigation.map(|item| item.route),
-        [Route::Overview, Route::History, Route::Settings]
+        [
+            Route::Overview,
+            Route::History,
+            Route::Words,
+            Route::Settings
+        ]
     );
     assert_eq!(
         model

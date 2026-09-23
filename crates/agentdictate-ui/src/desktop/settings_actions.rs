@@ -1,6 +1,6 @@
 use gpui::{Context, Window};
 
-use crate::SettingsDraft;
+use crate::{SettingsDraft, UiActionError};
 
 use super::SettingsShell;
 
@@ -59,24 +59,31 @@ impl SettingsShell {
         self.settings.form.snapshot(cx)
     }
 
+    /// Sends the whole of `settings` to the daemon, which validates, saves and
+    /// applies them.
+    pub(super) fn send_settings(
+        &mut self,
+        settings: &agentdictate_core::Settings,
+    ) -> Result<(), UiActionError> {
+        let request_id = self.settings_commands.next_request_id;
+        self.settings_commands.next_request_id += 1;
+        (self.settings_commands.command_sink)(agentdictate_core::ClientCommand::update_settings(
+            request_id, settings,
+        ))
+    }
+
     pub(super) fn save_settings_editor(&mut self, cx: &mut Context<Self>) {
         let draft = self.settings.form.snapshot(cx);
         match draft.apply_to(&self.settings.baseline) {
-            Ok(settings) => {
-                let request_id = self.settings_commands.next_request_id;
-                self.settings_commands.next_request_id += 1;
-                match (self.settings_commands.command_sink)(
-                    agentdictate_core::ClientCommand::update_settings(request_id, &settings),
-                ) {
-                    Ok(()) => {
-                        self.accept_saved_settings(settings);
-                        self.set_route_feedback("Saved");
-                    }
-                    Err(error) => {
-                        self.set_route_feedback(format!("Could not save: {error}"));
-                    }
+            Ok(settings) => match self.send_settings(&settings) {
+                Ok(()) => {
+                    self.accept_saved_settings(settings);
+                    self.set_route_feedback("Saved");
                 }
-            }
+                Err(error) => {
+                    self.set_route_feedback(format!("Could not save: {error}"));
+                }
+            },
             Err(error) => self.set_route_feedback(error.to_string()),
         }
     }
