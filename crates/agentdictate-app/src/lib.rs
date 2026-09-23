@@ -19,7 +19,9 @@ mod tray;
 mod window_instance;
 mod workspace;
 
-pub use daemon::{CapturedRecording, Daemon, DaemonDeliverer, DaemonError, RecordingController};
+pub use daemon::{
+    CapturedRecording, Daemon, DaemonDeliverer, DaemonError, RecorderEvent, RecordingController,
+};
 pub use diagnostics::init_file_logging;
 pub use handle::{DaemonHandle, EXIT_LOCK_POISONED};
 pub use hotkey_dispatch::{

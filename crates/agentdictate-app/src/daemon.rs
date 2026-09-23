@@ -42,6 +42,29 @@ pub trait RecordingController: Recorder {
     fn update_settings(&mut self, _settings: &Settings) {}
 }
 
+/// What the recorder reports about the active recording, at most once per
+/// recording. The daemon stops the recording, or preserves it for Recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderEvent {
+    /// The recorder process exited without being asked to.
+    Exited { job_id: JobId },
+    /// The microphone stopped delivering audio.
+    Stalled { job_id: JobId },
+    /// The recording reached the "Maximum recording length" setting.
+    MaxDurationReached { job_id: JobId },
+}
+
+impl RecorderEvent {
+    #[must_use]
+    pub const fn job_id(self) -> JobId {
+        match self {
+            Self::Exited { job_id }
+            | Self::Stalled { job_id }
+            | Self::MaxDurationReached { job_id } => job_id,
+        }
+    }
+}
+
 /// The daemon's delivery adapter: the runtime's paste-or-copy step, plus
 /// copying a History entry and following the paste-shortcut setting.
 pub trait DaemonDeliverer: Deliverer {
@@ -620,19 +643,35 @@ where
         }
     }
 
-    /// Handles a kernel-observed recorder exit. A stale notification from a
-    /// normal stop is ignored; an active unexpected exit preserves whatever
-    /// audio was finalized for explicit recovery instead of guessing that the
-    /// dictation was complete.
-    pub fn recorder_exited(&mut self, id: JobId) -> Result<Option<RecordingJob>, DaemonError> {
-        if self.recording_job().ok() != Some(id) {
+    /// Acts on the recorder's report about the active recording; a report
+    /// about any other job is stale and ignored. A recording that reached its
+    /// maximum length is stopped, and its ticket returned. One whose recorder
+    /// exited or stalled is preserved for Recovery and not transcribed: it
+    /// may end mid-sentence.
+    pub fn recorder_event(
+        &mut self,
+        event: RecorderEvent,
+    ) -> Result<Option<ProcessingTicket<T>>, DaemonError> {
+        if self.recording_job().ok() != Some(event.job_id()) {
+            tracing::debug!(?event, "ignoring an event about a finished recording");
             return Ok(None);
         }
-        tracing::warn!(job_id = %id, "recorder exited without an explicit stop");
-        self.preserve_active_recording(
-            "recorder exited unexpectedly before the dictation completed; audio was preserved",
-        )
-        .map(Some)
+        match event {
+            RecorderEvent::MaxDurationReached { job_id } => {
+                tracing::info!(%job_id, "maximum recording length reached; stopping");
+                self.stop_recording().map(Some)
+            }
+            RecorderEvent::Exited { .. } => self
+                .preserve_active_recording(
+                    "recorder exited unexpectedly before the dictation completed; audio was preserved",
+                )
+                .map(|_| None),
+            RecorderEvent::Stalled { .. } => self
+                .preserve_active_recording(
+                    "the microphone stopped sending audio, so the recording was stopped; audio was preserved",
+                )
+                .map(|_| None),
+        }
     }
 
     /// Finalizes active audio without transcribing or deleting it, so process

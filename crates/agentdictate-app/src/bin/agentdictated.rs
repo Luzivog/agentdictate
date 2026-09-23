@@ -40,7 +40,7 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!("native daemon starting");
     let runtime = paths.runtime.clone();
     let server = IpcServer::bind(&paths.runtime)?;
-    let mut process = AgentProcess::open(paths)?;
+    let (mut process, recorder_events) = AgentProcess::open(paths)?;
     // The GPUI overlay runs in the sibling desktop binary, so the daemon never
     // links GPUI. Never use `$APPIMAGE` here: it would remount per dictation.
     let overlay_presenter = match std::env::current_exe()
@@ -70,6 +70,7 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     };
     let show_tray_icon = process.show_tray_icon();
     let handle = DaemonHandle::new(process, runtime.clone());
+    handle.forward_recorder_events(recorder_events)?;
     let shutdown_failed = Arc::new(AtomicBool::new(false));
     // Serves IPC until a graceful Quit. It ends with an error when the daemon
     // can no longer work, so the process exits non-zero and systemd's

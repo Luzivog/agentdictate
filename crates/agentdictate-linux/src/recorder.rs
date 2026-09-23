@@ -238,35 +238,6 @@ pub struct Recording {
     data_start: u64,
 }
 
-/// An independent kernel handle that becomes readable when the recorder exits.
-///
-/// Waiting on this handle never reaps or consumes the child process; `Recording`
-/// remains the sole owner responsible for stop/finalization and exit status.
-#[derive(Debug)]
-pub struct RecordingExitObserver {
-    process_id: u32,
-    pidfd: OwnedFd,
-}
-
-impl RecordingExitObserver {
-    pub const fn process_id(&self) -> u32 {
-        self.process_id
-    }
-
-    pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self {
-            process_id: self.process_id,
-            pidfd: self.pidfd.try_clone()?,
-        })
-    }
-
-    /// Blocks on the pidfd until the kernel reports process exit. No process is
-    /// reaped here, and no polling interval or correctness delay is involved.
-    pub fn wait(&self) -> io::Result<()> {
-        wait_for_pidfd(self.pidfd.as_fd(), None).map(drop)
-    }
-}
-
 /// Blocks until the process behind `pidfd` exits, for at most `timeout`
 /// (forever when `None`). Returns whether it exited. Never reaps it.
 fn wait_for_pidfd(pidfd: BorrowedFd<'_>, timeout: Option<Duration>) -> io::Result<bool> {
@@ -319,29 +290,9 @@ fn wait_until_exit(child: &mut Child, exit: BorrowedFd<'_>, deadline: Instant) -
     }
 }
 
-impl AsFd for RecordingExitObserver {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.pidfd.as_fd()
-    }
-}
-
-impl AsRawFd for RecordingExitObserver {
-    fn as_raw_fd(&self) -> i32 {
-        self.pidfd.as_raw_fd()
-    }
-}
-
 impl Recording {
-    pub fn exit_observer(&self) -> Result<RecordingExitObserver, RecorderError> {
-        let process_id = self.child.id();
-        // The child remains owned by `Recording`; the pidfd only observes it.
-        let pidfd = self
-            .exit
-            .try_clone()
-            .map_err(|source| RecorderError::ObserveExit { process_id, source })?;
-        Ok(RecordingExitObserver { process_id, pidfd })
-    }
-
+    /// Whether the recorder still runs, and how large its file is. An exited
+    /// recorder is reaped here; `stop` still finalizes it afterwards.
     pub fn status(&mut self) -> Result<RecordingStatus, RecorderError> {
         if let Some(status) = self
             .child

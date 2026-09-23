@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -12,9 +13,9 @@ use agentdictate_runtime::{
 };
 
 use crate::{
-    AppPaths, Daemon, DaemonDeliverer, OverlayController, ProcessingTicket, RecordingController,
-    ReqwestOpenAiTransport, SystemDeliverer, SystemRecordingController, Transcriber,
-    TranscriptionPipeline, startup::LoginStartup,
+    AppPaths, Daemon, DaemonDeliverer, OverlayController, ProcessingTicket, RecorderEvent,
+    RecordingController, ReqwestOpenAiTransport, SystemDeliverer, SystemRecordingController,
+    Transcriber, TranscriptionPipeline, startup::LoginStartup,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
@@ -74,7 +75,9 @@ pub(crate) enum Followup<T> {
 }
 
 impl AgentProcess {
-    pub fn open(paths: AppPaths) -> anyhow::Result<Self> {
+    /// Opens the production daemon, and the channel its recorder reports
+    /// recording events on.
+    pub fn open(paths: AppPaths) -> anyhow::Result<(Self, Receiver<RecorderEvent>)> {
         paths.ensure_directories()?;
         let mut settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
@@ -84,11 +87,8 @@ impl AgentProcess {
             settings.clone(),
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
         );
-        let recorder = SystemRecordingController::for_system(
-            &settings,
-            &paths.runtime,
-            &paths.ducking_state_file,
-        );
+        let (recorder, recorder_events) =
+            SystemRecordingController::for_system(&settings, &paths.ducking_state_file);
         let deliverer = SystemDeliverer::for_environment(settings.paste_shortcut);
         let daemon = Daemon::new(
             runtime,
@@ -98,7 +98,7 @@ impl AgentProcess {
             transcriber,
             deliverer,
         );
-        Ok(Self::from_parts(daemon, &paths))
+        Ok((Self::from_parts(daemon, &paths), recorder_events))
     }
 }
 
@@ -217,7 +217,7 @@ where
                 .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
             ClientCommandKind::RecorderExited { job_id, .. } => daemon
-                .recorder_exited(job_id)
+                .recorder_event(RecorderEvent::Exited { job_id })
                 .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
             ClientCommandKind::RetryTranscription { job_id, .. } => daemon
@@ -609,7 +609,7 @@ mod tests {
     fn shortcut_capture_replies_outside_the_daemon_lock_and_cancel_reaches_the_listener() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let process = AgentProcess::open(paths.clone()).unwrap();
+        let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
         let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
         assert!(matches!(
             handle.handle(ClientCommand::capture_hotkey(2)).kind,
@@ -655,7 +655,7 @@ mod tests {
     fn rejected_hotkey_change_keeps_config_process_and_listener_on_the_old_shortcut() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap().0;
         let control = Arc::new(RejectingHotkeyControl::default());
         process.set_hotkey_control(control.clone());
         let changed = SettingChange::Hotkey("F9".parse().unwrap());
@@ -674,7 +674,7 @@ mod tests {
     fn failed_settings_persist_rolls_the_native_listener_back_to_the_old_shortcut() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let mut process = AgentProcess::open(paths).unwrap();
+        let mut process = AgentProcess::open(paths).unwrap().0;
         let control = Arc::new(RecordingHotkeyControl::new());
         process.set_hotkey_control(control.clone());
         process.config_file = directory.path().join("not-a-file");
@@ -694,7 +694,7 @@ mod tests {
     fn invalid_settings_are_rejected_without_being_saved() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap().0;
         let error = process
             .change_setting(SettingChange::AudioDuckingVolumePercent(150))
             .unwrap_err();
@@ -724,7 +724,7 @@ mod tests {
             ..Settings::default()
         };
         save_settings(&paths.config_file, &saved).unwrap();
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap().0;
 
         process
             .change_setting(SettingChange::KeepTranscripts(KeepTranscripts::Never))
@@ -743,7 +743,7 @@ mod tests {
     fn shortcut_is_persisted_only_after_the_live_listener_accepts_it() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap().0;
         let control = Arc::new(PersistenceOrderingControl {
             config_file: paths.config_file.clone(),
             observed_hotkey: Mutex::new(None),
@@ -781,7 +781,7 @@ mod tests {
         std::fs::create_dir_all(paths.legacy_autostart_file.parent().unwrap()).unwrap();
         std::fs::write(&paths.legacy_autostart_file, "[Desktop Entry]\n").unwrap();
 
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
+        let mut process = AgentProcess::open(paths.clone()).unwrap().0;
         process.login_startup.systemctl = PathBuf::from("/bin/true");
         assert!(!unit_file.exists());
 
@@ -806,7 +806,7 @@ mod tests {
     fn startup_maintenance_leaves_a_recording_that_started_before_it_alone() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let process = AgentProcess::open(paths.clone()).unwrap();
+        let process = AgentProcess::open(paths.clone()).unwrap().0;
         // A hotkey press lands between the listener going live and maintenance.
         let recording = Runtime::open_background_writer(&paths.database_file)
             .unwrap()

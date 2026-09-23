@@ -14,7 +14,9 @@
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use agentdictate_core::{ClientCommand, ClientCommandKind, ServerMessage};
@@ -24,7 +26,7 @@ use crate::daemon::copied;
 use crate::process::{Followup, HOTKEY_CAPTURE_TIMEOUT, Reply, request_id};
 use crate::{
     AgentProcess, DaemonDeliverer, DaemonError, ProcessingTicket, ProductionTranscriber,
-    RecordingController, SystemDeliverer, SystemRecordingController, Transcriber,
+    RecorderEvent, RecordingController, SystemDeliverer, SystemRecordingController, Transcriber,
     TranscriptionCompletion,
 };
 
@@ -124,6 +126,31 @@ where
             .process
             .lock()
             .unwrap_or_else(|_| exit_poisoned())
+    }
+
+    /// Applies the recorder's events as they arrive, on their own thread: the
+    /// recorder owner must never wait for the process lock.
+    pub fn forward_recorder_events(
+        &self,
+        events: Receiver<RecorderEvent>,
+    ) -> std::io::Result<JoinHandle<()>> {
+        let handle = self.clone();
+        std::thread::Builder::new()
+            .name("agentdictate-recorder-events".into())
+            .spawn(move || {
+                for event in events {
+                    handle.recorder_event(event);
+                }
+            })
+    }
+
+    pub fn recorder_event(&self, event: RecorderEvent) {
+        let handled = self.lock().daemon_mut().recorder_event(event);
+        match handled {
+            Ok(Some(ticket)) => self.spawn_processing(ticket),
+            Ok(None) => {}
+            Err(error) => tracing::error!(?event, %error, "could not act on the recorder event"),
+        }
     }
 
     /// Transcribes on a new thread and delivers the result when it arrives.

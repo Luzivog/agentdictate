@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{ClientCommand, JobId, PasteShortcut, ServerMessageKind, Settings};
+use agentdictate_core::{JobId, PasteShortcut, Settings};
 use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
     clipboard::{ClipboardError, ClipboardSelection, SelectionOwner},
@@ -15,14 +14,13 @@ use agentdictate_linux::{
         DeliveryAction, DeliveryFailure, DeliveryObservation, PasteDelivery, ShortcutMode,
         X11FocusObservation, resolve_focus_target,
     },
-    recorder::{PwRecordRecorder, Recording, RecordingExitObserver},
+    recorder::{PwRecordRecorder, Recording, RecordingStatus},
 };
-use agentdictate_runtime::IpcClient;
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob,
 };
 
-use crate::{CapturedRecording, DaemonDeliverer, RecordingController};
+use crate::{CapturedRecording, DaemonDeliverer, RecorderEvent, RecordingController};
 
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,23 +29,79 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// text and still count as having taken the paste. The chord itself takes
 /// 50–75 ms of this.
 const PASTE_REQUEST_WINDOW: Duration = Duration::from_millis(150);
-static RECORDER_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1_000_000);
+/// How often the recorder owner checks the active recording.
+const SUPERVISION_TICK: Duration = Duration::from_millis(500);
+/// A microphone that delivers no audio this long has stalled. Bluetooth
+/// headsets pause for 1–2 s when they switch profiles.
+const STALL_AFTER: Duration = Duration::from_secs(3);
 
+/// What the recorder owner watches for while a recording runs.
+#[derive(Clone, Copy, Debug)]
+struct RecorderLimits {
+    /// From the "Maximum recording length" setting; `None` when it is off.
+    max_duration: Option<Duration>,
+    stall_after: Duration,
+    tick: Duration,
+}
+
+/// The recording the owner thread supervises. At most one event is
+/// reported for it; the daemon answers by stopping or preserving it.
 struct ActiveRecording {
     job_id: JobId,
     started_at: Instant,
     recording: Recording,
+    limits: RecorderLimits,
+    /// The file size when it last grew, and when.
+    last_growth: (u64, Instant),
+    reported: bool,
+}
+
+impl ActiveRecording {
+    fn supervise(&mut self, events: &Sender<RecorderEvent>) {
+        if self.reported {
+            return;
+        }
+        let job_id = self.job_id;
+        let event = match self.recording.status() {
+            Ok(RecordingStatus::Exited { status }) => {
+                tracing::warn!(%job_id, %status, "recorder exited without being stopped");
+                Some(RecorderEvent::Exited { job_id })
+            }
+            Ok(RecordingStatus::Capturing { bytes }) if bytes > self.last_growth.0 => {
+                self.last_growth = (bytes, Instant::now());
+                None
+            }
+            Ok(RecordingStatus::Capturing { .. })
+                if self.last_growth.1.elapsed() >= self.limits.stall_after =>
+            {
+                tracing::warn!(%job_id, "the microphone stopped delivering audio");
+                Some(RecorderEvent::Stalled { job_id })
+            }
+            Ok(RecordingStatus::Capturing { .. }) => None,
+            Err(error) => {
+                tracing::warn!(%job_id, %error, "recorder status unavailable");
+                None
+            }
+        }
+        .or_else(|| {
+            self.limits
+                .max_duration
+                .filter(|max_duration| self.started_at.elapsed() >= *max_duration)
+                .map(|_| RecorderEvent::MaxDurationReached { job_id })
+        });
+        if let Some(event) = event {
+            self.reported = true;
+            let _ = events.send(event);
+        }
+    }
 }
 
 pub struct SystemRecordingController {
     recorder: RecorderOwner,
     ducker: PlaybackDucker,
     settings: Settings,
-    runtime_directory: PathBuf,
-}
-
-struct RecorderStartResult {
-    observer: Option<RecordingExitObserver>,
+    stall_after: Duration,
+    tick: Duration,
 }
 
 enum RecorderOwnerCommand {
@@ -55,7 +109,8 @@ enum RecorderOwnerCommand {
         job_id: JobId,
         audio_path: PathBuf,
         deadline: Instant,
-        reply: SyncSender<Result<RecorderStartResult, String>>,
+        limits: RecorderLimits,
+        reply: SyncSender<Result<(), String>>,
     },
     Finish {
         job_id: JobId,
@@ -68,17 +123,20 @@ enum RecorderOwnerCommand {
 /// Owns every `pw-record` child from one daemon-lifetime thread. Linux ties
 /// `PR_SET_PDEATHSIG` to the thread that forks, so spawning from per-client IPC
 /// threads would make a successful request kill its own recorder on return.
+/// The thread also supervises the active recording and reports its exit,
+/// stall, or maximum length as a `RecorderEvent`. It never waits for the
+/// daemon: the daemon holds its lock while it waits for this thread.
 struct RecorderOwner {
     commands: SyncSender<RecorderOwnerCommand>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl RecorderOwner {
-    fn start(recorder: PwRecordRecorder) -> Self {
+    fn start(recorder: PwRecordRecorder, events: Sender<RecorderEvent>) -> Self {
         let (commands, receiver) = sync_channel(0);
         let worker = std::thread::Builder::new()
             .name("agentdictate-recorder-owner".into())
-            .spawn(move || recorder_owner_loop(recorder, &receiver))
+            .spawn(move || recorder_owner_loop(&recorder, &receiver, &events))
             .expect("recorder owner thread should start");
         Self {
             commands,
@@ -91,13 +149,15 @@ impl RecorderOwner {
         job_id: JobId,
         audio_path: PathBuf,
         deadline: Instant,
-    ) -> Result<RecorderStartResult, ExternalError> {
+        limits: RecorderLimits,
+    ) -> Result<(), ExternalError> {
         let (reply, response) = sync_channel(0);
         self.commands
             .send(RecorderOwnerCommand::Start {
                 job_id,
                 audio_path,
                 deadline,
+                limits,
                 reply,
             })
             .map_err(|_| ExternalError::new("the recorder owner is unavailable"))?;
@@ -132,16 +192,35 @@ impl Drop for RecorderOwner {
     }
 }
 
-fn recorder_owner_loop(recorder: PwRecordRecorder, commands: &Receiver<RecorderOwnerCommand>) {
+fn recorder_owner_loop(
+    recorder: &PwRecordRecorder,
+    commands: &Receiver<RecorderOwnerCommand>,
+    events: &Sender<RecorderEvent>,
+) {
     let mut active: Option<ActiveRecording> = None;
-    while let Ok(command) = commands.recv() {
+    let mut next_check = Instant::now();
+    loop {
+        let command = match &active {
+            None => match commands.recv() {
+                Ok(command) => Some(command),
+                Err(_) => return,
+            },
+            Some(_) => {
+                match commands.recv_timeout(next_check.saturating_duration_since(Instant::now())) {
+                    Ok(command) => Some(command),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+        };
         match command {
-            RecorderOwnerCommand::Start {
+            Some(RecorderOwnerCommand::Start {
                 job_id,
                 audio_path,
                 deadline,
+                limits,
                 reply,
-            } => {
+            }) => {
                 let result = if active.is_some() {
                     Err("a recorder process is already active".to_owned())
                 } else {
@@ -150,28 +229,24 @@ fn recorder_owner_loop(recorder: PwRecordRecorder, commands: &Receiver<RecorderO
                         .start(&audio_path, deadline)
                         .map_err(|error| error.to_string())
                         .map(|recording| {
-                            let observer = match recording.exit_observer() {
-                                Ok(observer) => Some(observer),
-                                Err(error) => {
-                                    tracing::warn!(job_id = %job_id, %error, "recorder exit monitoring unavailable");
-                                    None
-                                }
-                            };
                             active = Some(ActiveRecording {
                                 job_id,
                                 started_at,
                                 recording,
+                                limits,
+                                last_growth: (0, Instant::now()),
+                                reported: false,
                             });
-                            RecorderStartResult { observer }
+                            next_check = Instant::now() + limits.tick;
                         })
                 };
                 let _ = reply.send(result);
             }
-            RecorderOwnerCommand::Finish {
+            Some(RecorderOwnerCommand::Finish {
                 job_id,
                 deadline,
                 reply,
-            } => {
+            }) => {
                 let result = match active.take() {
                     None => Err("the recorder process is not active".to_owned()),
                     Some(recording) if recording.job_id != job_id => {
@@ -192,23 +267,29 @@ fn recorder_owner_loop(recorder: PwRecordRecorder, commands: &Receiver<RecorderO
                 };
                 let _ = reply.send(result);
             }
-            RecorderOwnerCommand::Shutdown => break,
+            Some(RecorderOwnerCommand::Shutdown) => return,
+            None => {}
+        }
+        if let Some(recording) = &mut active
+            && Instant::now() >= next_check
+        {
+            recording.supervise(events);
+            next_check = Instant::now() + recording.limits.tick;
         }
     }
 }
 
 impl SystemRecordingController {
-    /// Creates the daemon's recorder. Opening the ducker restores an output
-    /// volume that a previous daemon left ducked when it died.
+    /// Creates the daemon's recorder and the channel its recording events
+    /// arrive on. Opening the ducker restores an output volume that a
+    /// previous daemon left ducked when it died.
     #[must_use]
     pub fn for_system(
         settings: &Settings,
-        runtime_directory: &Path,
         ducking_state_file: &Path,
-    ) -> Self {
+    ) -> (Self, Receiver<RecorderEvent>) {
         Self::new(
             settings,
-            runtime_directory,
             "pw-record",
             PlaybackDucker::open(SystemPactl::discover(), ducking_state_file),
         )
@@ -216,32 +297,46 @@ impl SystemRecordingController {
 
     fn new(
         settings: &Settings,
-        runtime_directory: &Path,
         recorder_program: impl Into<PathBuf>,
         ducker: PlaybackDucker,
-    ) -> Self {
-        Self {
-            recorder: RecorderOwner::start(PwRecordRecorder::new(
-                SystemCommandRunner,
-                recorder_program,
-            )),
+    ) -> (Self, Receiver<RecorderEvent>) {
+        let (events, receiver) = channel();
+        let controller = Self {
+            recorder: RecorderOwner::start(
+                PwRecordRecorder::new(SystemCommandRunner, recorder_program),
+                events,
+            ),
             ducker,
             settings: settings.clone(),
-            runtime_directory: runtime_directory.to_owned(),
-        }
+            stall_after: STALL_AFTER,
+            tick: SUPERVISION_TICK,
+        };
+        (controller, receiver)
     }
 
     #[cfg(test)]
-    fn for_program(settings: &Settings, runtime_directory: &Path, recorder_program: &Path) -> Self {
+    fn for_program(
+        settings: &Settings,
+        state_directory: &Path,
+        recorder_program: &Path,
+    ) -> (Self, Receiver<RecorderEvent>) {
         Self::new(
             settings,
-            runtime_directory,
             recorder_program,
             PlaybackDucker::open(
                 SystemPactl::discover(),
-                runtime_directory.join("ducking.json"),
+                state_directory.join("ducking.json"),
             ),
         )
+    }
+
+    fn limits(&self) -> RecorderLimits {
+        RecorderLimits {
+            max_duration: (self.settings.max_recording_seconds > 0)
+                .then(|| Duration::from_secs(u64::from(self.settings.max_recording_seconds))),
+            stall_after: self.stall_after,
+            tick: self.tick,
+        }
     }
 }
 
@@ -250,34 +345,16 @@ impl Recorder for SystemRecordingController {
         // Ducking only hands its work to a worker, so the recorder starts at
         // once while the output fades down beside it.
         self.ducker.duck(&self.settings);
-        let started = match self.recorder.begin(
+        let started = self.recorder.begin(
             job.id,
             job.audio_path.clone(),
             Instant::now() + RECORDER_START_TIMEOUT,
-        ) {
-            Ok(started) => started,
-            Err(error) => {
-                self.ducker.restore();
-                return Err(error);
-            }
-        };
-        if let Some(observer) = started.observer {
-            let runtime_directory = self.runtime_directory.clone();
-            let job_id = job.id;
-            if let Err(error) = std::thread::Builder::new()
-                .name("agentdictate-recorder-exit".into())
-                .spawn(move || {
-                    if let Err(error) = observer.wait() {
-                        tracing::error!(job_id = %job_id, %error, "could not observe recorder exit");
-                        return;
-                    }
-                    notify_recorder_exit(&runtime_directory, job_id);
-                })
-            {
-                tracing::warn!(job_id = %job.id, %error, "recorder exit monitoring unavailable");
-            }
+            self.limits(),
+        );
+        if started.is_err() {
+            self.ducker.restore();
         }
-        Ok(())
+        started
     }
 
     fn abort_start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
@@ -289,21 +366,6 @@ impl Recorder for SystemRecordingController {
         // durable Recording checkpoint, even when recorder finalization fails.
         self.ducker.restore();
         result
-    }
-}
-
-fn notify_recorder_exit(runtime_directory: &Path, job_id: JobId) {
-    let result = (|| -> anyhow::Result<()> {
-        let (mut client, _) = IpcClient::connect(runtime_directory)?;
-        let request_id = RECORDER_EVENT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let response = client.send(ClientCommand::recorder_exited(request_id, job_id))?;
-        if let ServerMessageKind::CommandRejected { error, .. } = response.kind {
-            anyhow::bail!(error);
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        tracing::error!(job_id = %job_id, %error, "could not publish recorder exit");
     }
 }
 
@@ -824,28 +886,10 @@ mod tests {
             audio_ducking_enabled: false,
             ..Settings::default()
         };
-        let controller = Arc::new(Mutex::new(SystemRecordingController::for_program(
-            &settings,
-            directory.path(),
-            &recorder,
-        )));
-        let now = Utc::now();
-        let job = RecordingJob {
-            options: None,
-            id: JobId::new(),
-            started_at: now,
-            updated_at: now,
-            stage: JobStage::Starting,
-            audio_path: directory.path().join("recording.wav"),
-            duration_seconds: 0.0,
-            transcription_model: "test".to_owned(),
-            raw_transcript: String::new(),
-            final_text: String::new(),
-            copied_to_clipboard: false,
-            paste_triggered: false,
-            delivery_status: DeliveryStatus::NotAttempted,
-            error_message: None,
-        };
+        let (controller, _events) =
+            SystemRecordingController::for_program(&settings, directory.path(), &recorder);
+        let controller = Arc::new(Mutex::new(controller));
+        let job = starting_job(directory.path());
         let starter = {
             let controller = Arc::clone(&controller);
             let job = job.clone();
@@ -867,5 +911,118 @@ mod tests {
             stopped.exists(),
             "checkpoint-failure compensation still reaches the recorder"
         );
+    }
+
+    fn starting_job(directory: &std::path::Path) -> RecordingJob {
+        let now = Utc::now();
+        RecordingJob {
+            options: None,
+            id: JobId::new(),
+            started_at: now,
+            updated_at: now,
+            stage: JobStage::Starting,
+            audio_path: directory.join("recording.wav"),
+            duration_seconds: 0.0,
+            transcription_model: "test".to_owned(),
+            raw_transcript: String::new(),
+            final_text: String::new(),
+            copied_to_clipboard: false,
+            paste_triggered: false,
+            delivery_status: DeliveryStatus::NotAttempted,
+            error_message: None,
+        }
+    }
+
+    /// A fake pw-record that writes a WAV header and first samples, then
+    /// runs `then` (shell) until it is interrupted.
+    fn fake_pw_record(directory: &std::path::Path, then: &str) -> std::path::PathBuf {
+        let recorder = directory.join("fake-pw-record");
+        fs::write(
+            &recorder,
+            format!(
+                "#!/bin/sh\n\
+                 for output do :; done\n\
+                 trap 'exit 0' INT TERM\n\
+                 printf 'RIFF\\000\\000\\000\\000WAVEfmt \\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\000\\175\\000\\000\\002\\000\\020\\000data\\000\\000\\000\\0000000000000000000' > \"$output\"\n\
+                 {then}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&recorder, fs::Permissions::from_mode(0o755)).unwrap();
+        recorder
+    }
+
+    /// Starts one recording with the fake, supervised every 20 ms.
+    fn supervised_recording(
+        directory: &std::path::Path,
+        settings: &Settings,
+        then: &str,
+    ) -> (
+        SystemRecordingController,
+        Receiver<RecorderEvent>,
+        RecordingJob,
+    ) {
+        let recorder = fake_pw_record(directory, then);
+        let (mut controller, events) =
+            SystemRecordingController::for_program(settings, directory, &recorder);
+        controller.tick = Duration::from_millis(20);
+        controller.stall_after = Duration::from_millis(200);
+        let job = starting_job(directory);
+        controller.start(&job).unwrap();
+        (controller, events, job)
+    }
+
+    #[test]
+    fn max_duration_is_enforced_for_every_start() {
+        let directory = tempdir().unwrap();
+        let settings = Settings {
+            max_recording_seconds: 1,
+            ..quiet_settings()
+        };
+        let (mut controller, events, job) = supervised_recording(
+            directory.path(),
+            &settings,
+            "while :; do printf '0000000000000000' >> \"$output\"; sleep 0.01; done",
+        );
+
+        let event = events.recv_timeout(Duration::from_secs(3)).unwrap();
+
+        assert_eq!(event, RecorderEvent::MaxDurationReached { job_id: job.id });
+        controller.finish(&job).unwrap();
+    }
+
+    #[test]
+    fn stalled_recorder_is_reported_once() {
+        let directory = tempdir().unwrap();
+        let (mut controller, events, job) = supervised_recording(
+            directory.path(),
+            &quiet_settings(),
+            "while :; do sleep 1; done",
+        );
+
+        let event = events.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        assert_eq!(event, RecorderEvent::Stalled { job_id: job.id });
+        assert!(events.recv_timeout(Duration::from_millis(300)).is_err());
+        controller.finish(&job).unwrap();
+    }
+
+    #[test]
+    fn recorder_exit_is_reported_without_ipc() {
+        let directory = tempdir().unwrap();
+        let (mut controller, events, job) =
+            supervised_recording(directory.path(), &quiet_settings(), "sleep 0.1");
+
+        let event = events.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        assert_eq!(event, RecorderEvent::Exited { job_id: job.id });
+        controller.finish(&job).unwrap();
+    }
+
+    fn quiet_settings() -> Settings {
+        Settings {
+            audio_ducking_enabled: false,
+            ..Settings::default()
+        }
     }
 }

@@ -96,27 +96,34 @@ fn stale_audio_at_the_output_path_never_satisfies_new_capture_readiness() {
 }
 
 #[test]
-fn pidfd_exit_observer_wakes_without_consuming_the_child_needed_by_stop() {
+fn an_exited_recorder_is_reported_by_status_and_still_finalizes() {
     let directory = TestDirectory::new();
-    let fake_pw_record = fake_recorder(&directory, "audio");
-    let output = directory.path().join("observed.wav");
+    let fake_pw_record = directory.executable(
+        "pw-record",
+        &format!(
+            "#!/bin/sh\nfor output do :; done\nprintf '{WAV_HEADER}audio' > \"$output\"\nsleep 0.1\n"
+        ),
+    );
+    let output = directory.path().join("exited.wav");
     let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
-    let recording = recorder
+    let mut recording = recorder
         .start(&output, Instant::now() + Duration::from_secs(2))
         .expect("recorder starts");
-    let observer = recording.exit_observer().expect("pidfd is available");
-    assert!(observer.process_id() > 0);
-    let watcher = thread::spawn(move || observer.wait());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !matches!(
+        recording.status().expect("recorder status"),
+        RecordingStatus::Exited { .. }
+    ) {
+        assert!(Instant::now() < deadline, "the recorder never exited");
+        thread::sleep(Duration::from_millis(5));
+    }
 
     let artifact = recording
         .stop(Instant::now() + Duration::from_secs(2))
-        .expect("stop still owns and finalizes the child");
+        .expect("an exited recorder still finalizes");
 
-    watcher
-        .join()
-        .expect("watcher thread joins")
-        .expect("pidfd reports process exit");
     assert_eq!(artifact.path, output);
+    assert!(artifact.bytes > 44);
 }
 
 #[test]

@@ -8,8 +8,8 @@ use std::{
 };
 
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyCaptureOutcome, HotkeyReadiness, JobId,
-    RecordingMode, ServerMessageKind, WorkflowPhase,
+    ClientCommandTag, HotkeyCaptureOutcome, HotkeyReadiness, RecordingMode, ServerMessageKind,
+    WorkflowPhase,
 };
 use agentdictate_linux::{
     hotkey::{HotkeyListenerStatus, HotkeySignal, HotkeySpec},
@@ -717,29 +717,16 @@ fn dispatch_hotkey(
     let response = client.send(command)?;
     let toggle_recording_started = match response.kind {
         ServerMessageKind::CommandRejected { error, .. } => anyhow::bail!(error),
-        ServerMessageKind::Snapshot {
-            snapshot, settings, ..
-        } => {
-            let recording_job = match snapshot.workflow.phase {
-                WorkflowPhase::Recording { job_id } if starts_recording => Some(job_id),
-                _ => None,
-            };
+        ServerMessageKind::Snapshot { snapshot, .. } => {
             tracing::info!(
                 request_id,
                 action,
                 resulting_phase = ?snapshot.workflow.phase,
                 "hotkey command completed"
             );
-            if settings.values.max_recording_seconds > 0
-                && let Some(job_id) = recording_job
-            {
-                spawn_maximum_duration_stop(
-                    runtime.to_owned(),
-                    job_id,
-                    settings.values.max_recording_seconds,
-                );
-            }
-            mode == RecordingMode::Toggle && recording_job.is_some()
+            mode == RecordingMode::Toggle
+                && starts_recording
+                && matches!(snapshot.workflow.phase, WorkflowPhase::Recording { .. })
         }
         ServerMessageKind::Workspace { .. }
         | ServerMessageKind::HistoryPage { .. }
@@ -750,52 +737,6 @@ fn dispatch_hotkey(
     } else {
         HotkeyActionOutcome::Other
     })
-}
-
-fn spawn_maximum_duration_stop(runtime: std::path::PathBuf, job_id: JobId, seconds: u32) {
-    let spawned = std::thread::Builder::new()
-        .name("agentdictate-maximum-duration".into())
-        .spawn(move || {
-            std::thread::park_timeout(Duration::from_secs(u64::from(seconds)));
-            let result = (|| -> anyhow::Result<()> {
-                let (mut client, initial) = IpcClient::connect(&runtime)?;
-                let ServerMessageKind::Snapshot { snapshot, .. } = initial.kind else {
-                    return Ok(());
-                };
-                let request_id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-                let Some(command) = maximum_duration_command(job_id, &snapshot, request_id) else {
-                    return Ok(());
-                };
-                if let ServerMessageKind::CommandRejected { error, .. } = client.send(command)?.kind
-                {
-                    anyhow::bail!(error);
-                }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                tracing::error!(job_id = %job_id, %error, "maximum-duration stop failed");
-            }
-        });
-    if let Err(error) = spawned {
-        tracing::error!(
-            job_id = %job_id,
-            %error,
-            "could not start the maximum-duration timer; this recording runs until stopped"
-        );
-    }
-}
-
-fn maximum_duration_command(
-    expected_job: JobId,
-    snapshot: &AppSnapshot,
-    request_id: u64,
-) -> Option<ClientCommand> {
-    matches!(
-        snapshot.workflow.phase,
-        WorkflowPhase::Starting { job_id } | WorkflowPhase::Recording { job_id }
-            if job_id == expected_job
-    )
-    .then(|| ClientCommand::stop_recording(request_id))
 }
 
 fn update_hotkey_status(runtime: &Path, readiness: HotkeyReadiness) -> anyhow::Result<()> {
@@ -1060,22 +1001,6 @@ mod tests {
             )
             .is_none()
         );
-    }
-
-    #[test]
-    fn maximum_duration_stop_never_targets_a_later_recording() {
-        let expected = JobId::new();
-        let later = JobId::new();
-        let snapshot = AppSnapshot {
-            workflow: agentdictate_core::WorkflowSnapshot {
-                phase: WorkflowPhase::Recording { job_id: later },
-            },
-            hotkey: HotkeyReadiness::Ready,
-            recoverable_count: 0,
-            last_transcript: None,
-        };
-
-        assert!(maximum_duration_command(expected, &snapshot, 9).is_none());
     }
 
     #[test]

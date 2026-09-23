@@ -10,8 +10,8 @@ use std::{
 };
 
 use agentdictate_app::{
-    AppPaths, CapturedRecording, Daemon, DaemonError, OverlayUpdate, RecordingController,
-    Transcriber, TranscriptionCompletion, start_overlay_presenter,
+    AppPaths, CapturedRecording, Daemon, DaemonError, OverlayUpdate, RecorderEvent,
+    RecordingController, Transcriber, TranscriptionCompletion, start_overlay_presenter,
 };
 use agentdictate_core::{
     HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage, Settings,
@@ -445,7 +445,7 @@ fn recovery_retries_copy_the_text_and_never_paste_into_the_focused_window() {
     let unpasted = finish(&mut daemon);
     assert_eq!(unpasted.stage, JobStage::ReadyToDeliver);
     let interrupted = daemon.start_recording().unwrap();
-    daemon.recorder_exited(interrupted.id).unwrap();
+    exit_recorder(&mut daemon, interrupted.id);
 
     let copied = daemon.retry_delivery(unpasted.id).unwrap();
     let ticket = daemon.retry_transcription(interrupted.id).unwrap();
@@ -542,7 +542,7 @@ fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable
         SubmittedDelivery::default(),
     );
     let older = daemon.start_recording().unwrap();
-    daemon.recorder_exited(older.id).unwrap();
+    exit_recorder(&mut daemon, older.id);
     let recording = daemon.start_recording().unwrap();
 
     daemon.delete_recovery(older.id).unwrap();
@@ -755,7 +755,12 @@ fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() 
     );
     let started = daemon.start_recording().unwrap();
 
-    let recovered = daemon.recorder_exited(started.id).unwrap().unwrap();
+    exit_recorder(&mut daemon, started.id);
+    let recovered = Runtime::open_observer(&paths.database_file)
+        .unwrap()
+        .job(started.id)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(recovered.stage, JobStage::Interrupted);
     assert!(recovered.audio_path.is_file());
@@ -768,7 +773,12 @@ fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() 
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
-    assert!(daemon.recorder_exited(started.id).unwrap().is_none());
+    assert!(
+        daemon
+            .recorder_event(RecorderEvent::Exited { job_id: started.id })
+            .unwrap()
+            .is_none()
+    );
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
     assert!(history_rows(&observer).is_empty());
 }
@@ -1187,7 +1197,7 @@ fn deleting_another_recovery_during_processing_keeps_the_processing_job() {
     let paths = app_paths(directory.path());
     let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
     let older = daemon.start_recording().unwrap();
-    daemon.recorder_exited(older.id).unwrap();
+    exit_recorder(&mut daemon, older.id);
     let processing = daemon.start_recording().unwrap();
     let ticket = daemon.stop_recording().unwrap();
 
@@ -1200,6 +1210,75 @@ fn deleting_another_recovery_during_processing_keeps_the_processing_job() {
     let delivered = daemon.complete_transcription(ticket.run()).unwrap();
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert_eq!(daemon.deliverer().methods, [DeliveryMethod::Paste]);
+}
+
+#[test]
+fn max_duration_event_stops_only_the_matching_recording() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let earlier = daemon.start_recording().unwrap();
+    daemon.discard_recording().unwrap();
+    let current = daemon.start_recording().unwrap();
+
+    let stale = daemon
+        .recorder_event(RecorderEvent::MaxDurationReached { job_id: earlier.id })
+        .unwrap();
+    assert!(stale.is_none());
+    assert_eq!(
+        daemon.phase(),
+        WorkflowPhase::Recording { job_id: current.id }
+    );
+
+    let ticket = daemon
+        .recorder_event(RecorderEvent::MaxDurationReached { job_id: current.id })
+        .unwrap()
+        .expect("the matching recording stops");
+    let delivered = daemon.complete_transcription(ticket.run()).unwrap();
+    assert_eq!(delivered.id, current.id);
+    assert_eq!(delivered.stage, JobStage::Delivered);
+}
+
+#[test]
+fn stalled_recorder_preserves_audio_for_recovery() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let started = daemon.start_recording().unwrap();
+
+    let ticket = daemon
+        .recorder_event(RecorderEvent::Stalled { job_id: started.id })
+        .unwrap();
+
+    assert!(ticket.is_none());
+    assert_eq!(daemon.deliverer().attempts, 0);
+    assert!(matches!(
+        daemon.phase(),
+        WorkflowPhase::NeedsAttention { job_id, at: JobStage::Interrupted } if job_id == started.id
+    ));
+    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    assert_eq!(recovery.stage, JobStage::Interrupted);
+    assert!(recovery.audio_present);
+    assert!(
+        recovery
+            .error_message
+            .is_some_and(|message| message.contains("microphone stopped sending audio"))
+    );
+}
+
+/// The recorder process of `job_id` exits by itself, as the owner reports it.
+fn exit_recorder<R, T, D>(daemon: &mut Daemon<R, T, D>, job_id: agentdictate_core::JobId)
+where
+    R: RecordingController,
+    T: Transcriber,
+    D: Deliverer,
+{
+    assert!(
+        daemon
+            .recorder_event(RecorderEvent::Exited { job_id })
+            .unwrap()
+            .is_none()
+    );
 }
 
 fn app_paths(root: &Path) -> AppPaths {
