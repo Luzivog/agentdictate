@@ -263,7 +263,6 @@ fn control_only_returns_success_after_the_worker_accepts_reconfiguration() {
                 reason: "no keyboard supports the requested hotkey".into(),
             }))
             .unwrap();
-        drop(control_reader);
     });
 
     let error = control
@@ -275,6 +274,9 @@ fn control_only_returns_success_after_the_worker_accepts_reconfiguration() {
         NativeHotkeyControlError::ReconfigurationRejected { .. }
     ));
     worker.join().unwrap();
+    // The wake socket must outlive the request: a worker that closed it right
+    // after replying could make the control's wake write fail first.
+    drop(control_reader);
 }
 
 /// Arms a capture as `NativeHotkeyControl::capture` does, without naming
