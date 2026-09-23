@@ -1274,9 +1274,6 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
         transcription_prompt:
             "The speaker is describing software changes, filenames, and project terminology."
                 .repeat(3),
-        project_context:
-            "Current project context includes a long description that wraps across the editor."
-                .repeat(3),
         ..Settings::default()
     };
     let model = ShellViewModel::from_snapshot(
@@ -1287,10 +1284,7 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
     );
     let mut harness =
         Harness::open_connected_with(cx, model, settings, true, Arc::clone(&commands));
-    for selector in [
-        "settings-input-transcription-prompt-control",
-        "settings-input-project-context-control",
-    ] {
+    for selector in ["settings-input-transcription-prompt-control"] {
         harness.scroll_to(selector);
         let control = harness.bounds(selector);
         assert!(control.size.width > px(500.));
@@ -1308,10 +1302,10 @@ fn populated_multiline_fields_accept_clicks_across_their_visible_width(cx: &mut 
         .iter()
         .filter(|command| matches!(command.kind, ClientCommandKind::UpdateSettings { .. }))
         .collect();
-    assert_eq!(commands.len(), 2);
+    assert_eq!(commands.len(), 1);
     assert!(
-        matches!(&commands[1].kind, ClientCommandKind::UpdateSettings { settings, .. }
-        if settings.transcription_prompt.contains('Z') && settings.project_context.contains('Z'))
+        matches!(&commands[0].kind, ClientCommandKind::UpdateSettings { settings, .. }
+        if settings.transcription_prompt.contains('Z'))
     );
 }
 

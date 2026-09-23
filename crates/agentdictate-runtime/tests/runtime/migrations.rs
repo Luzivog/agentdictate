@@ -11,6 +11,35 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 #[test]
+fn the_retired_work_context_joins_the_about_your_work_prompt() {
+    let directory = TempDir::new().unwrap();
+    let settings_path = directory.path().join("config.json");
+    let load = |stored: serde_json::Value| {
+        fs::write(&settings_path, stored.to_string()).unwrap();
+        load_settings(&settings_path).unwrap().transcription_prompt
+    };
+
+    assert_eq!(
+        load(serde_json::json!({
+            "transcription_prompt": "Rust and GPUI",
+            "project_context": " Reviewing the tray menu ",
+        })),
+        "Rust and GPUI\nReviewing the tray menu"
+    );
+    assert_eq!(
+        load(serde_json::json!({ "project_context": "Reviewing the tray menu" })),
+        "Reviewing the tray menu"
+    );
+    assert_eq!(
+        load(serde_json::json!({
+            "transcription_prompt": "Rust and GPUI",
+            "project_context": "",
+        })),
+        "Rust and GPUI"
+    );
+}
+
+#[test]
 fn settings_replacement_is_private_and_leaves_no_partial_file() {
     let directory = TempDir::new().unwrap();
     let settings_path = directory.path().join("config.json");

@@ -41,12 +41,6 @@ macro_rules! settings_fields {
                 },
             }
             text_area {
-                project_context: String {
-                    from: cloned,
-                    apply: value(trimmed),
-                    placeholder: "Optional project or selected-code context for this work",
-                    rows: 2..=5,
-                },
                 transcription_prompt: String {
                     from: cloned,
                     apply: value(trimmed),

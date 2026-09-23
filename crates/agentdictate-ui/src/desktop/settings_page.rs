@@ -347,14 +347,6 @@ fn output_section(
         false,
         theme,
     ))
-    .child(prompt_row(
-        "Current work context",
-        "Optional context you supply; clear it when changing projects",
-        "settings-input-project-context",
-        editor.project_context.clone(),
-        false,
-        theme,
-    ))
     .child(toggle_row(
         "Stream speech",
         "Experimental OpenAI API streaming; falls back to saved audio",

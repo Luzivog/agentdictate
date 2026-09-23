@@ -17,9 +17,11 @@ pub struct Settings {
     #[serde(deserialize_with = "deserialize_transcription_model")]
     pub transcription_model: String,
     pub language: String,
+    /// "About your work": names, topics and jargon the user often mentions,
+    /// sent to the model as context. It absorbed the retired
+    /// `project_context` setting; see `load_settings`.
     pub transcription_prompt: String,
     pub vocabulary: Vec<crate::VocabularyEntry>,
-    pub project_context: String,
     pub dictation_mode: crate::DictationMode,
     pub streaming_enabled: bool,
     #[serde(deserialize_with = "crate::hotkey::deserialize_hotkey")]
@@ -193,7 +195,6 @@ impl Default for Settings {
             language: String::new(),
             transcription_prompt: String::new(),
             vocabulary: Vec::new(),
-            project_context: String::new(),
             dictation_mode: crate::DictationMode::Dictate,
             streaming_enabled: false,
             hotkey: crate::Hotkey::default(),

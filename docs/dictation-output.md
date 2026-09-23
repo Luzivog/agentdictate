@@ -77,11 +77,9 @@ word.
 
 ## Context and language
 
-- **Context prompt**, under **Dictation**, describes what you usually talk about.
-  It is sent as the transcription `prompt`. Keep spellings in Words.
-- **Current work context**, under **Dictation output**, is optional text about the
-  task at hand. It is appended to the prompt and marked as data, not instructions.
-  Clear it when you switch projects.
+**Context prompt**, under **Dictation**, describes what you usually talk about. It
+is sent as the transcription `prompt`. Keep spellings in Words. The retired
+**Current work context** setting was appended to it on upgrade.
 
 Nothing is collected automatically: no repository, window contents, selected text, or
 conversation.

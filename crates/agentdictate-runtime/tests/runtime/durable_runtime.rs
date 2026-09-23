@@ -29,7 +29,7 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
     let mut request = request(&directory.path().join("audio.wav"), TRANSCRIPTION_MODEL);
     let options =
         agentdictate_core::DictationOptions::from_settings(&agentdictate_core::Settings {
-            project_context: "Original project".into(),
+            transcription_prompt: "Original project".into(),
             openai_api_key: "must-not-persist".into(),
             ..Default::default()
         });
