@@ -22,7 +22,7 @@ Updated 23 September 2026, at `7b2b4f5` plus the docs consolidation.
 | 1. Quick latency wins | Landed | None |
 | 2. Delete dead weight | Mostly landed, including the GPUI-free daemon (BLD-3) and the docs (BLD-2) | Decision-gated deletions D2 to D5; build ceremony (BLD-12/14) |
 | 3. Daemon core | Not started | All |
-| 4. Streaming | Not started | All |
+| 4. Streaming | Gate failed, so Realtime streaming is deleted; the upload is encoded while you speak (LAT-4) | Segmented uploads for long recordings (LAT-5), after the same seam measurement |
 | 5. Product and UX | History basics (item 3); GPUI migration (item 10); the unit is rewritten only when it changes (part of item 9); `agentdictate setup-access` as the backend for item 7's grant button | Items 1, 2, 4 to 8, and the rest of item 9 |
 | 6. Data and privacy | Not started | All |
 | 7. Linux platform | In-process clipboard (LNX-9), Shift+Insert everywhere (LNX-14), 100 ms ducking steps, `agentdictate setup-access` | Layout-independent hotkey (LNX-13), GlobalShortcuts portal |
@@ -261,6 +261,19 @@ The safety net is `durable_runtime.rs` and `daemon_flow.rs`. New tests:
 - crash between delivered and completed.
 
 ### Phase 4: streaming transcription (the big latency lever)
+
+**Result (23 September 2026): the gate failed, and buffered uploads stay.** On 41 retained
+dictations of 0.5 to 66 s, pause-commit streaming met the latency bars: stop-to-final p50 790 ms
+against 914 ms buffered, and 1.17 s against 2.72 s for dictations of 60 s or more. But
+`gpt-transcribe` finishes every committed chunk as a sentence. 59–82 % of commit seams differed
+from the buffered transcript, against 11–18 % at random positions, mostly with a spurious ". X"
+break, and a prompt asking it not to end chunks changed nothing. Single-commit streaming has no
+seams but was no faster (p50 942 ms), and pre-warming the HTTPS connection showed no measurable
+gain. `live_transcription.rs`, `tungstenite` and the streaming setting are deleted. Instead,
+ffmpeg encodes the upload while you speak (LAT-4): at stop at most 50 ms are left to encode, so
+stop-to-encoded fell from p50 176 ms to 6 ms on the same clips, and from 628 ms to 5 ms for
+60 s dictations. Segmenting long recordings (LAT-5) is still open and needs the same seam
+measurement first. The plan below is kept as written.
 
 Target pipeline (RES-1 + LAT-4 + RES-5):
 

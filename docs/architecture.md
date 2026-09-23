@@ -309,6 +309,12 @@ replaces those defaults. Logs can contain transcript text.
 - **The app owns its service unit.** Writing the unit from the running install, only
   when its text changes, keeps an ordinary window launch free of `systemctl` calls,
   and the installers never enable or start a user service.
+- **One upload per dictation, not Realtime streaming.** Streaming to a Realtime
+  `gpt-transcribe` session was faster only for long dictations, and the model
+  finishes each committed chunk as a sentence: most chunk boundaries gained a
+  spurious sentence break. The whole recording goes up in one request instead, and
+  ffmpeg encodes it while you speak, so the upload starts milliseconds after the
+  stop.
 - **No cleanup LLM.** `gpt-transcribe` output already needs little cleanup, and the
   cleanup request added about 2 s per dictation. The pipeline was removed, and a
   stored `organize` mode now reads as Dictate.
