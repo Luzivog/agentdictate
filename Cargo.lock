@@ -183,6 +183,7 @@ name = "agentdictate-ui"
 version = "0.2.0"
 dependencies = [
  "agentdictate-core",
+ "chrono",
  "futures",
  "gpui-component",
  "gpui-pre",

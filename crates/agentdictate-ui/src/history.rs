@@ -1,3 +1,23 @@
+use chrono::{DateTime, Datelike, TimeZone, Utc};
+
+/// Formats when a dictation happened in `now`'s time zone, the way History
+/// and Home list it: "Today 14:32", "Yesterday 09:05", "Mon 14:32" within the
+/// last week, then "Sep 3", adding the year only when it isn't `now`'s.
+pub fn format_history_time<Tz: TimeZone>(at: DateTime<Utc>, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local = at.with_timezone(&now.timezone());
+    let format = match (now.date_naive() - local.date_naive()).num_days() {
+        0 => "Today %H:%M",
+        1 => "Yesterday %H:%M",
+        2..=6 => "%a %H:%M",
+        _ if local.year() == now.year() => "%b %-d",
+        _ => "%b %-d, %Y",
+    };
+    local.format(format).to_string()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStage {
     Transcription,
@@ -167,5 +187,50 @@ impl HistoryViewModel {
 impl Default for HistoryViewModel {
     fn default() -> Self {
         Self::new(0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{FixedOffset, TimeZone, Utc};
+
+    use super::format_history_time;
+
+    /// Wednesday 23 September 2026, 10:00 at UTC+2.
+    fn now() -> chrono::DateTime<FixedOffset> {
+        FixedOffset::east_opt(2 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 23, 10, 0, 0)
+            .unwrap()
+    }
+
+    fn format_utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> String {
+        let at = Utc
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .unwrap();
+        format_history_time(at, &now())
+    }
+
+    #[test]
+    fn days_are_counted_on_the_local_calendar() {
+        // 23:30 UTC on the 22nd is already 01:30 on the 23rd at UTC+2.
+        assert_eq!(format_utc(2026, 9, 22, 23, 30), "Today 01:30");
+        assert_eq!(format_utc(2026, 9, 22, 21, 59), "Yesterday 23:59");
+        assert_eq!(format_utc(2026, 9, 22, 7, 5), "Yesterday 09:05");
+    }
+
+    #[test]
+    fn the_last_week_uses_weekdays_and_older_entries_use_dates() {
+        assert_eq!(format_utc(2026, 9, 21, 12, 32), "Mon 14:32");
+        assert_eq!(format_utc(2026, 9, 17, 12, 32), "Thu 14:32");
+        // Seven days back would repeat today's weekday, so it gets a date.
+        assert_eq!(format_utc(2026, 9, 16, 12, 32), "Sep 16");
+        assert_eq!(format_utc(2026, 1, 3, 12, 0), "Jan 3");
+        assert_eq!(format_utc(2025, 12, 30, 12, 0), "Dec 30, 2025");
+    }
+
+    #[test]
+    fn a_timestamp_from_a_later_day_shows_its_date() {
+        assert_eq!(format_utc(2026, 9, 24, 12, 0), "Sep 24");
     }
 }

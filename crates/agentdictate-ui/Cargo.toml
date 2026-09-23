@@ -20,6 +20,7 @@ test-support = ["desktop", "gpui/test-support"]
 [dependencies]
 raw-window-handle = { version = "0.6", optional = true }
 agentdictate-core.workspace = true
+chrono.workspace = true
 thiserror.workspace = true
 futures = { version = "0.3", optional = true }
 # gpui-pre is gpui-component's weekly snapshot of Zed's GPUI (0.3.6 = zed@bcf6582).

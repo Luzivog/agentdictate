@@ -25,8 +25,9 @@ use thiserror::Error;
 use agentdictate_ui::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, ReplacementRuleViewModel,
     ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals,
-    UsageViewModel, WorkspaceAction, WorkspaceViewModel,
+    UsageViewModel, WorkspaceAction, WorkspaceViewModel, format_history_time,
 };
+use chrono::{DateTime, Local};
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -479,12 +480,14 @@ impl DatabaseChangeWatcher {
 }
 
 /// Presents a workspace. `history` is the History tab's page; the overview
-/// always lists the workspace's own newest transcripts.
+/// always lists the workspace's own newest transcripts. Times are shown on
+/// the local clock, relative to now.
 fn workspace_view_model(
     snapshot: &WorkspaceSnapshot,
     history: &HistoryPageSnapshot,
     period: UsagePeriod,
 ) -> WorkspaceViewModel {
+    let now = Local::now();
     let recoveries = snapshot
         .recoveries
         .iter()
@@ -503,7 +506,7 @@ fn workspace_view_model(
                 } else {
                     RecoveryStage::Transcription
                 },
-                entry.updated_at.format("%b %e, %H:%M UTC").to_string(),
+                format_history_time(entry.updated_at, &now),
                 format_duration_clock(entry.duration_seconds),
                 entry
                     .error_message
@@ -513,12 +516,16 @@ fn workspace_view_model(
             )
         })
         .collect();
-    let transcripts = history.rows.iter().map(transcript_view_model).collect();
+    let transcripts = history
+        .rows
+        .iter()
+        .map(|entry| transcript_view_model(entry, &now))
+        .collect();
     let recent_transcripts = snapshot
         .history
         .rows
         .iter()
-        .map(transcript_view_model)
+        .map(|entry| transcript_view_model(entry, &now))
         .collect();
     let replacements = snapshot
         .replacements
@@ -549,10 +556,13 @@ fn workspace_view_model(
     .with_overlay_unavailable(snapshot.overlay_unavailable)
 }
 
-fn transcript_view_model(entry: &agentdictate_core::HistorySnapshot) -> TranscriptViewModel {
+fn transcript_view_model(
+    entry: &agentdictate_core::HistorySnapshot,
+    now: &DateTime<Local>,
+) -> TranscriptViewModel {
     TranscriptViewModel::new(
         entry.id,
-        entry.created_at.format("%b %e, %H:%M UTC").to_string(),
+        format_history_time(entry.created_at, now),
         entry.preview_text.clone(),
         entry.word_count,
         format_duration_clock(entry.duration_seconds),
