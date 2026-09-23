@@ -1,170 +1,185 @@
 # Dictation output and evaluation
 
-AgentDictate keeps the recognition result before normalization. Each new
-recording stores its output mode, context, vocabulary, cleanup configuration, and
-replacement rules without API credentials. A retry reuses saved raw text and the
-original options. Historical jobs without an options snapshot retain the legacy
-fallback to current settings. Imported ChatGPT dictations still bypass this pipeline.
+This page explains what AgentDictate does to recognized speech before it pastes it,
+how to steer recognition with vocabulary and context, what happens when a dictation
+fails, and how to measure a change with `agentdictate-evaluate`. For the full
+pipeline, see [the architecture overview](architecture.md#dictation-pipeline).
 
-## Everyday controls
+Each recording stores a snapshot of its options when it starts: output mode,
+language, context, vocabulary, streaming, and legacy replacement rules. API
+credentials are never stored with it. **Transcribe again** reuses that snapshot and
+any text already recognized, so a retry neither changes behavior nor pays twice.
+Older jobs without a snapshot use the current settings. Dictations imported from the
+ChatGPT desktop app skip this processing entirely.
 
-- **Dictate:** recognition followed by spelling normalization. No cleanup request.
-- **Literal:** skips recognition context/keywords, cleanup, vocabulary aliases, and
-  legacy replacements. Speech recognition still cannot guarantee exact characters.
+## Output modes
 
-Choose the default under Settings → Dictation output. For one recording, choose
-**Start literal dictation** in the tray. Stop with
-the normal hotkey. These overrides do not change saved settings. Headless controls
-are also available:
+- **Dictate**, the default, sends the context and vocabulary hints with the audio,
+  then applies legacy replacements and vocabulary aliases to the result.
+- **Literal** sends only the language hint and applies no replacements or aliases.
+  Use it for exact strings whose spelling you cannot predict. Speech recognition
+  still cannot guarantee exact characters.
 
-```sh
+Choose the default in **Settings**, **Dictation output**, **Output mode**. For one
+recording, choose **Start literal dictation** in the tray, or start it from a
+terminal, and stop it with the normal shortcut:
+
+```bash
 agentdictate start --mode literal
 agentdictate stop
 ```
 
-Plain `start` and `cancel` are also supported. Mode starts
-are ignored by the tray while busy and rejected by the daemon while recording.
-Protocol version 5 requires a matching client and daemon. Cleanup settings and
-Organize have been removed from the everyday controls. Existing Organize defaults
-become Dictate for new recordings. Saved recovery snapshots retain their original
-processing options; the evaluator still supports explicit cleanup experiments.
+A one-off mode never changes the saved setting. The tray ignores mode starts while a
+dictation is busy, and the daemon rejects a start while it is already recording.
 
-## Maintain vocabulary once
+## Vocabulary
 
-The Vocabulary editor accepts one canonical spelling per line. Canonical spellings
-become recognition keywords for supported models and possible spellings in cleanup.
-Only explicitly supplied aliases authorize automatic corrections:
+The **Vocabulary** editor takes one spelling per line. A spelling can be followed by
+`=` and a comma-separated list of spoken forms, its aliases:
 
 ```text
-Codex
-Claude Code
-AgentDictate = agent dictate
-worktree = work tree
-worktrees = work trees
+Kubernetes
+PostgreSQL = postgres q l, post gress
+kubectl = cube control, cube cuttle
+GitHub Actions
 ```
 
-After correcting a recurring error, add the canonical spelling here first. Add an
-alias only when the spoken form should consistently mean that spelling. For example,
-keep `Codex` as a hint without turning every ordinary `codecs` into Codex. Reuse the
-history transcript to reproduce a failure; nothing monitors typing in another app.
+- Every spelling is sent to OpenAI as a recognition keyword (`keywords[]`), which
+  makes the model more likely to write it that way. A spelling without aliases is
+  only a hint.
+- Aliases are automatic corrections. After recognition, each alias is replaced by
+  its spelling. Matching ignores case and needs whole words. At any position the
+  longest alias wins, and the pass runs once, so a replacement never feeds another
+  alias.
+- Aliases never change protected spans: text in backticks or code fences, text in
+  double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
+  starting with `--`, and words that contain a slash.
+- The editor accepts up to 100 entries. Spellings and aliases must be unique
+  regardless of case, at most 128 bytes, and free of control characters and angle
+  brackets.
 
-Aliases match original text once, prefer the longest match at a position, and do
-not cascade. Code spans, quotes, URLs, paths, and flags are protected conservatively.
-Use Literal for exact strings whose syntax cannot be inferred. Existing entries in
-the Replacements screen remain explicit legacy expansions with their original
-sequential semantics; they do not gain these protections. Avoid defining the same
-correction in both collections.
+When a word keeps coming out wrong, add its spelling first. Add an alias only when
+that spoken form should always mean the spelling. An alias such as `Rust = rest`
+would also rewrite every real "rest". To reproduce a failure, copy the transcript
+from History; AgentDictate never watches what you type in other apps.
 
-Context prompt describes the speaking situation. Current work context is optional
-text you supply for the active task; clear it when moving projects. No repository,
-window contents, selected text, or conversation is scraped automatically.
+The **Replacements** screen holds legacy rules. They run before the aliases, one
+rule after another in stored order, so one rule's output can trigger the next. Each
+rule has its own case and whole-word options, and none of them respects protected
+spans. Avoid defining the same correction in both places.
 
-`gpt-transcribe` receives `keywords[]` and comma-separated language hints as
-`languages[]`. Older file models and subscription speech accept a single language
-hint and reject a language list locally. Subscription transcription remains separate and never falls back to
-paid API speech. Legacy recovery cleanup and explicit cleanup evaluations use the
-OpenAI API regardless of speech provider.
+## Context and language
 
-## Failure behavior
+- **Context prompt**, under **Dictation**, describes what you usually talk about.
+  It is sent as the transcription `prompt`. Keep spellings in Vocabulary.
+- **Current work context**, under **Dictation output**, is optional text about the
+  task at hand. It is appended to the prompt and marked as data, not instructions.
+  Clear it when you switch projects.
 
-A valid empty recognition result finishes quietly when the saved WAV is also
-clearly near-silent (PCM16 peak at most 128 and RMS at most 32). It creates no
-Recovery warning, pasted text, or transcript history entry. Audio follows the
-existing retention setting. This is not a duration cutoff: short recognized words
-still deliver. Audible or unreadable audio and transport failures stay recoverable.
+Nothing is collected automatically: no repository, window contents, selected text, or
+conversation.
 
-For historical jobs that requested cleanup, the saved deadline applies (default
-3,000 ms). Incomplete, malformed,
-refused, empty, or timed-out responses fall back to saved raw text. A conservative
-guard also rejects changes to literal spans, signed numbers/operators, acronyms,
-negations, conditional words, and large content reductions/expansions. It can reject
-a legitimate edit, including removal of repeated uncertainty or numeric
-self-corrections. Passing the guard is not proof of semantic equivalence. Fallback
-reasons are retained in history; spelling normalization still runs on fallback.
+**Language** is automatic detection, one language, or **English and French**. Each
+language is sent as a `languages[]` hint.
 
-Stream speech is an optional OpenAI API path using `gpt-live-transcribe`, currently
-$0.017 per audio minute. It tails durable audio while speaking, resamples PCM16 from
-16 to 24 kHz, and uses the stop action as its commit boundary. No interim draft is
-pasted. Only the matching final item is accepted; a failed, invalid, or timed-out stream uses the selected file model and saved WAV. Failed live attempts
-can incur provider charges in addition to the fallback. User cancellation discards the recording instead of uploading a fallback. Usage
-history records the
-successful speech model; it does not account for every failed streaming attempt.
+The ChatGPT subscription route sends only the audio and one language hint. It uses no
+context or keywords, rejects a language list when you save it, and never falls back
+to the paid API. Aliases and legacy replacements still apply to its result.
 
-## Local rollout decision, 5 September 2026
+## Streaming
 
-The selected personal defaults are buffered `gpt-transcribe`, English, a compact
-vocabulary, and Dictate without a cleanup call. The earlier cleanup/Organize
-experiment used `gpt-5.4-nano` with `none` reasoning and a 3-second deadline; these
-controls were subsequently removed to keep everyday dictation simple. Streaming
-remains off by default. These personal choices do not overwrite other installations'
-saved model settings. The local migration backs up and disables the 18 audited
-database rules; ten narrow aliases move into the protected vocabulary collection. Ambiguous
-forms such as landlord, codecs, Cloud Code, verso, and Versal remain ordinary text.
+**Stream speech** is an experimental, OpenAI API-only option, off by default. While
+you speak, it tails the saved WAV, resamples it from 16 to 24 kHz, and streams it to
+`gpt-live-transcribe`. Stopping the recording commits the audio, and only the final
+transcript is accepted; nothing is pasted before that.
 
-A bounded comparison used the same initial 12 synthetic text cases:
+If the stream fails, returns something invalid, or has no final text within 8 seconds
+of the stop, AgentDictate uploads the saved WAV for normal file transcription
+instead. A failed stream can still be billed, on top of the fallback. Esc discards
+the recording without a fallback upload. Usage records the model that produced the
+text and does not count failed streaming attempts. The estimated prices are $0.017
+per audio minute for `gpt-live-transcribe` and $0.0045 for `gpt-transcribe`.
 
-| Candidate | Median request time | Observations |
-| --- | ---: | --- |
-| Existing custom prompt / Astra low | 1,458 ms | One deadline fallback and one guard fallback |
-| Faithful prompt / Astra low | 1,546.5 ms | Two conservative guard fallbacks |
-| Faithful prompt / Nano none | 759 ms | All 12 outputs unchanged, no transport/guard failures |
-| Cleanup off | No cleanup request | Keeps recognition output plus narrow spelling normalization |
+## Empty captures and failures
 
-The expanded 18-case set passed all offline checks. A second Nano run passed
-17/18 request checks: one transport failure retained the original double-negation
-text. No delivered critical-token failures were observed. A second live replay
-finalized in 728 ms and repeated the punctuation issue. An explicit Organize
-example preserved its checked constraints. These results retain failures rather
-than treating raw fallback as a successful provider response.
+- **Silence.** When recognition returns nothing and the WAV is near-silent, the
+  dictation ends quietly: no paste, no History entry, no Recovery item. Near-silent
+  means a PCM16 peak of at most 128 and an RMS of at most 32, roughly -48 dBFS and
+  -60 dBFS. This is not a duration cutoff, so a short recognized word still pastes.
+  The audio follows the **Preserve temporary audio** setting.
+- **Empty result from audible audio.** The dictation goes to Recovery with its audio,
+  because something was said.
+- **Network or API errors.** A request that fails before OpenAI answers is resent
+  once, and a rejected WebM/Opus upload is resent once as WAV. Any other error sends
+  the dictation to Recovery with its audio.
+- **Paste problems.** If the focused window keeps changing, or the text cannot be
+  published, nothing is pasted and the dictation stays in Recovery. Once the paste
+  shortcut has been sent, AgentDictate never sends it again on its own.
 
-The existing-prompt comparison uses the new deadline/guard and mode suffix, so it
-is not a byte-for-byte replay of the previous implementation. Calls overlapped;
-these are small descriptive samples, not controlled provider latency rankings.
+Recovery lives in the **History** page. **Transcribe again** and **Paste again** copy
+the text to the clipboard instead of pasting, because AgentDictate's own window has
+the focus. Press Ctrl+V where you want it.
 
-On one approximately five-second Flite-generated clip, live recognition finalized
-964 ms after simulated stop. The buffered path took 657 ms including encoding and
-request. Both omitted a word; live output also merged a question and prohibition
-with worse punctuation. This supports retaining the buffered default, not a general
-claim about live recognition quality. The replay never opened a microphone or
-delivered text to another application.
+## Evaluate a change
 
-Private receipts and pre-rollout backups live under
-`~/.local/state/agentdictate/output-improvement/`. Recordings, credentials, and local
-history are not checked into this repository.
+`agentdictate-evaluate` replays cases through the production vocabulary handling and,
+on request, the production transcription transports. It never opens the microphone
+or pastes into another app. Build it once:
 
-## Repeat the evaluation
-
-Build the headless replay tool:
-
-```sh
+```bash
 cargo build --locked -p agentdictate-app --bin agentdictate-evaluate
+```
+
+Each line of the case file is a JSON object:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Case name |
+| `text` | The recognized text to process in `offline` mode |
+| `expected` | Optional exact output; `offline` mode fails on a mismatch |
+| `preserve` | Substrings the output must keep, compared without case |
+| `audio` | Absolute path of an audio file, for `speech` and `live` modes |
+| `reference_verified` | Set to `true` only after a person has checked `expected` against the audio |
+
+`fixtures/dictation/cases.jsonl` holds the synthetic offline cases. They cover
+negations, numbers, operators, paths, quotes, retractions, and lookalike words. The
+`alias` case expects the aliases `AgentDictate = agent dictate` and
+`worktrees = work trees`, so give the tool a configuration that defines them.
+`--config` defaults to your real `config.json`, which it only reads. A candidate file
+can hold just the keys you want to change:
+
+```bash
+cat > /tmp/evaluate-config.json <<'EOF'
+{"vocabulary": [
+  {"spelling": "AgentDictate", "aliases": ["agent dictate"]},
+  {"spelling": "worktrees", "aliases": ["work trees"]}
+]}
+EOF
 target/debug/agentdictate-evaluate \
   --cases fixtures/dictation/cases.jsonl \
+  --config /tmp/evaluate-config.json \
   --output /tmp/dictation-results.jsonl \
   --mode offline
 ```
 
-Use a new output path per run. Results use owner-only file permissions. `--config`
-selects a separate candidate configuration without modifying the live settings.
-`--mode cleanup --model gpt-5.4-nano --effort none` calls the paid cleanup API.
-`--mode speech` uploads each supplied audio file. `--mode live` paces supplied audio
-through the production live adapter, measures stop-to-final time, and records the
-actual model so buffered fallback cannot masquerade as successful streaming.
-Network evaluation requires an OpenAI API configuration; it does not use a signed-in
-subscription account. Keep all private fixtures and results outside the repository.
+The tool writes one JSON line per case, with the output, the checks, and the options
+used, to a new file with mode 0600. It refuses to overwrite an existing file, so use
+a new path per run. It prints how many cases passed and exits with an error if any
+check or request failed, keeping the results. Legacy replacements are not applied.
 
-Each JSONL case has `id`, `text`, optional `expected`, and `preserve` substrings.
-Audio cases add an absolute `audio` path and `reference_verified`. Only mark that
-flag true after a human has checked the reference against the recording. WER and
-exact-match fields describe agreement with the supplied reference; critical-token
-checks cannot certify preserved authority or intent. The tool exits unsuccessfully
-on transport or explicit-check failures but retains the receipt.
+The other modes call OpenAI and cost money. They need a configuration with the
+OpenAI API selected and a key; subscription credentials are never used.
 
-For a personal accuracy decision, collect the planned 60–100 consented utterances,
-reserve a held-out third, and include normal vocabulary lookalikes, negation, exact
-strings, corrections, long requests, and bilingual/noisy speech if relevant. Replay
-identical audio with and without hints; review blind, and measure corrections and
-receiving-agent misunderstanding. No personal accuracy gain or latency percentile
-is claimed from the synthetic checks. Automatic context collection, correction
-capture, outside providers, local inference, and audio-native intent extraction stay
-conditional experiments until a measured residual error justifies them.
+- `--mode speech` uploads each case's `audio` through the production file transport.
+- `--mode live` decodes each `audio` file with ffmpeg, paces it in real time through
+  the streaming adapter, and records the stop-to-final time and the model that
+  actually answered, so a fallback cannot pass as a successful stream.
+- `--model <id>` overrides the transcription model.
+
+Word error rate and exact-match fields only measure agreement with the reference you
+supplied. To decide whether a change helps your own speech, record 60 to 100
+consented utterances, verify their references, and hold a third of them back for the
+final comparison. Include vocabulary lookalikes, negations, exact strings,
+self-corrections, long requests, and any second language you use. Replay the same
+audio with and without the change, and review the outputs blind. Keep recordings,
+configurations, and results outside the repository.
