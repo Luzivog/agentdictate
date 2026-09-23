@@ -23,10 +23,10 @@ AgentDictate is a Rust workspace for a native Linux dictation app. The workspace
 uses the Rust toolchain pinned in `rust-toolchain.toml` and is split by
 responsibility:
 
-- `crates/agentdictate-core`: domain types, settings, replacements, workflow,
-  and protocol logic.
-- `crates/agentdictate-runtime`: durable history, recovery, usage, pricing, and
-  IPC persistence.
+- `crates/agentdictate-core`: domain types, settings, vocabulary and legacy
+  replacements, workflow, and protocol logic.
+- `crates/agentdictate-runtime`: SQLite jobs, history, recovery, usage, and the
+  IPC server and client.
 - `crates/agentdictate-linux`: Linux recording, hotkey, focus, clipboard, and
   paste integrations.
 - `crates/agentdictate-ui`: GPUI presentation, view models, route surfaces, and
@@ -43,6 +43,15 @@ the behavior being tested.
 Static desktop assets live in `assets/` and `agentdictate.desktop`. Packaging
 scripts are under `packaging/`; `dist/` and `target/` contain generated
 artifacts and must not be edited directly.
+
+## Docs Map
+
+The current docs are `README.md` (users), `docs/INSTALL.md` (requirements,
+packages, data, uninstall), `packaging/NATIVE_ACCESS.md` (input access; ships in
+packages), `docs/architecture.md` (processes, pipeline, protocol, data locations,
+decisions), `docs/dictation-output.md` (output behavior and evaluation),
+`docs/DEVELOPMENT.md` (setup, tests, compositor check), and `docs/upgrade-plan.md`
+(the only plan). When a change alters behavior one of them describes, update it.
 
 ## Development Commands
 
