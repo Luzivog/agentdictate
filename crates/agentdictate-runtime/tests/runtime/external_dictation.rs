@@ -6,7 +6,7 @@ use agentdictate_runtime::{
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
 
-use crate::support::ReadyRecorder;
+use crate::support::{ReadyRecorder, stored_history};
 
 fn receipt(source_id: &str) -> ExternalDictationReceipt {
     ExternalDictationReceipt {
@@ -50,7 +50,7 @@ fn external_dictation_import_is_idempotent_and_feeds_usage_and_history() {
     assert_eq!(usage.all_time.words, 5);
     assert_eq!(usage.all_time.audio_seconds, 30.5);
 
-    let connection = rusqlite::Connection::open(database_path).unwrap();
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
     let stored: (String, u64, u64, f64) = connection
         .query_row(
             r#"
@@ -66,12 +66,11 @@ fn external_dictation_import_is_idempotent_and_feeds_usage_and_history() {
     assert_eq!(stored.1, 5);
     assert_eq!(stored.2, 31);
     assert_eq!(stored.3, 0.0);
-    let history = runtime.list_history(Default::default()).unwrap();
+    let history = stored_history(&database_path);
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].raw_transcript, "Ship the versel usage importer.");
     assert_eq!(history[0].final_text, "Ship the Vercel usage importer.");
-    assert_eq!(history[0].replacements_applied.len(), 1);
-    assert_eq!(history[0].replacements_applied[0].rule_id, Some(7));
+    assert_eq!(history[0].replacements_applied[0]["id"], 7);
     assert!(!history[0].copied_to_clipboard);
     assert!(!history[0].paste_triggered);
 }

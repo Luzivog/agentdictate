@@ -1,6 +1,6 @@
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot,
-    HotkeyReadiness, JobId, ServerMessage, ServerMessageKind, Settings, Workflow,
+    AppSnapshot, ClientCommand, HistoryPageCursor, HistoryPageSnapshot, HotkeyReadiness, JobId,
+    ServerMessage, ServerMessageKind, Settings, Workflow,
 };
 
 #[test]
@@ -11,11 +11,6 @@ fn client_commands_have_a_versioned_stable_wire_shape() {
         wire,
         r#"{"protocol_version":6,"command":"start_recording","request_id":7}"#
     );
-}
-
-#[test]
-fn a_default_history_page_requests_twenty_transcripts() {
-    assert_eq!(HistoryPageRequest::default().page_size, 20);
 }
 
 #[test]

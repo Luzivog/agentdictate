@@ -177,10 +177,12 @@ mod tests {
     use rusqlite::params;
     use tempfile::tempdir;
 
+    use agentdictate_core::HistoryPageRequest;
+
     use super::{is_interrupted, run_interruptible_index_attempt};
     use crate::{
-        ExternalError, HistoryIndexMaintenance, HistoryQuery, JobStage, Recorder, RecordingJob,
-        RecordingRequest, Runtime,
+        ExternalError, HistoryIndexMaintenance, JobStage, Recorder, RecordingJob, RecordingRequest,
+        Runtime,
     };
 
     struct ReadyRecorder;
@@ -291,13 +293,13 @@ mod tests {
         );
         assert!(
             runtime
-                .history_page(HistoryQuery {
+                .history_page(&HistoryPageRequest {
                     search: "buletproof".to_owned(),
-                    limit: 10,
-                    ..HistoryQuery::default()
+                    page_size: 10,
+                    after: None,
                 })
                 .unwrap()
-                .matches
+                .rows
                 .is_empty()
         );
 
@@ -318,10 +320,10 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .history_page(HistoryQuery {
+                .history_page(&HistoryPageRequest {
                     search: "buletproof".to_owned(),
-                    limit: 10,
-                    ..HistoryQuery::default()
+                    page_size: 10,
+                    after: None,
                 })
                 .unwrap()
                 .total_matches,

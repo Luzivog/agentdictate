@@ -5,10 +5,10 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use agentdictate_core::{HistoryPageCursor, HistoryPageSnapshot, HistorySnapshot};
+
 use crate::RuntimeError;
-use crate::history::{
-    HistoryCursor, HistoryMatch, HistoryPage, HistoryQuery, history_select, row_to_history,
-};
+use crate::history::{HistoryQuery, HistoryRow, history_select, row_to_history};
 
 const MAX_PAGE_SIZE: usize = 100;
 const SEARCH_SCHEMA_VERSION: i64 = 2;
@@ -206,7 +206,7 @@ pub(crate) fn history_page(
     connection: &Connection,
     cache: &RefCell<SearchCache>,
     query: HistoryQuery,
-) -> Result<HistoryPage, RuntimeError> {
+) -> Result<HistoryPageSnapshot, RuntimeError> {
     let normalized = normalize_query(&query.search);
     let day = query
         .day
@@ -238,8 +238,8 @@ pub(crate) fn history_page(
         search_plan_fingerprint,
     };
     let result = query_page(connection, &plan, page_context);
-    match result {
-        Ok(page) => Ok(page),
+    let (rows, total_matches, next_cursor) = match result {
+        Ok(page) => page,
         Err(error) if matches!(&plan, SearchPlan::Indexed { .. }) && is_index_failure(&error) => {
             // Read-only observers cannot persist the degraded state. The
             // literal fallback is still safe for that process; a writable
@@ -254,23 +254,33 @@ pub(crate) fn history_page(
                     search_plan_fingerprint: plan_fingerprint(&fallback),
                     ..page_context
                 },
-            )
+            )?
         }
-        Err(error) => Err(error),
-    }
+        Err(error) => return Err(error),
+    };
+    Ok(HistoryPageSnapshot {
+        search: query.search,
+        total_matches,
+        cursor_restarted: false,
+        next_cursor,
+        rows,
+    })
 }
+
+/// One page of rows, the total match count, and the cursor after the page.
+type Page = (Vec<HistorySnapshot>, u64, Option<HistoryPageCursor>);
 
 fn query_page(
     connection: &Connection,
     plan: &SearchPlan,
     context: PageContext<'_>,
-) -> Result<HistoryPage, RuntimeError> {
+) -> Result<Page, RuntimeError> {
     let (created_at, id) = context
         .cursor
         .map(|value| (value.created_at.as_str(), value.id))
         .unwrap_or(("", 0));
     let fetch_limit = context.limit.saturating_add(1);
-    let (mut matches, total_matches) = match plan {
+    let (mut rows, total_matches) = match plan {
         SearchPlan::Indexed {
             word_expression,
             trigram_expression,
@@ -355,36 +365,31 @@ fn query_page(
         }
     };
 
-    let has_more = matches.len() > context.limit;
-    matches.truncate(context.limit);
+    let has_more = rows.len() > context.limit;
+    rows.truncate(context.limit);
     let next_cursor = if has_more {
-        matches
-            .last()
+        rows.last()
             .map(|value| {
                 encode_cursor(
                     connection,
                     context.normalized_query,
                     context.selected_day,
                     context.search_plan_fingerprint,
-                    &value.entry,
+                    value.id,
                 )
             })
             .transpose()?
     } else {
         None
     };
-    Ok(HistoryPage {
-        matches,
-        total_matches,
-        next_cursor,
-    })
+    Ok((rows, total_matches, next_cursor))
 }
 
 fn query_entries(
     connection: &Connection,
     sql: &str,
     parameters: impl rusqlite::Params,
-) -> Result<Vec<crate::HistoryEntry>, RuntimeError> {
+) -> Result<Vec<HistoryRow>, RuntimeError> {
     let mut statement = connection.prepare(sql)?;
     let rows = statement
         .query_map(parameters, row_to_history)?
@@ -564,15 +569,18 @@ fn vocabulary_prefix_documents(vocabulary: &[VocabularyTerm], prefix: &str) -> u
 }
 
 fn entries_to_matches(
-    entries: Vec<crate::HistoryEntry>,
+    entries: Vec<HistoryRow>,
     preview_terms: &[String],
     search_active: bool,
-) -> Vec<HistoryMatch> {
+) -> Vec<HistorySnapshot> {
     entries
         .into_iter()
-        .map(|entry| HistoryMatch {
-            preview: preview(&entry.final_text, preview_terms, search_active),
-            entry,
+        .map(|entry| HistorySnapshot {
+            id: entry.id,
+            created_at: entry.created_at,
+            preview_text: preview(&entry.final_text, preview_terms, search_active),
+            word_count: entry.word_count,
+            duration_seconds: entry.duration_seconds,
         })
         .collect()
 }
@@ -627,28 +635,28 @@ fn encode_cursor(
     normalized_query: &str,
     day: Option<NaiveDate>,
     search_plan_fingerprint: u64,
-    entry: &crate::HistoryEntry,
-) -> Result<HistoryCursor, RuntimeError> {
+    id: i64,
+) -> Result<HistoryPageCursor, RuntimeError> {
     // Preserve the database's exact timestamp spelling. Legacy rows may use
     // `+00:00` while native rows use `Z`; reformatting it would break the same
     // textual ordering used by the keyset query and could repeat a row.
     let created_at = connection.query_row(
         "SELECT created_at FROM transcript_history WHERE id = ?1",
-        [entry.id],
+        [id],
         |row| row.get::<_, String>(0),
     )?;
-    Ok(HistoryCursor::from_opaque(format!(
+    Ok(HistoryPageCursor::new(format!(
         "v2|{:016x}|{:016x}|{}|{}|{}",
         query_fingerprint(normalized_query, day),
         search_plan_fingerprint,
         day.map_or_else(|| "-".to_owned(), |value| value.to_string()),
         created_at,
-        entry.id
+        id
     )))
 }
 
 fn decode_cursor(
-    cursor: &HistoryCursor,
+    cursor: &HistoryPageCursor,
     normalized_query: &str,
     day: Option<NaiveDate>,
     search_plan_fingerprint: u64,

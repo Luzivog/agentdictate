@@ -1,13 +1,11 @@
-use std::path::PathBuf;
-
-use agentdictate_core::{ReplacementRule, Settings, TranscriptionProvider};
+use agentdictate_core::{HistoryPageRequest, ReplacementRule, Settings, TranscriptionProvider};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
-    HistoryQuery, JobStage, RecordingJob, Runtime, Transcriber, Transcript,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate, JobStage,
+    RecordingJob, Runtime, Transcriber, Transcript,
 };
 use tempfile::TempDir;
 
-use crate::support::{ReadyRecorder, request, request_with_provider};
+use crate::support::{ReadyRecorder, history_rows, request, request_with_provider, stored_history};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
@@ -93,62 +91,39 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         delivered.transcription_provider,
         TranscriptionProvider::ChatGptSubscription
     );
-    let recorded = runtime
+    runtime
         .complete_delivered(delivered.id, &Settings::default())
-        .unwrap()
         .unwrap();
-    assert_eq!(
-        recorded.transcription_provider,
-        TranscriptionProvider::ChatGptSubscription
-    );
-    assert_eq!(recorded.estimated_transcription_cost, 0.0);
-    assert_eq!(
-        rusqlite::Connection::open(database_path)
-            .unwrap()
-            .query_row(
-                "SELECT transcription_provider FROM dictation_sessions WHERE id = ?1",
-                [recorded.session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-        "chatgpt_subscription"
-    );
+    let recorded = &stored_history(&database_path)[0];
+    assert_eq!(recorded.transcription_provider, "chatgpt_subscription");
+    assert_eq!(recorded.estimated_total_cost, 0.0);
 }
 
 #[test]
 fn delivered_session_history_is_idempotent_and_feeds_usage() {
     let directory = TempDir::new().unwrap();
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     let settings = Settings::default();
 
-    let first = runtime
-        .complete_delivered(delivered.id, &settings)
-        .unwrap()
-        .unwrap();
-    let duplicate = runtime
-        .complete_delivered(delivered.id, &settings)
-        .unwrap()
-        .unwrap();
+    runtime.complete_delivered(delivered.id, &settings).unwrap();
+    runtime.complete_delivered(delivered.id, &settings).unwrap();
 
-    assert_eq!(first.id, duplicate.id);
-    assert_eq!(first.job_id, Some(delivered.id));
+    let history = stored_history(&database_path);
+    assert_eq!(history.len(), 1);
+    let first = &history[0];
+    assert_eq!(first.job_id, Some(delivered.id.to_string()));
     assert_eq!(first.raw_transcript, "fix the versel deploy");
     assert_eq!(first.final_text, "fix the Vercel deploy");
-    assert_eq!(first.replacements_applied.len(), 1);
-    assert_eq!(first.replacements_applied[0].source_phrase, "versel");
-    assert_eq!(first.replacements_applied[0].count, 1);
+    assert_eq!(first.replacements_applied[0]["source_phrase"], "versel");
+    assert_eq!(first.replacements_applied[0]["count"], 1);
     assert_eq!(first.raw_word_count, 4);
     assert_eq!(first.final_word_count, 4);
     assert_eq!(first.final_character_count, 21);
     assert!((first.estimated_total_cost - 0.0045).abs() < f64::EPSILON);
     assert!(first.copied_to_clipboard);
     assert!(first.paste_triggered);
-    assert!(first.success);
-
-    let history = runtime.list_history(HistoryQuery::default()).unwrap();
-    assert_eq!(history.len(), 1);
-    assert_eq!(history[0], first);
     let usage = runtime.usage().unwrap();
     assert_eq!(usage.all_time.dictations, 1);
     assert_eq!(usage.all_time.words, 4);
@@ -172,9 +147,9 @@ fn delivery_interrupted_before_completion_is_recorded_exactly_once() {
     }
 
     let runtime = Runtime::open(&database_path).unwrap();
-    let history = runtime.list_history(HistoryQuery::default()).unwrap();
+    let history = stored_history(&database_path);
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].job_id, Some(delivered.id));
+    assert_eq!(history[0].job_id, Some(delivered.id.to_string()));
     assert_eq!(runtime.usage().unwrap().all_time.dictations, 1);
     assert!(runtime.job(delivered.id).unwrap().is_none());
 }
@@ -185,10 +160,10 @@ fn deleted_history_stays_deleted_after_a_restart() {
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
-    let entry = runtime
+    runtime
         .complete_delivered(delivered.id, &Settings::default())
-        .unwrap()
         .unwrap();
+    let entry = history_rows(&runtime).remove(0);
     assert!(runtime.delete_history(entry.id).unwrap());
     drop(runtime);
 
@@ -197,12 +172,7 @@ fn deleted_history_stays_deleted_after_a_restart() {
         .clean_up_finished_jobs(&Settings::default(), &directory.path().join("recordings"))
         .unwrap();
 
-    assert!(
-        restarted
-            .list_history(HistoryQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(history_rows(&restarted).is_empty());
 }
 
 #[test]
@@ -216,12 +186,7 @@ fn history_off_keeps_usage_numbers_but_no_transcript_after_delivery() {
         ..Settings::default()
     };
 
-    assert!(
-        runtime
-            .complete_delivered(delivered.id, &settings)
-            .unwrap()
-            .is_none()
-    );
+    runtime.complete_delivered(delivered.id, &settings).unwrap();
 
     let usage = runtime.usage().unwrap();
     assert_eq!(usage.all_time.dictations, 1);
@@ -247,40 +212,27 @@ fn history_query_and_delete_keep_daily_usage_consistent() {
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
-    let entry = runtime
+    runtime
         .complete_delivered(delivered.id, &Settings::default())
-        .unwrap()
         .unwrap();
-
-    assert_eq!(
+    let search = |runtime: &Runtime, text: &str| {
         runtime
-            .list_history(HistoryQuery {
-                search: "Vercel".to_owned(),
-                ..HistoryQuery::default()
+            .history_page(&HistoryPageRequest {
+                search: text.to_owned(),
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        runtime
-            .list_history(HistoryQuery {
-                search: "missing".to_owned(),
-                ..HistoryQuery::default()
-            })
-            .unwrap()
-            .is_empty()
-    );
+            .rows
+    };
 
-    assert!(runtime.delete_history(entry.id).unwrap());
-    assert!(!runtime.delete_history(entry.id).unwrap());
+    let found = search(&runtime, "Vercel");
+    assert_eq!(found.len(), 1);
+    assert!(search(&runtime, "missing").is_empty());
+
+    assert!(runtime.delete_history(found[0].id).unwrap());
+    assert!(!runtime.delete_history(found[0].id).unwrap());
     assert_eq!(runtime.usage().unwrap().all_time.dictations, 0);
-    assert!(
-        runtime
-            .list_history(HistoryQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(history_rows(&runtime).is_empty());
 }
 
 #[test]
@@ -324,77 +276,71 @@ fn history_page_is_bounded_searchable_and_reports_more() {
     transaction.commit().unwrap();
 
     let zero_page_size = runtime
-        .history_page(HistoryQuery {
-            limit: 0,
-            ..HistoryQuery::default()
+        .history_page(&HistoryPageRequest {
+            page_size: 0,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(zero_page_size.matches.len(), 1);
+    assert_eq!(zero_page_size.rows.len(), 1);
     let oversized_page_size = runtime
-        .history_page(HistoryQuery {
-            limit: usize::MAX,
-            ..HistoryQuery::default()
+        .history_page(&HistoryPageRequest {
+            page_size: usize::MAX,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(oversized_page_size.matches.len(), 25);
+    assert_eq!(oversized_page_size.rows.len(), 25);
 
     let first_page = runtime
-        .history_page(HistoryQuery {
-            limit: 10,
-            ..HistoryQuery::default()
+        .history_page(&HistoryPageRequest {
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(first_page.matches.len(), 10);
+    assert_eq!(first_page.rows.len(), 10);
     assert_eq!(first_page.total_matches, 25);
     assert!(first_page.next_cursor.is_some());
     let second_page = runtime
-        .history_page(HistoryQuery {
-            limit: 10,
+        .history_page(&HistoryPageRequest {
+            page_size: 10,
             after: first_page.next_cursor.clone(),
-            ..HistoryQuery::default()
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(second_page.matches.len(), 10);
+    assert_eq!(second_page.rows.len(), 10);
     assert_eq!(second_page.total_matches, 25);
-    assert_eq!(
-        second_page.matches[0].entry.final_text,
-        "ordinary result 14"
-    );
-    assert_eq!(second_page.matches[9].entry.final_text, "ordinary result 5");
+    assert_eq!(second_page.rows[0].preview_text, "ordinary result 14");
+    assert_eq!(second_page.rows[9].preview_text, "ordinary result 5");
     assert!(second_page.next_cursor.is_some());
 
-    let cursor_error = runtime
-        .history_page(HistoryQuery {
-            search: "different query".to_owned(),
-            limit: 10,
+    let foreign_cursor = runtime
+        .history_page(&HistoryPageRequest {
+            search: "ordinary".to_owned(),
+            page_size: 10,
             after: first_page.next_cursor,
-            ..HistoryQuery::default()
         })
-        .unwrap_err();
-    assert!(matches!(
-        cursor_error,
-        agentdictate_runtime::RuntimeError::InvalidHistoryCursor(_)
-    ));
+        .unwrap();
+    assert!(foreign_cursor.cursor_restarted);
+    assert_eq!(foreign_cursor.rows[0].preview_text, "ordinary result 24");
 
     let matches = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "nedle".into(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(matches.total_matches, 3);
     assert!(matches.next_cursor.is_none());
-    assert_eq!(matches.matches[0].entry.final_text, "needle result 22");
-    assert_eq!(matches.matches[1].entry.final_text, "needle result 12");
-    assert_eq!(matches.matches[2].entry.final_text, "needle result 2");
-    assert!(matches.matches[0].preview.contains("needle"));
+    assert_eq!(matches.rows[0].preview_text, "needle result 22");
+    assert_eq!(matches.rows[1].preview_text, "needle result 12");
+    assert_eq!(matches.rows[2].preview_text, "needle result 2");
+    assert!(matches.rows[0].preview_text.contains("needle"));
 
     let oversized_query = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "needle ".repeat(1_000),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(oversized_query.total_matches, 3);
@@ -465,23 +411,23 @@ fn history_search_handles_typos_symbols_and_match_aware_previews() {
     transaction.commit().unwrap();
 
     let fuzzy = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "transcirpt canoncal".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(fuzzy.total_matches, 1);
-    assert_eq!(fuzzy.matches.len(), 1);
-    assert!(fuzzy.matches[0].preview.contains("Transcript canonical"));
-    assert!(!fuzzy.matches[0].preview.starts_with("unrelated opening"));
+    assert_eq!(fuzzy.rows.len(), 1);
+    assert!(fuzzy.rows[0].preview_text.contains("Transcript canonical"));
+    assert!(!fuzzy.rows[0].preview_text.starts_with("unrelated opening"));
 
     for literal in ["C++", "AI", "%", "_"] {
         let page = runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: literal.to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap();
         assert_eq!(page.total_matches, 1, "literal query {literal}");
@@ -489,50 +435,50 @@ fn history_search_handles_typos_symbols_and_match_aware_previews() {
 
     for infix in ["scope", "dictate"] {
         let page = runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: infix.to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap();
         assert_eq!(page.total_matches, 1, "infix query {infix}");
         assert_eq!(
-            page.matches[0].entry.final_text,
+            page.rows[0].preview_text,
             "TokScope integrates with AgentDictate."
         );
     }
 
     for (query, expected_fragment) in [("resume", "résumé"), ("cafe", "café")] {
         let page = runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: query.to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap();
         assert_eq!(page.total_matches, 1, "diacritic query {query}");
-        assert!(page.matches[0].entry.final_text.contains(expected_fragment));
+        assert!(page.rows[0].preview_text.contains(expected_fragment));
     }
 
     let unicode_preview = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "needle".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(unicode_preview.total_matches, 1);
-    assert!(unicode_preview.matches[0].preview.contains("needle"));
-    assert!(unicode_preview.matches[0].preview.chars().count() <= 162);
+    assert!(unicode_preview.rows[0].preview_text.contains("needle"));
+    assert!(unicode_preview.rows[0].preview_text.chars().count() <= 162);
 
     let raw_only = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "raw-only-secret".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert!(raw_only.matches.is_empty());
+    assert!(raw_only.rows.is_empty());
 }
 
 #[test]
@@ -579,39 +525,39 @@ fn history_search_corrects_a_first_character_typo_and_a_rare_misspelling() {
     transaction.commit().unwrap();
 
     let first_character = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "xranscript".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(first_character.total_matches, 5);
     assert!(
         first_character
-            .matches
+            .rows
             .iter()
-            .any(|matched| matched.entry.final_text == "transcript canonical four")
+            .any(|matched| matched.preview_text == "transcript canonical four")
     );
 
     let rare_misspelling = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "transcirpt".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(rare_misspelling.total_matches, 5);
     assert!(
         rare_misspelling
-            .matches
+            .rows
             .iter()
-            .any(|matched| matched.entry.final_text == "transcirpt literal artifact")
+            .any(|matched| matched.preview_text == "transcirpt literal artifact")
     );
     assert!(
         rare_misspelling
-            .matches
+            .rows
             .iter()
-            .any(|matched| matched.entry.final_text == "transcript canonical four")
+            .any(|matched| matched.preview_text == "transcript canonical four")
     );
 }
 
@@ -622,42 +568,42 @@ fn recording_history_invalidates_the_fuzzy_vocabulary_cache() {
     runtime.ensure_history_search_index().unwrap();
     assert!(
         runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: "vrceel".to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .matches
+            .rows
             .is_empty()
     );
 
     let delivered = delivered_job(&mut runtime, &directory);
-    let entry = runtime
+    runtime
         .complete_delivered(delivered.id, &Settings::default())
-        .unwrap()
         .unwrap();
+    let entry = history_rows(&runtime).remove(0);
     let found = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "vrceel".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(found.matches.len(), 1);
-    assert_eq!(found.matches[0].entry.id, entry.id);
+    assert_eq!(found.rows.len(), 1);
+    assert_eq!(found.rows[0].id, entry.id);
 
     runtime.ensure_history_search_index().unwrap();
     assert!(runtime.delete_history(entry.id).unwrap());
     assert!(
         runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: "Vercel".to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .matches
+            .rows
             .is_empty()
     );
 }
@@ -670,13 +616,13 @@ fn external_history_writes_refresh_the_fuzzy_vocabulary_cache() {
     runtime.ensure_history_search_index().unwrap();
     assert!(
         runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: "vrceel".to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .matches
+            .rows
             .is_empty()
     );
 
@@ -706,14 +652,14 @@ fn external_history_writes_refresh_the_fuzzy_vocabulary_cache() {
         .unwrap();
 
     let found = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "vrceel".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(found.matches.len(), 1);
-    assert_eq!(found.matches[0].entry.final_text, "Vercel");
+    assert_eq!(found.rows.len(), 1);
+    assert_eq!(found.rows[0].preview_text, "Vercel");
 
     connection
         .execute(
@@ -723,37 +669,37 @@ fn external_history_writes_refresh_the_fuzzy_vocabulary_cache() {
         .unwrap();
     assert!(
         runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: "vrceel".to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .matches
+            .rows
             .is_empty()
     );
     let updated = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "clodflare".to_owned(),
-            limit: 10,
-            ..HistoryQuery::default()
+            page_size: 10,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
-    assert_eq!(updated.matches.len(), 1);
-    assert_eq!(updated.matches[0].entry.final_text, "Cloudflare");
+    assert_eq!(updated.rows.len(), 1);
+    assert_eq!(updated.rows[0].preview_text, "Cloudflare");
 
     connection
         .execute("DELETE FROM dictation_sessions WHERE id = ?1", [session_id])
         .unwrap();
     assert!(
         runtime
-            .history_page(HistoryQuery {
+            .history_page(&HistoryPageRequest {
                 search: "clodflare".to_owned(),
-                limit: 10,
-                ..HistoryQuery::default()
+                page_size: 10,
+                ..HistoryPageRequest::default()
             })
             .unwrap()
-            .matches
+            .rows
             .is_empty()
     );
 }
@@ -778,10 +724,10 @@ fn fuzzy_cursor_expires_when_vocabulary_changes_its_candidate_plan() {
     }
 
     let first_page = runtime
-        .history_page(HistoryQuery {
+        .history_page(&HistoryPageRequest {
             search: "nedle".to_owned(),
-            limit: 1,
-            ..HistoryQuery::default()
+            page_size: 1,
+            ..HistoryPageRequest::default()
         })
         .unwrap();
     assert_eq!(first_page.total_matches, 3);
@@ -790,18 +736,15 @@ fn fuzzy_cursor_expires_when_vocabulary_changes_its_candidate_plan() {
     insert_external_history(&mut connection, 10, "nedle exact one");
     insert_external_history(&mut connection, 11, "nedle exact two");
 
-    let error = runtime
-        .history_page(HistoryQuery {
+    let restarted = runtime
+        .history_page(&HistoryPageRequest {
             search: "nedle".to_owned(),
-            limit: 1,
+            page_size: 1,
             after: Some(cursor),
-            ..HistoryQuery::default()
         })
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        agentdictate_runtime::RuntimeError::InvalidHistoryCursor(_)
-    ));
+        .unwrap();
+    assert!(restarted.cursor_restarted);
+    assert_eq!(restarted.rows[0].preview_text, "nedle exact two");
 }
 
 fn insert_external_history(
@@ -851,7 +794,7 @@ fn recovery_projection_reports_audio_presence_without_hiding_missing_files() {
         .interrupt_job(job.id, JobStage::Recording, "microphone disappeared")
         .unwrap();
 
-    let present = runtime.recovery_entries().unwrap();
+    let present = runtime.recoveries().unwrap();
     assert_eq!(present.len(), 1);
     assert_eq!(present[0].job_id, job.id);
     assert_eq!(present[0].stage, JobStage::Interrupted);
@@ -859,11 +802,10 @@ fn recovery_projection_reports_audio_presence_without_hiding_missing_files() {
         present[0].error_message.as_deref(),
         Some("microphone disappeared")
     );
-    assert_eq!(present[0].audio_path, PathBuf::from(&audio_path));
     assert!(present[0].audio_present);
 
     std::fs::remove_file(audio_path).unwrap();
-    assert!(!runtime.recovery_entries().unwrap()[0].audio_present);
+    assert!(!runtime.recoveries().unwrap()[0].audio_present);
 }
 
 #[test]
@@ -878,7 +820,7 @@ fn active_recording_is_not_presented_as_a_recovery() {
         .unwrap();
 
     assert_eq!(job.stage, JobStage::Recording);
-    assert!(runtime.recovery_entries().unwrap().is_empty());
+    assert!(runtime.recoveries().unwrap().is_empty());
     assert_eq!(runtime.recoverable_jobs().unwrap(), vec![job]);
 }
 

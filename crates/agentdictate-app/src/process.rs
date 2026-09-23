@@ -174,11 +174,11 @@ impl AgentProcess {
     fn history_page_message(
         &self,
         request_id: u64,
-        request: agentdictate_core::HistoryPageRequest,
+        request: &agentdictate_core::HistoryPageRequest,
     ) -> Result<ServerMessage, RuntimeError> {
         Ok(ServerMessage::history_page(
             request_id,
-            self.daemon.history_page_snapshot(request)?,
+            self.daemon.history_page(request)?,
         ))
     }
 
@@ -433,15 +433,15 @@ impl IpcHandler for AgentProcess {
             }
             ClientCommandKind::CopyTranscript { id, .. } => self
                 .daemon
-                .history(id)
+                .transcript_text(id)
                 .map_err(anyhow::Error::from)
-                .and_then(|entry| {
-                    entry.ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
+                .and_then(|text| {
+                    text.ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
                 })
-                .and_then(|entry| {
+                .and_then(|text| {
                     self.daemon
                         .deliverer_mut()
-                        .copy_text(&entry.final_text)
+                        .copy_text(&text)
                         .map_err(Into::into)
                 }),
             ClientCommandKind::UpdateSettings { settings, .. } => self.update_settings(*settings),
@@ -464,7 +464,7 @@ impl IpcHandler for AgentProcess {
         self.synchronize_recording_priority();
         match result {
             Ok(()) if history_request.is_some() => self
-                .history_page_message(request_id, history_request.expect("checked above"))
+                .history_page_message(request_id, &history_request.expect("checked above"))
                 .unwrap_or_else(|error| {
                     ServerMessage::command_rejected(request_id, error.to_string())
                 }),

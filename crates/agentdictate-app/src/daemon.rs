@@ -6,21 +6,19 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
-    AppSnapshot, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot,
-    HotkeyReadiness, JobId, JobStage, RecoverySnapshot, ReplacementRule, Settings, Workflow,
-    WorkflowError, WorkflowPhase, WorkflowSignal, WorkspaceSnapshot,
+    AppSnapshot, HistoryPageRequest, HistoryPageSnapshot, HotkeyReadiness, JobId, JobStage,
+    ReplacementRule, Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal,
+    WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
-    DeliveryStatus, ExternalError, HeadlessDeliveryGate, HistoryCursor, HistoryEntry, HistoryQuery,
-    Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError, Transcriber,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
+    HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError,
+    Transcriber,
 };
 use chrono::Utc;
 use thiserror::Error;
 
 use crate::{ActiveRecordingUpdate, AppPaths, OverlayController, OverlayUpdate};
-
-pub(crate) const OVERVIEW_RECENT_HISTORY_LIMIT: usize = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CapturedRecording {
@@ -141,9 +139,7 @@ where
         transcriber: T,
         deliverer: D,
     ) -> Self {
-        let recoverable_count = runtime
-            .recovery_entries()
-            .map_or(0, |entries| entries.len());
+        let recoverable_count = runtime.recoveries().map_or(0, |entries| entries.len());
         Self {
             runtime,
             settings,
@@ -500,90 +496,20 @@ where
     }
 
     pub fn workspace_snapshot(&self) -> Result<WorkspaceSnapshot, RuntimeError> {
-        let recoveries = self
-            .runtime
-            .recovery_entries()?
-            .into_iter()
-            .map(|entry| RecoverySnapshot {
-                job_id: entry.job_id,
-                stage: entry.stage,
-                updated_at: entry.updated_at,
-                duration_seconds: entry.duration_seconds,
-                raw_transcript: entry.raw_transcript,
-                final_text: entry.final_text,
-                error_message: entry.error_message,
-                audio_present: entry.audio_present,
-                delivery_ambiguous: entry.delivery_status == DeliveryStatus::Ambiguous,
-            })
-            .collect();
-        let history_page = self.history_page_snapshot(HistoryPageRequest::default())?;
-        let recent_history = self
-            .history_page_snapshot(HistoryPageRequest {
-                search: String::new(),
-                page_size: OVERVIEW_RECENT_HISTORY_LIMIT,
-                after: None,
-            })?
-            .rows;
-        let replacements = self.runtime.replacement_rules()?;
-        let usage = self.runtime.usage()?;
         Ok(WorkspaceSnapshot {
             overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
-            recoveries,
-            recent_history,
-            history: history_page.rows,
-            history_total: history_page.total_matches,
-            history_has_more: history_page.next_cursor.is_some(),
-            history_next_cursor: history_page.next_cursor,
-            history_search: history_page.search,
-            replacements,
-            usage,
+            recoveries: self.runtime.recoveries()?,
+            history: self.runtime.history_page(&HistoryPageRequest::default())?,
+            replacements: self.runtime.replacement_rules()?,
+            usage: self.runtime.usage()?,
         })
     }
 
-    pub fn history_page_snapshot(
+    pub fn history_page(
         &self,
-        request: HistoryPageRequest,
+        request: &HistoryPageRequest,
     ) -> Result<HistoryPageSnapshot, RuntimeError> {
-        let history_query = HistoryQuery {
-            search: request.search.clone(),
-            limit: request.page_size,
-            after: request
-                .after
-                .as_ref()
-                .map(|cursor| HistoryCursor::from_opaque(cursor.as_str())),
-            ..HistoryQuery::default()
-        };
-        let (page, cursor_restarted) = match self.runtime.history_page(history_query) {
-            Ok(page) => (page, false),
-            Err(RuntimeError::InvalidHistoryCursor(_)) if request.after.is_some() => (
-                self.runtime.history_page(HistoryQuery {
-                    search: request.search.clone(),
-                    limit: request.page_size,
-                    ..HistoryQuery::default()
-                })?,
-                true,
-            ),
-            Err(error) => return Err(error),
-        };
-        Ok(HistoryPageSnapshot {
-            search: request.search,
-            total_matches: page.total_matches,
-            cursor_restarted,
-            next_cursor: page
-                .next_cursor
-                .map(|cursor| HistoryPageCursor::new(cursor.into_opaque())),
-            rows: page
-                .matches
-                .into_iter()
-                .map(|matched| HistorySnapshot {
-                    id: matched.entry.id,
-                    created_at: matched.entry.created_at,
-                    preview_text: matched.preview,
-                    word_count: matched.entry.final_word_count,
-                    duration_seconds: matched.entry.duration_seconds,
-                })
-                .collect(),
-        })
+        self.runtime.history_page(request)
     }
 
     pub fn create_replacement(
@@ -612,8 +538,8 @@ where
         self.runtime.clear_history()
     }
 
-    pub fn history(&self, id: i64) -> Result<Option<HistoryEntry>, RuntimeError> {
-        self.runtime.history(id)
+    pub fn transcript_text(&self, id: i64) -> Result<Option<String>, RuntimeError> {
+        self.runtime.transcript_text(id)
     }
 
     #[must_use]
@@ -827,7 +753,7 @@ where
     }
 
     fn attention_recovery_count(&self) -> Result<usize, RuntimeError> {
-        Ok(self.runtime.recovery_entries()?.len())
+        Ok(self.runtime.recoveries()?.len())
     }
 
     fn overlay_update(&self) -> OverlayUpdate {

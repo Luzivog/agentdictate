@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use agentdictate_runtime::{
-    DeliveryStatus, FinishedJobCleanup, HistoryQuery, JobId, JobStage, Runtime, Settings,
-    load_settings, save_settings,
+    DeliveryStatus, FinishedJobCleanup, JobId, JobStage, Runtime, Settings, load_settings,
+    save_settings,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -254,11 +254,9 @@ fn startup_cleanup_migrates_finished_jobs_and_sweeps_their_recordings() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(remaining_jobs, [failed.to_string()]);
-    let mut history_jobs = runtime
-        .list_history(HistoryQuery::default())
-        .unwrap()
+    let mut history_jobs = crate::support::stored_history(&database_path)
         .into_iter()
-        .map(|entry| entry.job_id.unwrap().to_string())
+        .map(|entry| entry.job_id.unwrap())
         .collect::<Vec<_>>();
     history_jobs.sort();
     let mut expected_history_jobs = vec![recorded.to_string(), interrupted.to_string()];

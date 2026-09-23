@@ -15,7 +15,6 @@ pub use external_dictation::{
 mod fs;
 pub use fs::write_atomic;
 mod history;
-pub use history::{HistoryCursor, HistoryEntry, HistoryMatch, HistoryPage, HistoryQuery};
 mod history_search;
 mod maintenance_priority;
 pub use maintenance_priority::{HistoryIndexMaintenance, RecordingPriorityGuard};
@@ -26,7 +25,6 @@ pub use ports::{
     RuntimeError, Transcriber, Transcript,
 };
 mod recovery;
-pub use recovery::RecoveryEntry;
 mod runtime;
 pub use runtime::Runtime;
 mod schema;

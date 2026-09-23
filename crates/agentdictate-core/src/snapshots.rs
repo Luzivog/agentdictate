@@ -26,7 +26,9 @@ pub struct HistorySnapshot {
     pub duration_seconds: f64,
 }
 
-pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 20;
+/// Rows in a first History page. The workspace's page also fills the
+/// overview's recent list.
+pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 30;
 pub const HISTORY_CONTINUATION_PAGE_SIZE: usize = 50;
 
 /// Opaque continuation token returned by the daemon for a specific history query.
@@ -128,12 +130,8 @@ pub struct UsageSnapshot {
 pub struct WorkspaceSnapshot {
     pub overlay_unavailable: bool,
     pub recoveries: Vec<RecoverySnapshot>,
-    pub recent_history: Vec<HistorySnapshot>,
-    pub history: Vec<HistorySnapshot>,
-    pub history_total: u64,
-    pub history_has_more: bool,
-    pub history_next_cursor: Option<HistoryPageCursor>,
-    pub history_search: String,
+    /// The newest transcripts, unfiltered.
+    pub history: HistoryPageSnapshot,
     pub replacements: Vec<ReplacementRule>,
     pub usage: UsageSnapshot,
 }

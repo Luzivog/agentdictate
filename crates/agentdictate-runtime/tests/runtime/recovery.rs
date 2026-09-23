@@ -1,6 +1,6 @@
 use std::fs;
 
-use agentdictate_runtime::{DeliveryStatus, JobStage, Runtime};
+use agentdictate_runtime::{JobStage, Runtime};
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -45,7 +45,7 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
     insert_job(&connection, "delivered.wav", "delivered", "delivered");
     drop(connection);
 
-    let entries = runtime.recovery_entries().unwrap();
+    let entries = runtime.recoveries().unwrap();
     let mut stage_names: Vec<String> = entries
         .iter()
         .map(|entry| format!("{:?}", entry.stage))
@@ -64,7 +64,7 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
         .find(|entry| entry.stage == JobStage::Captured)
         .unwrap();
     assert_eq!(captured.raw_transcript, "raw words");
-    assert_eq!(captured.delivery_status, DeliveryStatus::NotAttempted);
+    assert!(!captured.delivery_ambiguous);
     assert!(
         captured.audio_present,
         "existing files are reported present"
@@ -72,7 +72,7 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
 
     let missing_audio = entries
         .iter()
-        .find(|entry| entry.audio_path.ends_with("ready.wav"))
+        .find(|entry| entry.stage == JobStage::ReadyToDeliver)
         .unwrap();
     assert!(!missing_audio.audio_present);
 }

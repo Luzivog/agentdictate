@@ -16,13 +16,12 @@ use std::{
 
 use agentdictate_core::{
     ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE, HistoryPageCursor,
-    JobId, ReplacementRule, ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot,
-    WorkspaceSnapshot, format_duration_clock,
+    HistoryPageSnapshot, JobId, ReplacementRule, ServerMessageKind, UsageSnapshot,
+    UsageTotalsSnapshot, WorkspaceSnapshot, format_duration_clock,
 };
 use agentdictate_runtime::IpcClient;
 use thiserror::Error;
 
-use crate::daemon::OVERVIEW_RECENT_HISTORY_LIMIT;
 use agentdictate_ui::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, ReplacementRuleViewModel,
     ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals,
@@ -61,8 +60,21 @@ pub struct WorkspaceClient {
 struct WorkspaceClientState {
     snapshot: WorkspaceSnapshot,
     period: UsagePeriod,
-    history_next_cursor: Option<HistoryPageCursor>,
-    history_customized: bool,
+    /// The History search as last typed.
+    search: String,
+    /// The History tab's rows after a search or "Show more". `None` shows the
+    /// workspace's own first page, which also fills the overview.
+    history: Option<HistoryPageSnapshot>,
+}
+
+impl WorkspaceClientState {
+    fn shown_history(&self) -> &HistoryPageSnapshot {
+        self.history.as_ref().unwrap_or(&self.snapshot.history)
+    }
+
+    fn view_model(&self) -> WorkspaceViewModel {
+        workspace_view_model(&self.snapshot, self.shown_history(), self.period)
+    }
 }
 
 impl WorkspaceClient {
@@ -73,52 +85,46 @@ impl WorkspaceClient {
             next_request_id: AtomicU64::new(10_000),
             request_gate: Mutex::new(()),
             state: Mutex::new(WorkspaceClientState {
-                history_next_cursor: snapshot.history_next_cursor.clone(),
                 snapshot,
                 period: UsagePeriod::Last30Days,
-                history_customized: false,
+                search: String::new(),
+                history: None,
             }),
         }
     }
 
     pub fn view_model(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
-        let state = self
-            .state
+        Ok(self.lock_state()?.view_model())
+    }
+
+    fn lock_state(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, WorkspaceClientState>, WorkspaceError> {
+        self.state
             .lock()
-            .map_err(|_| WorkspaceError::StateUnavailable)?;
-        Ok(workspace_view_model(&state.snapshot, state.period))
+            .map_err(|_| WorkspaceError::StateUnavailable)
     }
 
     pub fn perform(&self, action: WorkspaceAction) -> Result<WorkspaceViewModel, WorkspaceError> {
         if let WorkspaceAction::SearchHistory { query } = action {
-            {
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| WorkspaceError::StateUnavailable)?;
-                state.snapshot.history_search = query;
-                state.history_next_cursor = None;
-                state.history_customized = !state.snapshot.history_search.trim().is_empty();
-            }
-            return self.refresh_history_page(false);
+            self.lock_state()?.search.clone_from(&query);
+            return self.load_history(query, None);
         }
         if matches!(action, WorkspaceAction::LoadMoreHistory) {
-            {
-                let mut state = self
-                    .state
-                    .lock()
-                    .map_err(|_| WorkspaceError::StateUnavailable)?;
-                state.history_customized = true;
-            }
-            return self.refresh_history_page(true);
+            let (search, after) = {
+                let state = self.lock_state()?;
+                let shown = state.shown_history();
+                (shown.search.clone(), shown.next_cursor.clone())
+            };
+            let Some(after) = after else {
+                return self.view_model();
+            };
+            return self.load_history(search, Some(after));
         }
         if let WorkspaceAction::SelectUsagePeriod(period) = action {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| WorkspaceError::StateUnavailable)?;
+            let mut state = self.lock_state()?;
             state.period = period;
-            return Ok(workspace_view_model(&state.snapshot, state.period));
+            return Ok(state.view_model());
         }
 
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
@@ -169,10 +175,7 @@ impl WorkspaceClient {
                 },
             ),
             WorkspaceAction::SetReplacementEnabled { id, enabled } => {
-                let state = self
-                    .state
-                    .lock()
-                    .map_err(|_| WorkspaceError::StateUnavailable)?;
+                let state = self.lock_state()?;
                 let mut rule = state
                     .snapshot
                     .replacements
@@ -194,59 +197,50 @@ impl WorkspaceClient {
 
     /// Re-queries the daemon and atomically replaces the cached workspace.
     /// Requests from actions and filesystem refreshes are serialized so an
-    /// older response cannot overwrite a newer local snapshot.
+    /// older response cannot overwrite a newer local snapshot. A searched or
+    /// extended History tab reloads its search's first page.
     pub fn refresh(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
-        let needs_history_refresh = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| WorkspaceError::StateUnavailable)?;
-            state.history_customized
-        };
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let workspace = self.send_workspace_command(ClientCommand::get_workspace(request_id))?;
-        if needs_history_refresh {
-            self.refresh_history_page(false)
-        } else {
-            Ok(workspace)
+        let search = {
+            let state = self.lock_state()?;
+            state.history.is_some().then(|| state.search.clone())
+        };
+        match search {
+            Some(search) => self.load_history(search, None),
+            None => Ok(workspace),
         }
     }
 
-    fn refresh_history_page(&self, append: bool) -> Result<WorkspaceViewModel, WorkspaceError> {
-        let (search, after) = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| WorkspaceError::StateUnavailable)?;
-            (
-                state.snapshot.history_search.clone(),
-                if append {
-                    state.history_next_cursor.clone()
-                } else {
-                    None
-                },
-            )
-        };
-        if append && after.is_none() {
-            return self.view_model();
-        }
+    /// Shows the History page for `search` that starts `after` a cursor, or
+    /// its first page. A continuation appends to the rows shown, unless the
+    /// daemon had to restart an expired cursor at the first page. A response
+    /// for a search the user has since changed is dropped.
+    fn load_history(
+        &self,
+        search: String,
+        after: Option<HistoryPageCursor>,
+    ) -> Result<WorkspaceViewModel, WorkspaceError> {
+        let continuation = after.is_some();
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        let _request = self
-            .request_gate
-            .lock()
-            .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
-        let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
-        let response = client.send(ClientCommand::get_history_page(
-            request_id,
-            search.clone(),
-            if append {
-                HISTORY_CONTINUATION_PAGE_SIZE
-            } else {
-                DEFAULT_HISTORY_PAGE_SIZE
-            },
-            after,
-        ))?;
-        let page = match response.kind {
+        let response = {
+            let _request = self
+                .request_gate
+                .lock()
+                .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
+            let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
+            client.send(ClientCommand::get_history_page(
+                request_id,
+                search,
+                if continuation {
+                    HISTORY_CONTINUATION_PAGE_SIZE
+                } else {
+                    DEFAULT_HISTORY_PAGE_SIZE
+                },
+                after,
+            ))?
+        };
+        let mut page = match response.kind {
             ServerMessageKind::HistoryPage { page, .. } => *page,
             ServerMessageKind::CommandRejected { error, .. } => {
                 return Err(WorkspaceError::CommandRejected { message: error });
@@ -255,46 +249,41 @@ impl WorkspaceClient {
                 return Err(WorkspaceError::UnexpectedHistoryResponse);
             }
         };
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| WorkspaceError::StateUnavailable)?;
-        if state.snapshot.history_search != page.search {
-            return Ok(workspace_view_model(&state.snapshot, state.period));
+        let mut state = self.lock_state()?;
+        if page.search != state.search {
+            return Ok(state.view_model());
         }
-        if append && !page.cursor_restarted {
+        if continuation && !page.cursor_restarted {
+            let mut rows = state.shown_history().rows.clone();
             for row in page.rows {
-                if !state
-                    .snapshot
-                    .history
-                    .iter()
-                    .any(|existing| existing.id == row.id)
-                {
-                    state.snapshot.history.push(row);
+                if !rows.iter().any(|existing| existing.id == row.id) {
+                    rows.push(row);
                 }
             }
-        } else {
-            state.snapshot.history = page.rows;
+            page.rows = rows;
         }
-        state.snapshot.history_total = page.total_matches;
-        state.history_next_cursor = page.next_cursor.clone();
-        state.snapshot.history_next_cursor = page.next_cursor;
-        state.snapshot.history_has_more = state.history_next_cursor.is_some();
-        state.snapshot.history_search = page.search;
-        Ok(workspace_view_model(&state.snapshot, state.period))
+        if continuation || !page.search.trim().is_empty() {
+            state.history = Some(page);
+        } else {
+            state.history = None;
+            state.snapshot.history = page;
+        }
+        Ok(state.view_model())
     }
 
     fn send_workspace_command(
         &self,
         command: ClientCommand,
     ) -> Result<WorkspaceViewModel, WorkspaceError> {
-        let _request = self
-            .request_gate
-            .lock()
-            .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
-        let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
-        let response = client.send(command)?;
-        let mut workspace = match response.kind {
+        let response = {
+            let _request = self
+                .request_gate
+                .lock()
+                .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
+            let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
+            client.send(command)?
+        };
+        let workspace = match response.kind {
             ServerMessageKind::Workspace { workspace, .. } => *workspace,
             ServerMessageKind::CommandRejected { error, .. } => {
                 return Err(WorkspaceError::CommandRejected { message: error });
@@ -306,21 +295,9 @@ impl WorkspaceClient {
                 return Err(WorkspaceError::UnexpectedHistoryPage);
             }
         };
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| WorkspaceError::StateUnavailable)?;
-        if state.history_customized {
-            workspace.history = state.snapshot.history.clone();
-            workspace.history_total = state.snapshot.history_total;
-            workspace.history_has_more = state.snapshot.history_has_more;
-            workspace.history_search = state.snapshot.history_search.clone();
-            workspace.history_next_cursor = state.history_next_cursor.clone();
-        } else {
-            state.history_next_cursor = workspace.history_next_cursor.clone();
-        }
+        let mut state = self.lock_state()?;
         state.snapshot = workspace;
-        Ok(workspace_view_model(&state.snapshot, state.period))
+        Ok(state.view_model())
     }
 
     /// Watches SQLite database, rollback-journal, and WAL writes, and the
@@ -501,9 +478,11 @@ impl DatabaseChangeWatcher {
     }
 }
 
-#[must_use]
-pub fn workspace_view_model(
+/// Presents a workspace. `history` is the History tab's page; the overview
+/// always lists the workspace's own newest transcripts.
+fn workspace_view_model(
     snapshot: &WorkspaceSnapshot,
+    history: &HistoryPageSnapshot,
     period: UsagePeriod,
 ) -> WorkspaceViewModel {
     let recoveries = snapshot
@@ -534,11 +513,11 @@ pub fn workspace_view_model(
             )
         })
         .collect();
-    let transcripts = snapshot.history.iter().map(transcript_view_model).collect();
+    let transcripts = history.rows.iter().map(transcript_view_model).collect();
     let recent_transcripts = snapshot
-        .recent_history
+        .history
+        .rows
         .iter()
-        .take(OVERVIEW_RECENT_HISTORY_LIMIT)
         .map(transcript_view_model)
         .collect();
     let replacements = snapshot
@@ -559,9 +538,9 @@ pub fn workspace_view_model(
         HistoryViewModel::from_page(
             recoveries,
             transcripts,
-            snapshot.history_total,
-            snapshot.history_search.clone(),
-            snapshot.history_has_more,
+            history.total_matches,
+            history.search.clone(),
+            history.next_cursor.is_some(),
         ),
         recent_transcripts,
         ReplacementsViewModel::new(replacements),
@@ -642,13 +621,16 @@ mod tests {
     #[test]
     fn maps_workspace_data_and_switches_period_without_losing_activity() {
         let snapshot = WorkspaceSnapshot {
-            history: vec![HistorySnapshot {
-                id: 4,
-                created_at: Utc.with_ymd_and_hms(2026, 8, 18, 9, 30, 0).unwrap(),
-                preview_text: "one two three".into(),
-                word_count: 3,
-                duration_seconds: 7.0,
-            }],
+            history: HistoryPageSnapshot {
+                rows: vec![HistorySnapshot {
+                    id: 4,
+                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 9, 30, 0).unwrap(),
+                    preview_text: "one two three".into(),
+                    word_count: 3,
+                    duration_seconds: 7.0,
+                }],
+                ..HistoryPageSnapshot::default()
+            },
             usage: UsageSnapshot {
                 last_7_days: UsageTotalsSnapshot {
                     dictations: 2,
@@ -680,8 +662,8 @@ mod tests {
             ..WorkspaceSnapshot::default()
         };
 
-        let week = workspace_view_model(&snapshot, UsagePeriod::Last7Days);
-        let all = workspace_view_model(&snapshot, UsagePeriod::AllTime);
+        let week = workspace_view_model(&snapshot, &snapshot.history, UsagePeriod::Last7Days);
+        let all = workspace_view_model(&snapshot, &snapshot.history, UsagePeriod::AllTime);
 
         assert_eq!(week.history.transcripts[0].text, "one two three");
         assert_eq!(week.usage.totals.dictations, 2);
@@ -843,7 +825,7 @@ mod tests {
                 panic!("history client sent an unexpected command")
             };
             assert_eq!(request.search, "needle");
-            assert_eq!(request.page_size, 20);
+            assert_eq!(request.page_size, DEFAULT_HISTORY_PAGE_SIZE);
             assert!(request.after.is_none());
             ServerMessage::history_page(
                 request_id,
@@ -874,15 +856,17 @@ mod tests {
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
-                history_next_cursor: Some(HistoryPageCursor::new("stale-query-cursor")),
-                history_has_more: true,
-                recent_history: vec![HistorySnapshot {
-                    id: 7,
-                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
-                    preview_text: "newest transcript".into(),
-                    word_count: 2,
-                    duration_seconds: 2.0,
-                }],
+                history: HistoryPageSnapshot {
+                    next_cursor: Some(HistoryPageCursor::new("stale-query-cursor")),
+                    rows: vec![HistorySnapshot {
+                        id: 7,
+                        created_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
+                        preview_text: "newest transcript".into(),
+                        word_count: 2,
+                        duration_seconds: 2.0,
+                    }],
+                    ..HistoryPageSnapshot::default()
+                },
                 ..WorkspaceSnapshot::default()
             },
         );
@@ -953,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_more_history_does_not_replace_overview_recents() {
+    fn loading_more_history_keeps_the_overview_on_the_newest_page() {
         let directory = tempdir().unwrap();
         let runtime_directory = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime_directory).unwrap();
@@ -962,22 +946,17 @@ mod tests {
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
-                history: vec![HistorySnapshot {
-                    id: 89,
-                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
-                    preview_text: "newer transcript page".into(),
-                    word_count: 3,
-                    duration_seconds: 3.0,
-                }],
-                history_next_cursor: Some(HistoryPageCursor::new("page-one")),
-                history_has_more: true,
-                recent_history: vec![HistorySnapshot {
-                    id: 7,
-                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
-                    preview_text: "newest transcript".into(),
-                    word_count: 2,
-                    duration_seconds: 2.0,
-                }],
+                history: HistoryPageSnapshot {
+                    next_cursor: Some(HistoryPageCursor::new("page-one")),
+                    rows: vec![HistorySnapshot {
+                        id: 89,
+                        created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
+                        preview_text: "newer transcript page".into(),
+                        word_count: 3,
+                        duration_seconds: 3.0,
+                    }],
+                    ..HistoryPageSnapshot::default()
+                },
                 ..WorkspaceSnapshot::default()
             },
         );
@@ -995,7 +974,7 @@ mod tests {
             vec![89, 88]
         );
         assert_eq!(workspace.recent_transcripts.len(), 1);
-        assert_eq!(workspace.recent_transcripts[0].id, 7);
+        assert_eq!(workspace.recent_transcripts[0].id, 89);
         server_thread.join().unwrap();
     }
 
@@ -1051,15 +1030,17 @@ mod tests {
         let client = WorkspaceClient::new(
             runtime_directory,
             WorkspaceSnapshot {
-                history: vec![HistorySnapshot {
-                    id: 99,
-                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
-                    preview_text: "stale prior page".into(),
-                    word_count: 3,
-                    duration_seconds: 3.0,
-                }],
-                history_next_cursor: Some(HistoryPageCursor::new("expired-cursor")),
-                history_has_more: true,
+                history: HistoryPageSnapshot {
+                    next_cursor: Some(HistoryPageCursor::new("expired-cursor")),
+                    rows: vec![HistorySnapshot {
+                        id: 99,
+                        created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
+                        preview_text: "stale prior page".into(),
+                        word_count: 3,
+                        duration_seconds: 3.0,
+                    }],
+                    ..HistoryPageSnapshot::default()
+                },
                 ..WorkspaceSnapshot::default()
             },
         );
@@ -1117,7 +1098,7 @@ mod tests {
             WorkspaceSnapshot::default(),
         ));
         let updates = client.watch(&database_file).unwrap();
-        remote_snapshot.lock().unwrap().history = vec![HistorySnapshot {
+        remote_snapshot.lock().unwrap().history.rows = vec![HistorySnapshot {
             id: 99,
             created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
             preview_text: "fresh transcript".into(),

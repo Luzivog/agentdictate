@@ -485,7 +485,7 @@ fn transcript_is_durable_before_delivery_is_attempted() {
         restarted.job(job.id).unwrap().unwrap().delivery_status,
         DeliveryStatus::Submitted
     );
-    assert!(restarted.recovery_entries().unwrap().is_empty());
+    assert!(restarted.recoveries().unwrap().is_empty());
 }
 
 #[test]
@@ -591,7 +591,7 @@ fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
         restarted.job(job.id).unwrap().unwrap().delivery_status,
         DeliveryStatus::Submitted
     );
-    assert!(restarted.recovery_entries().unwrap().is_empty());
+    assert!(restarted.recoveries().unwrap().is_empty());
 }
 
 #[test]
@@ -811,11 +811,11 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
     assert_eq!(discarded.stage, JobStage::Deleted);
     assert!(!discarded.audio_path.exists());
     assert!(runtime.recoverable_jobs().unwrap().is_empty());
-    assert!(runtime.recovery_entries().unwrap().is_empty());
+    assert!(runtime.recoveries().unwrap().is_empty());
     drop(runtime);
     let restarted = Runtime::open(&database_path).unwrap();
     assert!(restarted.job(job.id).unwrap().is_none());
-    assert!(restarted.recovery_entries().unwrap().is_empty());
+    assert!(restarted.recoveries().unwrap().is_empty());
 }
 
 #[test]
@@ -852,7 +852,7 @@ fn startup_keeps_stored_canceled_jobs_recoverable() {
         restarted.job(job.id).unwrap().unwrap().stage,
         JobStage::Interrupted
     );
-    assert_eq!(restarted.recovery_entries().unwrap()[0].job_id, job.id);
+    assert_eq!(restarted.recoveries().unwrap()[0].job_id, job.id);
 }
 
 #[test]

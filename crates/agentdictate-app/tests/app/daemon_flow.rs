@@ -11,10 +11,11 @@ use agentdictate_app::{
     AppPaths, CapturedRecording, Daemon, OverlayUpdate, RecordingController,
     start_overlay_presenter,
 };
-use agentdictate_core::{HistoryPageRequest, HotkeyReadiness, JobStage, Settings, WorkflowPhase};
+use agentdictate_core::{
+    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, Settings, WorkflowPhase,
+};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HistoryQuery, Recorder,
-    RecordingJob, Runtime,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob, Runtime,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -94,12 +95,7 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
     assert!(!finished.audio_path.exists());
     assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
-    assert!(
-        observer
-            .list_history(HistoryQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(history_rows(&observer).is_empty());
     assert!(observer.recoverable_jobs().unwrap().is_empty());
     assert!(observer.job(finished.id).unwrap().is_none());
     daemon.start_recording().unwrap();
@@ -237,10 +233,9 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     );
     assert_eq!(daemon.snapshot().hotkey, HotkeyReadiness::Starting);
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
-    let history = observer.list_history(HistoryQuery::default()).unwrap();
+    let history = history_rows(&observer);
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].job_id, Some(delivered.id));
-    assert_eq!(history[0].final_text, "Final transcript.");
+    assert_eq!(history[0].preview_text, "Final transcript.");
     // The transcript now lives only in History.
     assert!(observer.job(delivered.id).unwrap().is_none());
 }
@@ -463,14 +458,16 @@ fn recovery_retries_copy_the_text_and_never_paste_into_the_focused_window() {
     assert_eq!(transcribed.stage, JobStage::Delivered);
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
     assert_eq!(daemon.snapshot().recoverable_count, 0);
-    let observer = Runtime::open_observer(&paths.database_file).unwrap();
-    let history = observer.list_history(HistoryQuery::default()).unwrap();
-    assert_eq!(history.len(), 2);
-    assert!(
-        history
-            .iter()
-            .all(|entry| entry.copied_to_clipboard && !entry.paste_triggered)
-    );
+    let copied_only: i64 = rusqlite::Connection::open(&paths.database_file)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM transcript_history
+             WHERE copied_to_clipboard = 1 AND paste_triggered = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(copied_only, 2);
 }
 
 #[test]
@@ -519,7 +516,7 @@ fn failure_after_transcription_keeps_the_raw_transcript_in_recovery_and_the_next
     assert_eq!(failed.raw_transcript, "Final transcript.");
     assert!(
         observer
-            .recovery_entries()
+            .recoveries()
             .unwrap()
             .iter()
             .any(|entry| entry.job_id == started.id)
@@ -772,12 +769,7 @@ fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() 
     assert_eq!(daemon.snapshot().recoverable_count, 1);
     assert!(daemon.recorder_exited(started.id).unwrap().is_none());
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
-    assert!(
-        observer
-            .list_history(HistoryQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+    assert!(history_rows(&observer).is_empty());
 }
 
 #[test]
@@ -872,96 +864,14 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
 
     let workspace = daemon.workspace_snapshot().unwrap();
 
-    assert_eq!(workspace.history.len(), 20);
-    assert_eq!(workspace.recent_history.len(), 30);
-    assert_eq!(workspace.recent_history[..20], workspace.history);
-    assert_eq!(workspace.history_total, 251);
-    assert!(workspace.history_has_more);
-    assert!(!workspace.history.iter().any(|entry| entry.id == 1));
-    assert!(workspace.history.iter().all(|entry| {
+    let history = workspace.history;
+    assert_eq!(history.rows.len(), 30);
+    assert_eq!(history.total_matches, 251);
+    assert!(history.next_cursor.is_some());
+    assert!(!history.rows.iter().any(|entry| entry.id == 1));
+    assert!(history.rows.iter().all(|entry| {
         entry.preview_text.chars().count() == 161 && entry.preview_text.ends_with('…')
     }));
-}
-
-#[test]
-fn daemon_restarts_an_expired_fuzzy_cursor_at_page_one() {
-    let directory = tempdir().unwrap();
-    let paths = app_paths(directory.path());
-    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
-    let mut runtime = Runtime::open(&paths.database_file).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    let mut connection = rusqlite::Connection::open(&paths.database_file).unwrap();
-    for (index, text) in ["needle one", "needle two", "needle three"]
-        .into_iter()
-        .enumerate()
-    {
-        insert_search_history(&mut connection, index, text);
-    }
-    let daemon = Daemon::new(
-        runtime,
-        Settings::default(),
-        paths.clone(),
-        InspectingRecorder {
-            database: paths.database_file.clone(),
-            started_after_checkpoint: false,
-        },
-        FixedTranscriber,
-        SubmittedDelivery::default(),
-    );
-    let first_page = daemon
-        .history_page_snapshot(HistoryPageRequest {
-            search: "nedle".into(),
-            page_size: 1,
-            after: None,
-        })
-        .unwrap();
-    assert!(!first_page.cursor_restarted);
-    let cursor = first_page.next_cursor.expect("first fuzzy page cursor");
-
-    insert_search_history(&mut connection, 10, "nedle exact one");
-    insert_search_history(&mut connection, 11, "nedle exact two");
-
-    let restarted = daemon
-        .history_page_snapshot(HistoryPageRequest {
-            search: "nedle".into(),
-            page_size: 1,
-            after: Some(cursor),
-        })
-        .unwrap();
-    assert!(restarted.cursor_restarted);
-    assert_eq!(restarted.rows.len(), 1);
-    assert_eq!(restarted.rows[0].preview_text, "nedle exact two");
-}
-
-fn insert_search_history(
-    connection: &mut rusqlite::Connection,
-    timestamp_offset: usize,
-    final_text: &str,
-) {
-    let timestamp = format!("2026-08-18T13:{timestamp_offset:02}:00Z");
-    let transaction = connection.transaction().unwrap();
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dictation_sessions (
-                started_at, ended_at, duration_seconds, transcription_model,
-                raw_word_count, final_word_count, final_character_count
-            ) VALUES (?1, ?1, 1, 'test-model', 2, 2, ?2)
-            "#,
-            params![timestamp, final_text.chars().count()],
-        )
-        .unwrap();
-    transaction
-        .execute(
-            r#"
-            INSERT INTO transcript_history (
-                session_id, created_at, raw_transcript, final_text
-            ) VALUES (?1, ?2, ?3, ?3)
-            "#,
-            params![transaction.last_insert_rowid(), timestamp, final_text],
-        )
-        .unwrap();
-    transaction.commit().unwrap();
 }
 
 fn app_paths(root: &Path) -> AppPaths {
@@ -987,4 +897,15 @@ fn reject_capture_checkpoint(connection: &rusqlite::Connection) {
             "#,
         )
         .unwrap();
+}
+
+/// Every History row the History page lists, newest first.
+fn history_rows(runtime: &Runtime) -> Vec<HistorySnapshot> {
+    runtime
+        .history_page(&HistoryPageRequest {
+            page_size: 100,
+            ..HistoryPageRequest::default()
+        })
+        .unwrap()
+        .rows
 }

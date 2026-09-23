@@ -1,6 +1,6 @@
 use agentdictate_core::{
-    AppliedReplacement, JobId, JobStage, Settings, TranscriptionProvider,
-    count_words_ascii_history, transcription_price_per_minute,
+    AppliedReplacement, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, JobId,
+    JobStage, Settings, count_words_ascii_history, transcription_price_per_minute,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -8,104 +8,22 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::runtime::load_job;
 use crate::{RecordingJob, Runtime, RuntimeError, parse_timestamp, timestamp};
 
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HistoryEntry {
-    pub id: i64,
-    pub session_id: i64,
-    pub job_id: Option<JobId>,
-    pub created_at: DateTime<Utc>,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: DateTime<Utc>,
-    pub duration_seconds: f64,
-    pub transcription_model: String,
-    pub transcription_provider: TranscriptionProvider,
-    pub cleanup_enabled: bool,
-    pub cleanup_model: Option<String>,
-    pub cleanup_style: Option<String>,
-    pub raw_transcript: String,
-    pub cleaned_transcript: Option<String>,
-    pub final_text: String,
-    pub replacements_applied: Vec<AppliedReplacement>,
-    pub copied_to_clipboard: bool,
-    pub paste_triggered: bool,
-    pub raw_word_count: u64,
-    pub final_word_count: u64,
-    pub final_character_count: u64,
-    pub estimated_transcription_cost: f64,
-    pub estimated_cleanup_cost: f64,
-    pub estimated_total_cost: f64,
-    pub success: bool,
-    pub error_message: Option<String>,
-    pub cleanup_error: Option<String>,
+/// One saved transcript, as History search reads it.
+pub(crate) struct HistoryRow {
+    pub(crate) id: i64,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) final_text: String,
+    pub(crate) word_count: u64,
+    pub(crate) duration_seconds: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HistoryQuery {
-    pub search: String,
-    pub day: Option<NaiveDate>,
-    pub limit: usize,
-    pub after: Option<HistoryCursor>,
-}
-
-/// Storage-side continuation state. Decoded from the protocol's opaque
-/// `HistoryPageCursor` at the IPC boundary so persistence never trusts
-/// client-constructed pagination state.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct HistoryCursor(String);
-
-impl HistoryCursor {
-    #[must_use]
-    pub fn from_opaque(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn into_opaque(self) -> String {
-        self.0
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HistoryMatch {
-    pub entry: HistoryEntry,
-    pub preview: String,
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct HistoryPage {
-    pub matches: Vec<HistoryMatch>,
-    pub total_matches: u64,
-    pub next_cursor: Option<HistoryCursor>,
-}
-
-impl Default for HistoryQuery {
-    fn default() -> Self {
-        Self {
-            search: String::new(),
-            day: None,
-            limit: 250,
-            after: None,
-        }
-    }
-}
-
-impl HistoryQuery {
-    /// Returns every matching row. The bounded default remains appropriate for
-    /// ordinary search/list callers; workspace bootstrap uses this explicit
-    /// query so older saved transcripts never become unreachable.
-    #[must_use]
-    pub fn all() -> Self {
-        Self {
-            limit: usize::MAX,
-            ..Self::default()
-        }
-    }
+/// A History search as the search engine runs it. `day` narrows it to one
+/// UTC day; no caller sets it.
+pub(crate) struct HistoryQuery {
+    pub(crate) search: String,
+    pub(crate) day: Option<NaiveDate>,
+    pub(crate) limit: usize,
+    pub(crate) after: Option<HistoryPageCursor>,
 }
 
 #[cfg(test)]
@@ -115,61 +33,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_all_history_query_does_not_silently_stop_at_default_limit() {
+    fn history_pages_hold_at_most_one_hundred_rows() {
         let directory = tempdir().unwrap();
         let mut runtime = Runtime::open(directory.path().join("history.sqlite")).unwrap();
         runtime.ensure_history_search_index().unwrap();
         let transaction = runtime.connection.transaction().unwrap();
-        for index in 0..251 {
+        for index in 0..101 {
+            let at = format!("2026-08-18T12:{:02}:{:02}Z", index / 60, index % 60);
             transaction
                 .execute(
                     r#"
                     INSERT INTO dictation_sessions (
                         started_at, ended_at, duration_seconds, transcription_model,
-                        raw_word_count, final_word_count, final_character_count
-                    ) VALUES (?1, ?1, 1, 'test-model', 1, 1, 8)
+                        final_word_count
+                    ) VALUES (?1, ?1, 1, 'test-model', 2)
                     "#,
-                    [format!(
-                        "2026-08-18T12:{:02}:{:02}Z",
-                        index / 60,
-                        index % 60
-                    )],
+                    [&at],
                 )
                 .unwrap();
-            let session_id = transaction.last_insert_rowid();
             transaction
                 .execute(
-                    r#"
-                    INSERT INTO transcript_history (
-                        session_id, created_at, raw_transcript, final_text
-                    ) VALUES (?1, ?2, 'complete body', ?3)
-                    "#,
+                    "INSERT INTO transcript_history (session_id, created_at, final_text)
+                     VALUES (?1, ?2, ?3)",
                     params![
-                        session_id,
-                        format!("2026-08-18T12:{:02}:{:02}Z", index / 60, index % 60),
-                        format!("entry {index}"),
+                        transaction.last_insert_rowid(),
+                        at,
+                        format!("entry {index}")
                     ],
                 )
                 .unwrap();
         }
         transaction.commit().unwrap();
 
-        assert_eq!(
-            runtime.list_history(HistoryQuery::default()).unwrap().len(),
-            250
-        );
-        assert_eq!(
-            runtime.list_history(HistoryQuery::all()).unwrap().len(),
-            251
-        );
         let page = runtime
-            .history_page(HistoryQuery {
-                limit: usize::MAX,
-                ..HistoryQuery::default()
+            .history_page(&HistoryPageRequest {
+                page_size: usize::MAX,
+                ..HistoryPageRequest::default()
             })
             .unwrap();
-        assert_eq!(page.matches.len(), 100);
-        assert_eq!(page.total_matches, 251);
+
+        assert_eq!(page.rows.len(), 100);
+        assert_eq!(page.total_matches, 101);
         assert!(page.next_cursor.is_some());
     }
 }
@@ -178,15 +82,14 @@ impl Runtime {
     /// Moves a delivered job out of the in-flight job table. One transaction
     /// records its usage session (numbers only, always), saves the transcript
     /// to History when `save_history` is on, and deletes the job row, so the
-    /// text survives only where History keeps it. Returns the History entry,
-    /// if any. Completing an already completed job changes nothing.
+    /// text survives only where History keeps it. Completing an already
+    /// completed job changes nothing.
     pub fn complete_delivered(
         &mut self,
         job_id: JobId,
         settings: &Settings,
-    ) -> Result<Option<HistoryEntry>, RuntimeError> {
-        self.complete_delivered_job(job_id, settings)?;
-        self.history_for_job(job_id)
+    ) -> Result<(), RuntimeError> {
+        self.complete_delivered_job(job_id, settings).map(|_| ())
     }
 
     /// Returns whether this call recorded the job's usage session. It is
@@ -230,38 +133,42 @@ impl Runtime {
         Ok(!already_recorded)
     }
 
-    pub fn list_history(&self, query: HistoryQuery) -> Result<Vec<HistoryEntry>, RuntimeError> {
-        self.query_history_rows(&query, query.limit)
-    }
-
-    pub fn history_page(&self, query: HistoryQuery) -> Result<HistoryPage, RuntimeError> {
-        crate::history_search::history_page(&self.connection, &self.history_search_cache, query)
-    }
-
-    fn query_history_rows(
+    /// Returns one page of History, newest first. An expired continuation
+    /// cursor restarts the search at its first page and says so.
+    pub fn history_page(
         &self,
-        query: &HistoryQuery,
-        limit: usize,
-    ) -> Result<Vec<HistoryEntry>, RuntimeError> {
-        if limit == 0 {
-            return Ok(Vec::new());
+        request: &HistoryPageRequest,
+    ) -> Result<HistoryPageSnapshot, RuntimeError> {
+        let query = |after: Option<HistoryPageCursor>| HistoryQuery {
+            search: request.search.clone(),
+            day: None,
+            limit: request.page_size,
+            after,
+        };
+        let search = |query| {
+            crate::history_search::history_page(&self.connection, &self.history_search_cache, query)
+        };
+        match search(query(request.after.clone())) {
+            Err(RuntimeError::InvalidHistoryCursor(_)) if request.after.is_some() => {
+                Ok(HistoryPageSnapshot {
+                    cursor_restarted: true,
+                    ..search(query(None))?
+                })
+            }
+            page => page,
         }
-        let (term, day) = history_query_parameters(query);
-        let mut statement = self.connection.prepare(&format!(
-            "{}\n             WHERE (?1 = '' OR h.raw_transcript LIKE ?1 ESCAPE '\\' OR h.cleaned_transcript LIKE ?1 ESCAPE '\\' OR h.final_text LIKE ?1 ESCAPE '\\')\n               AND (?2 = '' OR substr(h.created_at, 1, 10) = ?2)\n             ORDER BY h.created_at DESC, h.id DESC\n             LIMIT ?3",
-            history_select()
-        ))?;
-        let rows = statement
-            .query_map(
-                params![term, day, i64::try_from(limit).unwrap_or(i64::MAX)],
-                row_to_history,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter().collect()
     }
 
-    pub fn history(&self, id: i64) -> Result<Option<HistoryEntry>, RuntimeError> {
-        self.query_one_history("h.id = ?1", id)
+    /// The full final text of one History entry, for copying.
+    pub fn transcript_text(&self, id: i64) -> Result<Option<String>, RuntimeError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT final_text FROM transcript_history WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Deletes one History entry and its usage session.
@@ -284,25 +191,6 @@ impl Runtime {
         transaction.commit()?;
         self.history_search_cache.borrow_mut().invalidate();
         Ok(())
-    }
-
-    fn history_for_job(&self, id: JobId) -> Result<Option<HistoryEntry>, RuntimeError> {
-        self.query_one_history("s.runtime_job_id = ?1", id.to_string())
-    }
-
-    fn query_one_history(
-        &self,
-        predicate: &str,
-        value: impl rusqlite::ToSql,
-    ) -> Result<Option<HistoryEntry>, RuntimeError> {
-        self.connection
-            .query_row(
-                &format!("{} WHERE {predicate}", history_select()),
-                [value],
-                row_to_history,
-            )
-            .optional()?
-            .map_or(Ok(None), |entry| entry.map(Some))
     }
 }
 
@@ -370,33 +258,9 @@ fn record_session(
     Ok(())
 }
 
-fn history_query_parameters(query: &HistoryQuery) -> (String, String) {
-    let day = query.day.map_or_else(String::new, |day| day.to_string());
-    let search = query.search.trim();
-    let term = if search.is_empty() {
-        String::new()
-    } else {
-        let escaped = search
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        format!("%{escaped}%")
-    };
-    (term, day)
-}
-
 pub(crate) fn history_select() -> &'static str {
     r#"
-    SELECT
-        h.id, h.session_id, s.runtime_job_id, h.created_at,
-        s.started_at, s.ended_at, s.duration_seconds, s.transcription_model,
-        s.transcription_provider,
-        s.cleanup_enabled, s.cleanup_model, s.cleanup_style,
-        h.raw_transcript, h.cleaned_transcript, h.final_text,
-        h.replacements_applied, h.copied_to_clipboard, h.paste_triggered,
-        s.raw_word_count, s.final_word_count, s.final_character_count,
-        s.estimated_transcription_cost, s.estimated_cleanup_cost,
-        s.estimated_total_cost, s.success, s.error_message, h.cleanup_error
+    SELECT h.id, h.created_at, h.final_text, s.final_word_count, s.duration_seconds
     FROM transcript_history h
     JOIN dictation_sessions s ON s.id = h.session_id
     "#
@@ -404,48 +268,19 @@ pub(crate) fn history_select() -> &'static str {
 
 pub(crate) fn row_to_history(
     row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<Result<HistoryEntry, RuntimeError>> {
-    let job_id: Option<String> = row.get(2)?;
-    let created_at: String = row.get(3)?;
-    let started_at: String = row.get(4)?;
-    let ended_at: String = row.get(5)?;
-    let replacements_applied: String = row.get(15)?;
-    Ok((|| {
-        Ok(HistoryEntry {
-            id: row.get(0)?,
-            session_id: row.get(1)?,
-            job_id: job_id
-                .map(|id| id.parse().map_err(|_| RuntimeError::InvalidJobId(id)))
-                .transpose()?,
-            created_at: parse_timestamp(&created_at)?,
-            started_at: parse_timestamp(&started_at)?,
-            ended_at: parse_timestamp(&ended_at)?,
-            duration_seconds: row.get(6)?,
-            transcription_model: row.get(7)?,
-            transcription_provider: row
-                .get::<_, String>(8)?
-                .parse::<TranscriptionProvider>()
-                .map_err(|error| RuntimeError::InvalidTranscriptionProvider(error.to_string()))?,
-            cleanup_enabled: row.get(9)?,
-            cleanup_model: row.get(10)?,
-            cleanup_style: row.get(11)?,
-            raw_transcript: row.get(12)?,
-            cleaned_transcript: row.get(13)?,
-            final_text: row.get(14)?,
-            replacements_applied: deserialize_replacements(&replacements_applied)?,
-            copied_to_clipboard: row.get(16)?,
-            paste_triggered: row.get(17)?,
-            raw_word_count: row.get(18)?,
-            final_word_count: row.get(19)?,
-            final_character_count: row.get(20)?,
-            estimated_transcription_cost: row.get(21)?,
-            estimated_cleanup_cost: row.get(22)?,
-            estimated_total_cost: row.get(23)?,
-            success: row.get(24)?,
-            error_message: row.get(25)?,
-            cleanup_error: row.get(26)?,
-        })
-    })())
+) -> rusqlite::Result<Result<HistoryRow, RuntimeError>> {
+    let created_at: String = row.get(1)?;
+    let id = row.get(0)?;
+    let final_text = row.get(2)?;
+    let word_count = row.get(3)?;
+    let duration_seconds = row.get(4)?;
+    Ok(parse_timestamp(&created_at).map(|created_at| HistoryRow {
+        id,
+        created_at,
+        final_text,
+        word_count,
+        duration_seconds,
+    }))
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]

@@ -358,9 +358,11 @@ mod tests {
         assert_eq!(first.imported, 1);
         assert_eq!(unchanged, ScanReport::default());
         assert_eq!(runtime.usage().unwrap().all_time.words, 4);
-        let history = runtime.list_history(Default::default()).unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].final_text, "Keep the receipt private.");
+        let history = runtime
+            .history_page(&agentdictate_core::HistoryPageRequest::default())
+            .unwrap();
+        assert_eq!(history.rows.len(), 1);
+        assert_eq!(history.rows[0].preview_text, "Keep the receipt private.");
     }
 
     #[test]
