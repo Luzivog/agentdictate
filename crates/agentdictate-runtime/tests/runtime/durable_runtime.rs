@@ -1266,3 +1266,38 @@ fn copy_again(
         deliverer,
     )
 }
+
+#[test]
+fn garbage_database_is_set_aside_and_dictation_can_start() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.sqlite");
+    std::fs::write(&database_path, b"not a database, only garbage bytes").unwrap();
+
+    let (mut runtime, set_aside) = Runtime::open_or_set_aside(&database_path).unwrap();
+
+    let set_aside = set_aside.expect("the unreadable file is set aside");
+    assert!(
+        set_aside
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("agentdictate.sqlite.corrupt-")
+    );
+    assert_eq!(
+        std::fs::read(&set_aside).unwrap(),
+        b"not a database, only garbage bytes"
+    );
+    let job = runtime
+        .start_recording(
+            request(
+                &directory.path().join("recordings/after.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
+            &mut crate::support::ReadyRecorder,
+        )
+        .unwrap();
+    assert_eq!(job.stage, JobStage::Recording);
+    drop(runtime);
+    let (_, again) = Runtime::open_or_set_aside(&database_path).unwrap();
+    assert!(again.is_none());
+}

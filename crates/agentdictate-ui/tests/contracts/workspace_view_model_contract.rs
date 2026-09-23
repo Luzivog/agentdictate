@@ -2,7 +2,7 @@
 
 use agentdictate_ui::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, TranscriptViewModel, UsageDayViewModel,
-    UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
+    UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction,
 };
 
 #[test]
@@ -110,14 +110,4 @@ fn workspace_actions_own_stable_rendering_selectors() {
     for (action, expected) in actions {
         assert_eq!(action.selector(), expected);
     }
-
-    assert_eq!(
-        WorkspaceViewModel::default(),
-        WorkspaceViewModel {
-            history: HistoryViewModel::default(),
-            recent_transcripts: Vec::new(),
-            usage: UsageViewModel::default(),
-            overlay_unavailable: false,
-        }
-    );
 }

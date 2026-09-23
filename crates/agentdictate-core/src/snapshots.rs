@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +137,9 @@ pub struct UsageSnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     pub overlay_unavailable: bool,
+    /// Where the daemon moved a history database it could not read when it
+    /// started; a fresh one replaced it. Shown until the daemon restarts.
+    pub history_set_aside: Option<PathBuf>,
     pub recoveries: Vec<RecoverySnapshot>,
     /// The newest transcripts, unfiltered.
     pub history: HistoryPageSnapshot,

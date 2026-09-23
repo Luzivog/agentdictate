@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use agentdictate_core::{
     ClientCommandKind, HistoryPageRequest, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness,
-    RecordingMode, ServerMessage, SettingChange, Settings,
+    RecordingMode, ServerMessage, SettingChange, Settings, WorkspaceSnapshot,
 };
 use agentdictate_linux::hotkey::HotkeySpec;
 use agentdictate_runtime::{
@@ -48,6 +48,8 @@ pub struct AgentProcess<
     database_file: PathBuf,
     recordings_directory: PathBuf,
     hotkey_control: Option<Arc<dyn HotkeyControl>>,
+    /// Where startup moved a history database it could not read.
+    history_set_aside: Option<PathBuf>,
 }
 
 /// What an IPC command answers with, rendered once the command's work is done.
@@ -77,7 +79,13 @@ impl AgentProcess {
     pub fn open(paths: AppPaths) -> anyhow::Result<(Self, Receiver<RecorderEvent>)> {
         paths.ensure_directories()?;
         let mut settings = load_settings(&paths.config_file)?;
-        let runtime = Runtime::open(&paths.database_file)?;
+        let (runtime, history_set_aside) = Runtime::open_or_set_aside(&paths.database_file)?;
+        if let Some(set_aside) = &history_set_aside {
+            tracing::error!(
+                set_aside = %set_aside.display(),
+                "the history database could not be read; it was set aside and a new one started"
+            );
+        }
         runtime.reconcile_recovery_deletions(&paths.recordings)?;
         retire_replacement_rules(&runtime, &mut settings, &paths.config_file);
         let transcriber = TranscriptionPipeline::new(
@@ -95,7 +103,11 @@ impl AgentProcess {
             transcriber,
             deliverer,
         );
-        Ok((Self::from_parts(daemon, &paths), recorder_events))
+        let process = Self {
+            history_set_aside,
+            ..Self::from_parts(daemon, &paths)
+        };
+        Ok((process, recorder_events))
     }
 }
 
@@ -115,6 +127,7 @@ where
             database_file: paths.database_file.clone(),
             recordings_directory: paths.recordings.clone(),
             hotkey_control: None,
+            history_set_aside: None,
         }
     }
 
@@ -258,10 +271,12 @@ where
                 self.daemon.snapshot(),
                 self.daemon.settings(),
             )),
-            Reply::Workspace => self
-                .daemon
-                .workspace_snapshot()
-                .map(ServerMessage::workspace),
+            Reply::Workspace => self.daemon.workspace_snapshot().map(|workspace| {
+                ServerMessage::workspace(WorkspaceSnapshot {
+                    history_set_aside: self.history_set_aside.clone(),
+                    ..workspace
+                })
+            }),
             Reply::HistoryPage(request) => self
                 .daemon
                 .history_page(&request)
@@ -738,6 +753,24 @@ mod tests {
             observer.job(recording.id).unwrap().unwrap().stage,
             JobStage::Recording
         );
+    }
+
+    #[test]
+    fn an_unreadable_history_database_is_set_aside_and_reported_to_the_window() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        paths.ensure_directories().unwrap();
+        std::fs::write(&paths.database_file, b"garbage").unwrap();
+
+        let (process, _recorder_events) = AgentProcess::open(paths).unwrap();
+
+        let agentdictate_core::ServerMessageKind::Workspace { workspace } =
+            process.render(Reply::Workspace).kind
+        else {
+            panic!("a fresh database still serves the workspace");
+        };
+        let set_aside = workspace.history_set_aside.expect("the notice is reported");
+        assert_eq!(std::fs::read(set_aside).unwrap(), b"garbage");
     }
 
     /// An isolated instance, so no test can reach the host's systemd.

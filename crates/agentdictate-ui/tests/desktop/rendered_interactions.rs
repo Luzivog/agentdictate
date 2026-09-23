@@ -57,6 +57,25 @@ fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui::test]
+fn history_set_aside_notice_follows_the_workspace(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    assert!(!harness.has("history-set-aside-notice"));
+    for set_aside in [Some("/data/agentdictate.sqlite.corrupt-1".to_owned()), None] {
+        let shown = set_aside.is_some();
+        harness.shell.update(harness.cx, |shell, cx| {
+            let workspace = shell
+                .view_model()
+                .workspace
+                .clone()
+                .with_history_set_aside(set_aside);
+            shell.apply_workspace_update(workspace, cx);
+        });
+        harness.cx.run_until_parked();
+        assert_eq!(harness.has("history-set-aside-notice"), shown);
+    }
+}
+
 /// Root, tooltips and popovers paint from gpui-component's resolved token
 /// copy, which only follows the app palette when the theme setup syncs it.
 #[gpui::test]

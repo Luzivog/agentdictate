@@ -26,6 +26,7 @@ struct RouteViewportModel {
     page: RoutePageModel,
     feedback: Option<String>,
     overlay_unavailable: bool,
+    history_set_aside: Option<String>,
     scroll: ScrollHandle,
 }
 
@@ -159,6 +160,7 @@ impl Render for SettingsShell {
             page: RoutePageModel::from_shell(self, cx),
             feedback: self.routes.entry(route).feedback.clone(),
             overlay_unavailable: self.model.workspace.overlay_unavailable,
+            history_set_aside: self.model.workspace.history_set_aside.clone(),
             scroll: self.routes.entry(route).scroll.clone(),
         };
 
@@ -204,6 +206,7 @@ fn route_viewport(
         page,
         feedback,
         overlay_unavailable,
+        history_set_aside,
         scroll,
     } = viewport;
     let route = page.route();
@@ -230,6 +233,13 @@ fn route_viewport(
                         .rounded_lg().border_1().border_color(gpui_color(theme.border))
                         .p_3().text_sm()
                         .child("Recording overlay unavailable. Dictation and saved audio remain available. Try another recording to reconnect the overlay."))
+                })
+                .when_some(history_set_aside, |content, set_aside| {
+                    content.child(gpui::div()
+                        .debug_selector(|| "history-set-aside-notice".to_owned())
+                        .rounded_lg().border_1().border_color(gpui_color(theme.border))
+                        .p_3().text_sm()
+                        .child(format!("AgentDictate couldn't read your history, so it started a new one. The old file was kept at {set_aside}.")))
                 })
                 .child(surface)
                 .when(!embeds_feedback, |content| {

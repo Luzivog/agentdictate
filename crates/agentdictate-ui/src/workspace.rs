@@ -50,6 +50,9 @@ impl WorkspaceAction {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkspaceViewModel {
     pub overlay_unavailable: bool,
+    /// Where an unreadable history database was moved when the daemon
+    /// started, for a notice that History starts over.
+    pub history_set_aside: Option<String>,
     pub history: HistoryViewModel,
     pub recent_transcripts: Vec<TranscriptViewModel>,
     pub usage: UsageViewModel,
@@ -70,6 +73,7 @@ impl WorkspaceViewModel {
     ) -> Self {
         Self {
             overlay_unavailable: false,
+            history_set_aside: None,
             history,
             recent_transcripts,
             usage,
@@ -79,6 +83,12 @@ impl WorkspaceViewModel {
     #[must_use]
     pub fn with_overlay_unavailable(mut self, unavailable: bool) -> Self {
         self.overlay_unavailable = unavailable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_history_set_aside(mut self, set_aside: Option<String>) -> Self {
+        self.history_set_aside = set_aside;
         self
     }
 }

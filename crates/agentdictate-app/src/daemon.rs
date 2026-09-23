@@ -816,6 +816,7 @@ where
     pub fn workspace_snapshot(&self) -> Result<WorkspaceSnapshot, RuntimeError> {
         Ok(WorkspaceSnapshot {
             overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
+            history_set_aside: None,
             recoveries: self.runtime.recoveries()?,
             history: self.runtime.history_page(&HistoryPageRequest::default())?,
             usage: self.runtime.usage()?,

@@ -1,9 +1,10 @@
+use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::migrations::migrate;
 use crate::schema::{row_to_job, stage_name, state_for_stage, timestamp};
@@ -28,6 +29,36 @@ impl Runtime {
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
         Ok(Self { connection })
+    }
+
+    /// Opens the daemon's database like `open`. A file SQLite cannot read as
+    /// a database is moved aside to `<file>.corrupt-<unix time>`, with its
+    /// `-wal` and `-shm` files, and a fresh database takes its place, so
+    /// dictation keeps working. Returns where the unreadable file went.
+    pub fn open_or_set_aside(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, Option<PathBuf>), RuntimeError> {
+        let path = path.as_ref();
+        match Self::open(path) {
+            Ok(runtime) => Ok((runtime, None)),
+            Err(RuntimeError::Database(rusqlite::Error::SqliteFailure(failure, _)))
+                if matches!(
+                    failure.code,
+                    ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase
+                ) =>
+            {
+                let set_aside = suffixed(path, &format!(".corrupt-{}", Utc::now().timestamp()));
+                for companion in ["", "-wal", "-shm"] {
+                    match fs::rename(suffixed(path, companion), suffixed(&set_aside, companion)) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Ok((Self::open(path)?, Some(set_aside)))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Opens a read-only view without running startup reconciliation.
@@ -636,6 +667,13 @@ impl Runtime {
         )?;
         Ok(())
     }
+}
+
+/// `path` with `suffix` appended to its file name.
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(suffix);
+    PathBuf::from(name)
 }
 
 /// Configures every connection that writes. WAL lets readers proceed while

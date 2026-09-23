@@ -535,6 +535,12 @@ fn workspace_view_model(
         usage_view_model(&snapshot.usage, period),
     )
     .with_overlay_unavailable(snapshot.overlay_unavailable)
+    .with_history_set_aside(
+        snapshot
+            .history_set_aside
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    )
 }
 
 fn transcript_view_model(
