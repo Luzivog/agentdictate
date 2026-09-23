@@ -20,9 +20,13 @@ agentdictate_rust_host() {
   rustc -vV | awk '/^host: / { host = $2 } END { print host }'
 }
 
+# Builds the two shipped binaries. They use separate invocations because Cargo
+# unifies features per invocation, and the daemon must not link GPUI.
 agentdictate_build_release_binaries() {
   cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
-    --locked --release --features desktop -p agentdictate-app --bins
+    --locked --release -p agentdictate-app --bin agentdictated
+  cargo build --manifest-path "${PROJECT_DIR}/Cargo.toml" \
+    --locked --release --features desktop -p agentdictate-app --bin agentdictate
 }
 
 agentdictate_install_shared_assets() {

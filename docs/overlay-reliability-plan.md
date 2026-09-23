@@ -170,9 +170,9 @@ The supervisor retains bounded startup, restart, and teardown behavior. It reads
 `packaging/test-overlay-desktop.py` runs the production helper with synthetic audio and workflow updates on a private GNOME desktop. It requires GNOME Shell 46+, XWayland, GTK 3, Python GI/Pillow, Tesseract, xrandr, xprop, xwininfo, and xsel. It uses a private session bus and temporary XDG directories. No active-desktop input or microphone capture is involved.
 
 ```bash
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictated --target x11
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictated --scale 2 --target wayland
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictated --monitor 1920x1080 --scale 1.25 --target x11
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --target x11
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --scale 2 --target wayland
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --monitor 1920x1080 --scale 1.25 --target x11
 ```
 
 The harness checks real composited waveform pixels and recognizes the Transcribing and Cleaning labels. It verifies primary-monitor placement, monitor changes through Mutter's own configuration API, work-area changes, unmanaged window policy, unchanged focus on a real GTK target, no additional managed application entry, and dismissal through both a hidden update and stdin EOF. It also preserves both X11 clipboard selections and verifies standard clipboard retrieval by native Wayland and X11 targets.
@@ -181,4 +181,4 @@ The isolated Mutter session exposes the X11 PRIMARY selection to X11 clients but
 
 Focused verification covers Linux placement (including negative coordinates and constrained areas), UI overlay contracts and rendered fades, health notification and rendering, helper startup/crash/recovery/dismissal, and daemon recording durability and exit-before-delivery. The final comprehensive gate also exercises the existing cancellation, session ownership, live processing-stage, clipboard, and delivery protections.
 
-Verification results before release installation: the comprehensive `./run-tests.sh` gate ran once and passed (398 Rust tests, one existing ignored test, native-readiness checks, and dependency advisories/bans/licenses/sources). Focused Clippy checks passed for the app, Linux boundary, and desktop UI. The compositor checks passed at 100%, 125%, and 200% helper scale; observed dismissal completed in roughly 170 ms, within the unchanged two-second delivery deadline. Release acceptance uses the same harness against `~/.local/bin/agentdictated` after installation.
+Verification results before release installation: the comprehensive `./run-tests.sh` gate ran once and passed (398 Rust tests, one existing ignored test, native-readiness checks, and dependency advisories/bans/licenses/sources). Focused Clippy checks passed for the app, Linux boundary, and desktop UI. The compositor checks passed at 100%, 125%, and 200% helper scale; observed dismissal completed in roughly 170 ms, within the unchanged two-second delivery deadline. Release acceptance uses the same harness against `~/.local/bin/agentdictate` after installation.

@@ -36,10 +36,10 @@ evdev = "0.13.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3.23"
 
+# The daemon needs no GPUI: the recording overlay runs in `agentdictate`.
 [[bin]]
 name = "agentdictated"
 path = "src/bin/agentdictated.rs"
-required-features = ["desktop"]
 
 [[bin]]
 name = "agentdictate"

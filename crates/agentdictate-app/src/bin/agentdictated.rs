@@ -5,9 +5,8 @@ use std::sync::{
 
 use agentdictate_app::{
     AgentProcess, AppPaths, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
-    init_file_logging, is_overlay_helper_argument, run_overlay_helper,
-    settings_executable_for_current_process, start_hotkey_listener, start_overlay_presenter,
-    start_system_tray,
+    init_file_logging, settings_executable_for_current_process, start_hotkey_listener,
+    start_overlay_presenter, start_system_tray,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
 use agentdictate_runtime::{IpcClient, IpcServer};
@@ -18,10 +17,6 @@ fn main() -> anyhow::Result<()> {
     let argument = std::env::args().nth(1);
     let paths = AppPaths::from_environment()?;
     let _log_guard = init_file_logging(&paths.logs, "agentdictated.log")?;
-    if is_overlay_helper_argument(argument.as_deref()) {
-        tracing::info!("transient recording overlay starting");
-        return run_overlay_helper();
-    }
     if argument.as_deref() != Some(SERVICE_ARGUMENT) {
         if argument.is_some() && argument.as_deref() != Some(START_SERVICE_ARGUMENT) {
             anyhow::bail!(
@@ -41,10 +36,14 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let runtime = paths.runtime.clone();
     let server = IpcServer::bind(&paths.runtime)?;
     let mut process = AgentProcess::open(paths)?;
+    // The GPUI overlay runs in the sibling desktop binary, so the daemon never
+    // links GPUI. Never use `$APPIMAGE` here: it would remount per dictation.
     let overlay_presenter = match std::env::current_exe()
         .map_err(anyhow::Error::from)
-        .and_then(|executable| start_overlay_presenter(executable).map_err(anyhow::Error::from))
-    {
+        .and_then(|executable| {
+            start_overlay_presenter(executable.with_file_name("agentdictate"))
+                .map_err(anyhow::Error::from)
+        }) {
         Ok((controller, thread)) => {
             controller
                 .notify_health_changes_at(runtime.join(agentdictate_app::OVERLAY_HEALTH_FILE));

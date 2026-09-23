@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use agentdictate_app::{
     AppPaths, WorkspaceClient, WorkspaceError, bootstrap_daemon_service, init_file_logging,
+    is_overlay_helper_argument, run_overlay_helper,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
 use agentdictate_runtime::IpcClient;
@@ -13,6 +14,13 @@ use agentdictate_ui::{
 fn main() -> anyhow::Result<()> {
     let paths = AppPaths::from_environment()?;
     let args: Vec<_> = std::env::args().skip(1).collect();
+    // The daemon spawns this binary as its per-recording overlay helper so the
+    // daemon itself stays free of GPUI. The helper logs into the daemon's file.
+    if is_overlay_helper_argument(args.first().map(String::as_str)) {
+        let _log_guard = init_file_logging(&paths.logs, "agentdictated.log")?;
+        tracing::info!("transient recording overlay starting");
+        return run_overlay_helper();
+    }
     if !args.is_empty() {
         let command = match args.as_slice() {
             [command] if command == "stop" => ClientCommand::stop_recording(1),
