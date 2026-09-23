@@ -27,7 +27,7 @@ const QUARANTINE_SUFFIX: &str = ".pending";
 /// What `Runtime::clean_up_finished_jobs` did, for the daemon's log.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FinishedJobCleanup {
-    /// Deliveries a crash left before their usage and History were recorded.
+    /// Deliveries a crash left before their dictation was recorded.
     pub recorded_deliveries: usize,
     pub removed_jobs: usize,
     pub removed_recordings: usize,
@@ -77,8 +77,8 @@ impl Runtime {
     }
 
     /// Removes finished jobs left in the job table and recordings no job
-    /// needs. Delivered jobs get their usage session and History entry (the
-    /// latter only when `save_history` is on) exactly once. Audio of finished
+    /// needs. Delivered jobs get their dictation recorded exactly once, as
+    /// `Runtime::complete_delivered` records it. Audio of finished
     /// jobs is deleted first, unless `preserve_temp_audio` keeps it; the user
     /// deleted `deleted` jobs, so their audio always goes. With
     /// `preserve_temp_audio` off, `.wav` files in `recordings` that no job

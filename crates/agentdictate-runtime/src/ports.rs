@@ -38,6 +38,10 @@ pub enum RuntimeError {
         date: String,
         source: chrono::ParseError,
     },
+    #[error(
+        "the database is from a newer AgentDictate (schema version {version}; this one knows {latest})"
+    )]
+    NewerDatabase { version: i64, latest: usize },
     #[error("{error}; the failure could not be recorded either: {record_error}")]
     FailureNotRecorded {
         error: Box<RuntimeError>,

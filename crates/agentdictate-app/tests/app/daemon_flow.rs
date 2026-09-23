@@ -458,16 +458,11 @@ fn recovery_retries_copy_the_text_and_never_paste_into_the_focused_window() {
     assert_eq!(transcribed.stage, JobStage::Delivered);
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
     assert_eq!(daemon.snapshot().recoverable_count, 0);
-    let copied_only: i64 = rusqlite::Connection::open(&paths.database_file)
+    let recorded: i64 = rusqlite::Connection::open(&paths.database_file)
         .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM transcript_history
-             WHERE copied_to_clipboard = 1 AND paste_triggered = 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM dictations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(copied_only, 2);
+    assert_eq!(recorded, 2);
 }
 
 #[test]
@@ -828,22 +823,13 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
         transaction
             .execute(
                 r#"
-                INSERT INTO dictation_sessions (
-                    started_at, ended_at, duration_seconds, transcription_model,
-                    raw_word_count, final_word_count, final_character_count
-                ) VALUES (?1, ?1, 1, 'test-model', 1, 1, ?2)
+                INSERT INTO dictations (
+                    started_at, ended_at, duration_seconds, transcription_provider,
+                    transcription_model, word_count, character_count, estimated_cost,
+                    final_text
+                ) VALUES (?1, ?1, 1, 'openai_api', 'test-model', 1, ?2, 0, ?3)
                 "#,
-                params![timestamp, full_body.chars().count() as u64],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                r#"
-                INSERT INTO transcript_history (
-                    session_id, created_at, raw_transcript, final_text
-                ) VALUES (?1, ?2, ?3, ?3)
-                "#,
-                params![transaction.last_insert_rowid(), timestamp, full_body],
+                params![timestamp, full_body.chars().count() as u64, full_body],
             )
             .unwrap();
     }

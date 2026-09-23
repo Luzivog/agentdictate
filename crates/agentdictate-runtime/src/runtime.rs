@@ -5,7 +5,8 @@ use std::path::Path;
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
+use crate::migrations::migrate;
+use crate::schema::{row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, ExternalError,
@@ -23,11 +24,7 @@ impl Runtime {
         let mut connection = Connection::open(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         configure_writer(&mut connection)?;
-        connection.execute_batch(SCHEMA)?;
-        add_missing_columns(&connection)?;
-        connection.execute_batch(INDEXES)?;
-        drop_full_text_search(&mut connection)?;
-        rename_committed_deliveries(&connection)?;
+        migrate(&mut connection, path)?;
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
         Ok(Self { connection })
@@ -657,9 +654,7 @@ impl Runtime {
 /// reads before it writes waits for a concurrent writer instead of failing
 /// with "database is locked".
 fn configure_writer(connection: &mut Connection) -> rusqlite::Result<()> {
-    connection.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;",
-    )?;
+    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
     connection.set_transaction_behavior(TransactionBehavior::Immediate);
     Ok(())
 }
@@ -686,108 +681,6 @@ pub(crate) fn load_job(
         .map_or(Ok(None), |job| job.map(Some))
 }
 
-/// Columns added after the first Rust release, for databases created
-/// before them.
-const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
-    ("dictation_jobs", "runtime_id", "TEXT"),
-    (
-        "dictation_jobs",
-        "delivery_status",
-        "TEXT NOT NULL DEFAULT 'not_attempted'",
-    ),
-    ("dictation_jobs", "processing_options", "TEXT"),
-    (
-        "dictation_jobs",
-        "transcription_provider",
-        "TEXT NOT NULL DEFAULT 'openai_api'",
-    ),
-    ("dictation_jobs", "cleaned_transcript", "TEXT"),
-    (
-        "dictation_jobs",
-        "replacements_applied",
-        "TEXT NOT NULL DEFAULT '[]'",
-    ),
-    ("dictation_jobs", "cleanup_error", "TEXT"),
-    (
-        "dictation_sessions",
-        "transcription_provider",
-        "TEXT NOT NULL DEFAULT 'openai_api'",
-    ),
-    ("dictation_sessions", "runtime_job_id", "TEXT"),
-];
-
-/// Unique lookups the added columns need. `ALTER TABLE` cannot add a
-/// `UNIQUE` column, so older databases get these indexes instead.
-const INDEXES: &str = r#"
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dictation_jobs_runtime_id ON dictation_jobs(runtime_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_runtime_job_id ON dictation_sessions(runtime_job_id);
-"#;
-
-fn add_missing_columns(connection: &Connection) -> rusqlite::Result<()> {
-    for (table, column, declaration) in ADDED_COLUMNS {
-        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-        let exists = statement
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .iter()
-            .any(|existing| existing == column);
-        if !exists {
-            connection.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
-                [],
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// The full-text index History search used until 2026-09-23. Search is now
-/// a plain LIKE scan, so the index only cost disk and slowed every delete.
-const FULL_TEXT_SEARCH: &str = r#"
-DROP TRIGGER IF EXISTS transcript_history_fts_insert;
-DROP TRIGGER IF EXISTS transcript_history_fts_delete;
-DROP TRIGGER IF EXISTS transcript_history_fts_update;
-DROP TRIGGER IF EXISTS transcript_history_fts_trigram_insert;
-DROP TRIGGER IF EXISTS transcript_history_fts_trigram_delete;
-DROP TRIGGER IF EXISTS transcript_history_fts_trigram_update;
-DROP TABLE IF EXISTS transcript_history_fts_vocab;
-DROP TABLE IF EXISTS transcript_history_fts_trigram;
-DROP TABLE IF EXISTS transcript_history_fts;
-DROP TABLE IF EXISTS history_search_state;
-"#;
-
-/// Drops the retired full-text index in one IMMEDIATE transaction, then
-/// compacts the file once to return its space. Compaction is best-effort: a
-/// failed VACUUM (for example, no room for its temporary copy) leaves a
-/// correct database that is only larger than it needs to be.
-fn drop_full_text_search(connection: &mut Connection) -> rusqlite::Result<()> {
-    let installed: bool = connection.query_row(
-        "SELECT EXISTS(
-            SELECT 1 FROM sqlite_master
-            WHERE name IN ('history_search_state', 'transcript_history_fts')
-        )",
-        [],
-        |row| row.get(0),
-    )?;
-    if !installed {
-        return Ok(());
-    }
-    let transaction = connection.transaction()?;
-    transaction.execute_batch(FULL_TEXT_SEARCH)?;
-    transaction.commit()?;
-    let _ = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);");
-    Ok(())
-}
-
-/// Until 2026-08-21 a completed paste was stored as `committed`.
-fn rename_committed_deliveries(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute(
-        "UPDATE dictation_jobs SET delivery_status = 'submitted' WHERE delivery_status = 'committed'",
-        [],
-    )?;
-    Ok(())
-}
-
 fn reconcile_ambiguous_deliveries(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute(
         r#"
@@ -796,11 +689,6 @@ fn reconcile_ambiguous_deliveries(connection: &Connection) -> rusqlite::Result<(
             updated_at = ?1,
             error_message = 'delivery was interrupted after the attempt began'
         WHERE delivery_status = 'attempting'
-           OR (
-               state = 'delivering'
-               AND stage = 'delivering'
-               AND delivery_status = 'not_attempted'
-           )
         "#,
         [timestamp(Utc::now())],
     )?;
@@ -816,7 +704,7 @@ fn reconcile_interrupted_jobs(connection: &Connection) -> rusqlite::Result<()> {
                 error_message,
                 'AgentDictate stopped before this dictation completed'
             )
-        WHERE stage IN ('starting', 'recording', 'transcribing', 'cleaning')
+        WHERE stage IN ('starting', 'recording', 'transcribing')
         "#,
         [timestamp(Utc::now())],
     )?;

@@ -28,13 +28,12 @@ pub enum RetiredReplacementOutcome {
 
 impl Runtime {
     /// Moves the enabled rules of the retired Replacements feature into
-    /// `settings.vocabulary`, saves that to `config_file`, then disables the
-    /// rules so this runs once. The `replacement_mappings` table stays for
-    /// reference. A whole-word rule becomes an alias (its source phrase) of
-    /// a spelling (its replacement phrase); vocabulary ignores case, so a
-    /// case-sensitive rule now matches every case. Settings are saved before
-    /// the rules are disabled, and a repeated merge changes nothing, so a
-    /// crash in between is harmless.
+    /// `settings.vocabulary`, saves that to `config_file`, then drops the
+    /// `replacement_mappings` table so this runs once. A whole-word rule
+    /// becomes an alias (its source phrase) of a spelling (its replacement
+    /// phrase); vocabulary ignores case, so a case-sensitive rule now matches
+    /// every case. Settings are saved before the table is dropped, and a
+    /// repeated merge changes nothing, so a crash in between is harmless.
     pub fn retire_replacement_rules(
         &self,
         settings: &mut Settings,
@@ -58,9 +57,6 @@ impl Runtime {
             )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<rusqlite::Result<Vec<(String, String, bool)>>>()?;
-        if rules.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut vocabulary = settings.vocabulary.clone();
         let retired = rules
             .into_iter()
@@ -87,10 +83,8 @@ impl Runtime {
             save_settings(config_file, &migrated)?;
             *settings = migrated;
         }
-        self.connection.execute(
-            "UPDATE replacement_mappings SET enabled = 0 WHERE enabled != 0",
-            [],
-        )?;
+        self.connection
+            .execute("DROP TABLE replacement_mappings", [])?;
         Ok(retired)
     }
 }
@@ -206,13 +200,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let rows: i64 = runtime
-            .connection
-            .query_row("SELECT COUNT(*) FROM replacement_mappings", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(rows, 5);
     }
 
     #[test]

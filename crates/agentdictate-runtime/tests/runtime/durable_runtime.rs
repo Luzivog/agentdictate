@@ -536,63 +536,6 @@ fn delivery_gate_failure_is_safe_to_retry_and_never_calls_the_deliverer() {
 }
 
 #[test]
-fn legacy_committed_delivery_is_read_as_submitted_and_not_recovered() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path: database_path.clone(),
-        saw_durable_starting_job: false,
-    };
-    let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/legacy-committed.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
-        .unwrap();
-    runtime.capture_recording(job.id, 5.0).unwrap();
-    let delivered = runtime
-        .process_captured(
-            job.id,
-            &mut FixedTranscriber,
-            &mut HeadlessDeliveryGate,
-            &mut CountingSubmittedDeliverer { attempts: 0 },
-        )
-        .unwrap();
-    assert_eq!(delivered.delivery_status, DeliveryStatus::Submitted);
-    drop(runtime);
-    rusqlite::Connection::open(&database_path)
-        .unwrap()
-        .execute(
-            "UPDATE dictation_jobs SET delivery_status = 'committed' WHERE runtime_id = ?1",
-            [job.id.to_string()],
-        )
-        .unwrap();
-    assert_eq!(
-        rusqlite::Connection::open(&database_path)
-            .unwrap()
-            .query_row(
-                "SELECT delivery_status FROM dictation_jobs WHERE runtime_id = ?1",
-                [job.id.to_string()],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-        "committed"
-    );
-
-    let restarted = Runtime::open(&database_path).unwrap();
-
-    assert_eq!(
-        restarted.job(job.id).unwrap().unwrap().delivery_status,
-        DeliveryStatus::Submitted
-    );
-    assert!(restarted.recoveries().unwrap().is_empty());
-}
-
-#[test]
 fn transcribing_stage_is_durable_before_the_network_adapter_runs() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
@@ -814,43 +757,6 @@ fn explicit_discard_deletes_the_captured_job_and_its_audio() {
     let restarted = Runtime::open(&database_path).unwrap();
     assert!(restarted.job(job.id).unwrap().is_none());
     assert!(restarted.recoveries().unwrap().is_empty());
-}
-
-#[test]
-fn startup_keeps_stored_canceled_jobs_recoverable() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path: database_path.clone(),
-        saw_durable_starting_job: false,
-    };
-    let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/historical-canceled.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
-        .unwrap();
-    runtime.capture_recording(job.id, 12.0).unwrap();
-    drop(runtime);
-    rusqlite::Connection::open(&database_path)
-        .unwrap()
-        .execute(
-            "UPDATE dictation_jobs SET state = 'canceled', stage = 'canceled' WHERE runtime_id = ?1",
-            [job.id.to_string()],
-        )
-        .unwrap();
-
-    let restarted = Runtime::open(&database_path).unwrap();
-
-    assert_eq!(
-        restarted.job(job.id).unwrap().unwrap().stage,
-        JobStage::Interrupted
-    );
-    assert_eq!(restarted.recoveries().unwrap()[0].job_id, job.id);
 }
 
 /// Also covers rows from the retired ChatGPT subscription route: their

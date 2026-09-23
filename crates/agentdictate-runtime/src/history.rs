@@ -14,10 +14,10 @@ const PREVIEW_CHARACTERS: usize = 160;
 
 impl Runtime {
     /// Moves a delivered job out of the in-flight job table. One transaction
-    /// records its usage session (numbers only, always), saves the transcript
-    /// to History when `save_history` is on, and deletes the job row, so the
-    /// text survives only where History keeps it. Completing an already
-    /// completed job changes nothing.
+    /// records its dictation, with its usage numbers always and its text only
+    /// when `save_history` is on, and deletes the job row, so the text
+    /// survives only where History keeps it. Completing an already completed
+    /// job changes nothing.
     pub fn complete_delivered(
         &mut self,
         job_id: JobId,
@@ -26,9 +26,9 @@ impl Runtime {
         self.complete_delivered_job(job_id, settings).map(|_| ())
     }
 
-    /// Returns whether this call recorded the job's usage session. It is
-    /// false when the job was already completed, or when its session was
-    /// recorded before completed job rows were deleted.
+    /// Returns whether this call recorded the job's dictation. It is false
+    /// when the job was already completed, or when its dictation was recorded
+    /// before completed job rows were deleted.
     pub(crate) fn complete_delivered_job(
         &mut self,
         job_id: JobId,
@@ -47,14 +47,14 @@ impl Runtime {
         }
         let already_recorded = transaction
             .query_row(
-                "SELECT 1 FROM dictation_sessions WHERE runtime_job_id = ?1",
+                "SELECT 1 FROM dictations WHERE job_id = ?1",
                 [job_id.to_string()],
                 |_| Ok(()),
             )
             .optional()?
             .is_some();
         if !already_recorded {
-            record_session(&transaction, &job, settings)?;
+            record_dictation(&transaction, &job, settings.save_history)?;
         }
         transaction.execute(
             "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
@@ -64,12 +64,12 @@ impl Runtime {
         Ok(!already_recorded)
     }
 
-    /// Returns one page of History, newest first: the transcripts whose
+    /// Returns one page of History, newest first: the kept transcripts whose
     /// final text contains `request.search`, ignoring ASCII case, or every
-    /// transcript for a blank search. Pages continue after the opaque cursor
-    /// (created_at, id) of the previous page's last row, so rows saved in the
-    /// meantime never shift a page. A malformed cursor restarts at the first
-    /// page and says so.
+    /// kept transcript for a blank search. Pages continue after the opaque
+    /// cursor (ended_at, id) of the previous page's last row, so rows saved
+    /// in the meantime never shift a page. A malformed cursor restarts at the
+    /// first page and says so.
     pub fn history_page(
         &self,
         request: &HistoryPageRequest,
@@ -81,18 +81,17 @@ impl Runtime {
         let cursor_restarted = matches!(after, Some(None));
         let after = after.flatten();
         let total_matches = self.connection.query_row(
-            r"SELECT COUNT(*) FROM transcript_history WHERE final_text LIKE ?1 ESCAPE '\'",
+            r"SELECT COUNT(*) FROM dictations WHERE final_text LIKE ?1 ESCAPE '\'",
             [&pattern],
             |row| row.get(0),
         )?;
         let mut statement = self.connection.prepare(
             r"
-            SELECT h.id, h.created_at, h.final_text, s.final_word_count, s.duration_seconds
-            FROM transcript_history h
-            JOIN dictation_sessions s ON s.id = h.session_id
-            WHERE h.final_text LIKE ?1 ESCAPE '\'
-              AND (?2 IS NULL OR h.created_at < ?2 OR (h.created_at = ?2 AND h.id < ?3))
-            ORDER BY h.created_at DESC, h.id DESC
+            SELECT id, ended_at, final_text, word_count, duration_seconds
+            FROM dictations
+            WHERE final_text LIKE ?1 ESCAPE '\'
+              AND (?2 IS NULL OR ended_at < ?2 OR (ended_at = ?2 AND id < ?3))
+            ORDER BY ended_at DESC, id DESC
             LIMIT ?4
             ",
         )?;
@@ -100,7 +99,7 @@ impl Runtime {
             .query_map(
                 params![
                     pattern,
-                    after.as_ref().map(|cursor| &cursor.created_at),
+                    after.as_ref().map(|cursor| &cursor.ended_at),
                     after.as_ref().map_or(0, |cursor| cursor.id),
                     // One extra row tells whether another page follows.
                     i64::try_from(limit + 1).unwrap_or(i64::MAX),
@@ -118,30 +117,25 @@ impl Runtime {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let has_more = rows.len() > limit;
         rows.truncate(limit);
-        let next_cursor = rows
-            .last()
-            .filter(|_| has_more)
-            .map(|(id, created_at, ..)| {
-                PageCursor {
-                    created_at: created_at.clone(),
-                    id: *id,
-                }
-                .encode()
-            });
+        let next_cursor = rows.last().filter(|_| has_more).map(|(id, ended_at, ..)| {
+            PageCursor {
+                ended_at: ended_at.clone(),
+                id: *id,
+            }
+            .encode()
+        });
         let rows = rows
             .into_iter()
-            .map(
-                |(id, created_at, final_text, word_count, duration_seconds)| {
-                    Ok(HistorySnapshot {
-                        id,
-                        created_at: parse_timestamp(&created_at)?,
-                        preview_text: preview(&final_text, search),
-                        text: final_text,
-                        word_count,
-                        duration_seconds,
-                    })
-                },
-            )
+            .map(|(id, ended_at, final_text, word_count, duration_seconds)| {
+                Ok(HistorySnapshot {
+                    id,
+                    created_at: parse_timestamp(&ended_at)?,
+                    preview_text: preview(&final_text, search),
+                    text: final_text,
+                    word_count,
+                    duration_seconds,
+                })
+            })
             .collect::<Result<Vec<_>, RuntimeError>>()?;
         Ok(HistoryPageSnapshot {
             search: request.search.clone(),
@@ -157,38 +151,36 @@ impl Runtime {
         Ok(self
             .connection
             .query_row(
-                "SELECT final_text FROM transcript_history WHERE id = ?1",
+                "SELECT final_text FROM dictations WHERE id = ?1",
                 [id],
                 |row| row.get(0),
             )
-            .optional()?)
+            .optional()?
+            .flatten())
     }
 
-    /// Deletes one History entry and its usage session.
+    /// Deletes one History entry with its usage numbers.
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
-        let deleted = self.connection.execute(
-            "DELETE FROM dictation_sessions
-             WHERE id = (SELECT session_id FROM transcript_history WHERE id = ?1)",
-            [id],
-        )?;
+        let deleted = self
+            .connection
+            .execute("DELETE FROM dictations WHERE id = ?1", [id])?;
         Ok(deleted > 0)
     }
 
+    /// Deletes every dictation, text and usage numbers.
     pub fn clear_history(&mut self) -> Result<(), RuntimeError> {
-        let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM transcript_history", [])?;
-        transaction.execute("DELETE FROM dictation_sessions", [])?;
-        transaction.commit()?;
+        self.connection.execute("DELETE FROM dictations", [])?;
         Ok(())
     }
 }
 
-/// Inserts the usage session for a delivered job, plus its History row when
-/// `save_history` is on. Sessions hold numbers only, never transcript text.
-fn record_session(
+/// Inserts the dictation row of a delivered job: its usage numbers, and its
+/// text only when `keep_text`. The raw transcript is stored only when
+/// vocabulary changed it, and the corrections only when there were any.
+fn record_dictation(
     transaction: &Transaction<'_>,
     job: &RecordingJob,
-    settings: &Settings,
+    keep_text: bool,
 ) -> Result<(), RuntimeError> {
     let corrections: String = transaction.query_row(
         "SELECT replacements_applied FROM dictation_jobs WHERE runtime_id = ?1",
@@ -198,69 +190,60 @@ fn record_session(
     // Priced once, at today's price: that is what these minutes cost.
     let cost = job.duration_seconds.max(0.0) / 60.0
         * transcription_price_per_minute(&job.transcription_model);
+    let (final_text, raw_text, corrections) = if keep_text {
+        (
+            Some(job.final_text.as_str()),
+            Some(job.raw_transcript.as_str()).filter(|raw| *raw != job.final_text),
+            Some(corrections).filter(|corrections| corrections != "[]"),
+        )
+    } else {
+        (None, None, None)
+    };
     transaction.execute(
         r#"
-        INSERT INTO dictation_sessions (
-            started_at, ended_at, duration_seconds, transcription_model,
-            raw_word_count, final_word_count, final_character_count,
-            estimated_transcription_cost, estimated_total_cost, success,
-            error_message, runtime_job_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1, NULL, ?9)
+        INSERT INTO dictations (
+            job_id, source, started_at, ended_at, duration_seconds,
+            transcription_provider, transcription_model, word_count,
+            character_count, estimated_cost, final_text, raw_text,
+            vocabulary_corrections
+        ) VALUES (?1, 'agentdictate', ?2, ?3, ?4, 'openai_api', ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
         params![
+            job.id.to_string(),
             timestamp(job.started_at),
             timestamp(job.updated_at),
             job.duration_seconds,
             job.transcription_model,
-            count_words_ascii_history(&job.raw_transcript),
             count_words_ascii_history(&job.final_text),
             job.final_text.chars().count() as u64,
             cost,
-            job.id.to_string(),
+            final_text,
+            raw_text,
+            corrections,
         ],
     )?;
-    let session_id = transaction.last_insert_rowid();
-    if settings.save_history {
-        transaction.execute(
-            r#"
-            INSERT INTO transcript_history (
-                session_id, created_at, raw_transcript, final_text,
-                replacements_applied, copied_to_clipboard, paste_triggered
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            "#,
-            params![
-                session_id,
-                timestamp(job.updated_at),
-                job.raw_transcript,
-                job.final_text,
-                corrections,
-                job.copied_to_clipboard,
-                job.paste_triggered,
-            ],
-        )?;
-    }
     Ok(())
 }
 
-/// Where a History page ends: the stored `created_at` text, exactly as
-/// the keyset comparison orders it, and the row id that breaks ties.
+/// Where a History page ends: the stored `ended_at` text, exactly as the
+/// keyset comparison orders it, and the row id that breaks ties.
 struct PageCursor {
-    created_at: String,
+    ended_at: String,
     id: i64,
 }
 
 impl PageCursor {
     fn encode(&self) -> HistoryPageCursor {
-        HistoryPageCursor::new(format!("{}|{}", self.created_at, self.id))
+        HistoryPageCursor::new(format!("{}|{}", self.ended_at, self.id))
     }
 
     fn decode(cursor: &HistoryPageCursor) -> Option<Self> {
-        let (created_at, id) = cursor.as_str().rsplit_once('|')?;
+        let (ended_at, id) = cursor.as_str().rsplit_once('|')?;
         Some(Self {
-            created_at: created_at.to_owned(),
+            ended_at: ended_at.to_owned(),
             id: id.parse().ok()?,
         })
-        .filter(|cursor| !cursor.created_at.is_empty())
+        .filter(|cursor| !cursor.ended_at.is_empty())
     }
 }
 
@@ -321,23 +304,13 @@ mod tests {
             transaction
                 .execute(
                     r#"
-                    INSERT INTO dictation_sessions (
-                        started_at, ended_at, duration_seconds, transcription_model,
-                        final_word_count
-                    ) VALUES (?1, ?1, 1, 'test-model', 2)
+                    INSERT INTO dictations (
+                        started_at, ended_at, duration_seconds, transcription_provider,
+                        transcription_model, word_count, character_count, estimated_cost,
+                        final_text
+                    ) VALUES (?1, ?1, 1, 'openai_api', 'test-model', 2, 7, 0, ?2)
                     "#,
-                    [&at],
-                )
-                .unwrap();
-            transaction
-                .execute(
-                    "INSERT INTO transcript_history (session_id, created_at, final_text)
-                     VALUES (?1, ?2, ?3)",
-                    params![
-                        transaction.last_insert_rowid(),
-                        at,
-                        format!("entry {index}")
-                    ],
+                    params![at, format!("entry {index}")],
                 )
                 .unwrap();
         }

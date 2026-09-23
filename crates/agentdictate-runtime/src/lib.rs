@@ -12,6 +12,7 @@ pub use fs::write_atomic;
 mod history;
 mod legacy_replacements;
 pub use legacy_replacements::{RetiredReplacement, RetiredReplacementOutcome};
+mod migrations;
 mod ports;
 pub use ports::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,

@@ -91,8 +91,9 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   the IPC protocol (`PROTOCOL_VERSION` in `crates/agentdictate-core/src/protocol.rs`),
   the workflow state machine and job stages, dictation options, vocabulary parsing and
   alias normalization, and the per-minute price table.
-- **agentdictate-runtime**: durable state. The SQLite job table with its checkpoints,
-  Recovery, History with substring search, usage queries, startup cleanup, settings
+- **agentdictate-runtime**: durable state. The SQLite schema and its numbered
+  migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
+  the `dictations` table behind History search and usage, startup cleanup, settings
   load and save, the IPC server and client, and the port traits (`Transcriber`,
   `Deliverer`, `DeliveryGate`, `Recorder`) that the app implements.
 - **agentdictate-linux**: desktop integration. `pw-record` capture, the evdev hotkey
@@ -149,9 +150,9 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    text. That request is logged as `consumed`, the target's acknowledgement. The
    delivery ends as `submitted`, `ambiguous` (the injection itself failed), or
    `not_sent` (nothing was injected).
-9. **Complete.** One transaction records the usage session (numbers only), adds the
-   History entry when **Save history** is on, and deletes the job row. The WAV is then
-   deleted unless **Preserve temporary audio** is on.
+9. **Complete.** One transaction records the dictation, with its usage numbers always
+   and its text only when **Save history** is on, and deletes the job row. The WAV is
+   then deleted unless **Preserve temporary audio** is on.
 
 At startup the daemon reconciles what a crash left behind. Jobs that were starting,
 recording, or transcribing become `interrupted` and stay in Recovery with their audio.
@@ -208,7 +209,8 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | --- | --- |
 | `~/.config/agentdictate/config.json` | Settings, including the OpenAI API key in plain text, mode 0600 |
 | `~/.local/share/systemd/user/agentdictated.service` | The daemon's user unit, written by the app when its text changes |
-| `~/.local/share/agentdictate/agentdictate.sqlite` | Jobs, History, usage, and the disabled rules of the retired Replacements feature |
+| `~/.local/share/agentdictate/agentdictate.sqlite` | In-flight and Recovery jobs, and completed dictations: their usage numbers, and their text for History |
+| `~/.local/share/agentdictate/agentdictate.sqlite.pre-v1` | A copy of the database from before the version 1 schema, made once when it migrated |
 | `~/.local/share/agentdictate/recordings/` | WAV files of in-flight, recoverable, and preserved dictations |
 | `~/.local/share/agentdictate/native-access/` | The input-access rule and guide from `install.sh`, and the helper `setup-access` writes |
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |

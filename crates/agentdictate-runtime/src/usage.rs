@@ -10,13 +10,13 @@ const ACTIVITY_DAYS: u64 = 30;
 
 impl Runtime {
     /// Usage totals and activity by local calendar day, from one pass over
-    /// the recorded sessions.
+    /// the recorded dictations.
     pub fn usage(&self) -> Result<UsageSnapshot, RuntimeError> {
         let (days, undated) = self.totals_by_local_day()?;
         Ok(summarize(&days, undated, Local::now().date_naive()))
     }
 
-    /// Sums sessions by the local calendar day they started on. Sessions
+    /// Sums dictations by the local calendar day they started on. Those
     /// whose start SQLite cannot read are summed separately, so they still
     /// count toward the all-time totals.
     fn totals_by_local_day(
@@ -31,10 +31,10 @@ impl Runtime {
         let mut statement = self.connection.prepare(
             r#"
             SELECT date(started_at, 'localtime'), COUNT(*),
-                   COALESCE(SUM(final_word_count), 0),
+                   COALESCE(SUM(word_count), 0),
                    COALESCE(SUM(duration_seconds), 0),
-                   COALESCE(SUM(estimated_total_cost), 0)
-            FROM dictation_sessions
+                   COALESCE(SUM(estimated_cost), 0)
+            FROM dictations
             GROUP BY 1
             "#,
         )?;
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn no_sessions_have_no_weeks_and_empty_days() {
+    fn no_dictations_have_no_weeks_and_empty_days() {
         let usage = summarize(
             &BTreeMap::new(),
             UsageTotalsSnapshot::default(),
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_count_on_their_local_calendar_day() {
+    fn dictations_count_on_their_local_calendar_day() {
         let directory = tempdir().unwrap();
         let runtime = Runtime::open(directory.path().join("usage.sqlite")).unwrap();
         // One minute apart across UTC midnight: two days in UTC, one day in
@@ -192,9 +192,10 @@ mod tests {
                 .connection
                 .execute(
                     r#"
-                    INSERT INTO dictation_sessions (
-                        started_at, ended_at, transcription_model, final_word_count
-                    ) VALUES (?1, ?1, 'gpt-transcribe', 3)
+                    INSERT INTO dictations (
+                        started_at, ended_at, duration_seconds, transcription_provider,
+                        transcription_model, word_count, character_count, estimated_cost
+                    ) VALUES (?1, ?1, 1, 'openai_api', 'gpt-transcribe', 3, 12, 0)
                     "#,
                     params![started_at],
                 )
