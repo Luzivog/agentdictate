@@ -252,15 +252,17 @@ def exercise(desktop, binary, scale, monitors, backend):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     statuses = []
     def send(phase):
-        state = {"phase": "recording" if phase == "recording" else "processing",
+        state = {"phase": phase if phase in {"starting", "recording"} else "processing",
                  "job_id": "00000000-0000-4000-8000-000000000001"}
-        if phase != "recording":
+        if state["phase"] == "processing":
             state["stage"] = phase
-        helper.stdin.write(json.dumps({"workflow": {"phase": state}, "active_recording": {
-            "audio_path": str(audio), "started_at_unix_millis": round(time.time() * 1000) - 2000}}) + "\n")
+        recording = None if phase == "starting" else {
+            "audio_path": str(audio), "started_at_unix_millis": round(time.time() * 1000) - 2000}
+        helper.stdin.write(json.dumps({"workflow": {"phase": state}, "active_recording": recording}) + "\n")
         helper.stdin.flush()
     try:
-        send("recording")
+        # The daemon launches the helper at the start request, before audio exists.
+        send("starting")
         deadline = time.monotonic() + 8
         # Unbuffered pipe reads avoid hiding a second status line in TextIO buffering.
         pending = b""
@@ -281,13 +283,14 @@ def exercise(desktop, binary, scale, monitors, backend):
         actual = geometry(desktop, window)
         assert actual == expected, f"wrong primary-monitor placement: actual={actual}, expected={expected}, statuses={statuses}"
         assert any(s["status"] == "frame_submitted" for s in statuses), statuses
+        # The daemon pastes during the fade only on this per-launch confirmation.
+        assert {"status": "window_created", "override_redirect": True} in statuses, statuses
         info = desktop.run(["xwininfo", "-id", window])
         assert "Override Redirect State: yes" in info and "Map State: IsViewable" in info
         assert window not in desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"])
         recognized = {}
         for phase in ["recording", "transcribing", "cleaning"]:
-            if phase != "recording":
-                send(phase)
+            send(phase)
             def visible():
                 im = desktop.screenshot(f"{phase}.png")
                 x, y, w, h = geometry(desktop, window)
@@ -337,6 +340,8 @@ def exercise(desktop, binary, scale, monitors, backend):
             helper.stdin.flush()
         else:
             helper.stdin.close()
+        # The paste lands while the card fades, so focus must hold during the fade too.
+        assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
         helper.wait(timeout=2)
         assert helper.returncode == 0, helper.stderr.read()
         assert not helper_window(desktop), "helper window survived dismissal"
