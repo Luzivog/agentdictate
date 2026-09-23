@@ -120,3 +120,41 @@ fn recovery_items_expire_seven_days_after_their_last_change() {
     assert!(recent_audio.exists());
     assert!(Utc::now() < runtime.recoveries().unwrap()[0].expires_at);
 }
+
+#[test]
+fn a_cancelled_recording_expires_after_a_day_not_a_week() {
+    let directory = TempDir::new().unwrap();
+    let database = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let cancelled_audio = directory.path().join("cancelled.wav");
+    let failed_audio = directory.path().join("failed.wav");
+    fs::write(&cancelled_audio, b"RIFF").unwrap();
+    fs::write(&failed_audio, b"RIFF").unwrap();
+    let day_and_a_bit = (Utc::now() - chrono::TimeDelta::hours(25))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let cancelled = insert_job(
+        &connection,
+        &cancelled_audio,
+        "cancelled",
+        "cancelled",
+        &day_and_a_bit,
+    );
+    let failed = insert_job(
+        &connection,
+        &failed_audio,
+        "failed",
+        "failed",
+        &day_and_a_bit,
+    );
+
+    let cleanup = runtime
+        .clean_up_finished_jobs(&Settings::default(), directory.path())
+        .unwrap();
+
+    assert_eq!(cleanup.expired_recoveries, 1);
+    assert!(runtime.job(cancelled).unwrap().is_none());
+    assert!(!cancelled_audio.exists());
+    assert_eq!(runtime.recoveries().unwrap()[0].job_id, failed);
+    assert!(failed_audio.exists());
+}

@@ -130,10 +130,11 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 3. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
    finalizes the WAV and records the `captured` checkpoint, then `transcribing`. The
    recorder owner thread ends a recording at **Stop recording after**,
-   whatever started it. Esc discards the recording instead, and deletes its audio
-   unless **Keep audio recordings** is on. If the recorder exits by itself, or the
-   microphone delivers no audio for 3 s, the recording is kept in Recovery and not
-   transcribed.
+   whatever started it. Esc discards the recording instead. A recording longer than
+   5 s waits in Recovery as `cancelled`, with its audio, for 24 hours; a shorter one
+   is deleted with its audio unless **Keep audio recordings** is on. If the recorder
+   exits by itself, or the microphone delivers no audio for 3 s, the recording is kept
+   in Recovery and not transcribed.
 4. **Transcribe.** Transcription runs on its own thread, outside the daemon lock, so
    settings, the tray, and the settings window stay responsive meanwhile. Presses
    while a dictation transcribes are ignored. **Cancel dictation** in the tray or
@@ -167,8 +168,8 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    `not_sent` (nothing was injected).
 9. **Complete.** One transaction records the dictation, with its usage numbers always
    and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
-   Then text older than **Keep transcripts** allows and Recovery items unchanged for 7
-   days are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
+   Then text older than **Keep transcripts** allows, Recovery items unchanged for 7
+   days, and cancelled recordings older than 24 hours are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
 
 At startup the daemon reconciles what a crash left behind. A database SQLite cannot
 read is renamed to `agentdictate.sqlite.corrupt-<unix time>` and a fresh one
@@ -180,9 +181,9 @@ the audio of finished jobs and any WAV file older than one hour that no job owns
 also applies the same retention as step 9. Writers set `secure_delete`, and deleting
 or expiring text truncates the write-ahead log, so removed text leaves the disk.
 
-Recovery actions in the History page, **Transcribe again** and **Paste again**, copy
-the text to the clipboard and never paste, because AgentDictate's own window has the
-focus.
+Recovery actions in the History page, **Transcribe again** (**Transcribe** on a
+cancelled recording) and **Paste again**, copy the text to the clipboard and never
+paste, because AgentDictate's own window has the focus.
 
 ### Paste shortcut and selections
 

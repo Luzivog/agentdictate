@@ -69,6 +69,7 @@ pub(crate) fn stage_name(stage: JobStage) -> &'static str {
         JobStage::NoSpeech => "no_speech",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",
+        JobStage::Cancelled => "cancelled",
         JobStage::Deleted => "deleted",
     }
 }
@@ -84,6 +85,7 @@ fn parse_stage(value: &str) -> Result<JobStage, RuntimeError> {
         "no_speech" => Ok(JobStage::NoSpeech),
         "interrupted" => Ok(JobStage::Interrupted),
         "failed" => Ok(JobStage::Failed),
+        "cancelled" => Ok(JobStage::Cancelled),
         "deleted" => Ok(JobStage::Deleted),
         other => Err(RuntimeError::InvalidJobId(format!(
             "unknown stage {other:?}"
@@ -98,6 +100,7 @@ pub(crate) fn state_for_stage(stage: JobStage) -> &'static str {
         JobStage::Deleted => "deleted",
         JobStage::Interrupted => "interrupted",
         JobStage::Failed => "failed",
+        JobStage::Cancelled => "cancelled",
         JobStage::Starting | JobStage::Recording => "active",
         JobStage::Captured | JobStage::Transcribing | JobStage::ReadyToDeliver => "captured",
     }

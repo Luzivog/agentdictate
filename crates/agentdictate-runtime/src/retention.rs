@@ -1,15 +1,39 @@
 //! How long finished work stays on this computer. Transcript text follows
 //! the Keep transcripts setting, and a Recovery item, text and audio, lasts
-//! `RECOVERY_LIFETIME` after its last change. Both rules run at daemon start
+//! `recovery_lifetime` after its last change. Both rules run at daemon start
 //! and after each completed dictation; nothing runs on a timer.
 
-use agentdictate_core::{JobId, KeepTranscripts};
+use agentdictate_core::{JobId, JobStage, KeepTranscripts};
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::{Runtime, RuntimeError, timestamp};
 
 /// How long a Recovery item stays after its last change.
-pub(crate) const RECOVERY_LIFETIME: TimeDelta = TimeDelta::days(7);
+const RECOVERY_LIFETIME: TimeDelta = TimeDelta::days(7);
+
+/// How long a recording discarded with Esc stays in Recovery.
+const CANCELLED_LIFETIME: TimeDelta = TimeDelta::days(1);
+
+/// A discarded recording longer than this many seconds is kept as a
+/// `Cancelled` Recovery item; a shorter one is deleted at once.
+pub(crate) const KEPT_CANCEL_SECONDS: f64 = 5.0;
+
+/// How long a Recovery item at `stage` stays after its last change.
+pub(crate) const fn recovery_lifetime(stage: JobStage) -> TimeDelta {
+    match stage {
+        JobStage::Cancelled => CANCELLED_LIFETIME,
+        JobStage::Starting
+        | JobStage::Recording
+        | JobStage::Captured
+        | JobStage::Transcribing
+        | JobStage::ReadyToDeliver
+        | JobStage::Delivered
+        | JobStage::NoSpeech
+        | JobStage::Interrupted
+        | JobStage::Failed
+        | JobStage::Deleted => RECOVERY_LIFETIME,
+    }
+}
 
 /// What `Runtime::apply_retention` removed.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -63,14 +87,19 @@ impl Runtime {
         let mut statement = self.connection.prepare(
             r#"
             SELECT runtime_id FROM dictation_jobs
-            WHERE stage IN ('captured', 'ready_to_deliver', 'interrupted', 'failed')
-              AND updated_at < ?1
+            WHERE (stage IN ('captured', 'ready_to_deliver', 'interrupted', 'failed')
+                   AND updated_at < ?1)
+               OR (stage = 'cancelled' AND updated_at < ?2)
             "#,
         )?;
         let ids = statement
-            .query_map([timestamp(now - RECOVERY_LIFETIME)], |row| {
-                row.get::<_, String>(0)
-            })?
+            .query_map(
+                [
+                    timestamp(now - RECOVERY_LIFETIME),
+                    timestamp(now - CANCELLED_LIFETIME),
+                ],
+                |row| row.get::<_, String>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ids.into_iter()
             .map(|id| id.parse().map_err(|_| RuntimeError::InvalidJobId(id)))

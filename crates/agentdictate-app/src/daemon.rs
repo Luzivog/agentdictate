@@ -648,9 +648,11 @@ where
     }
 
     /// Discards the active recording because the user explicitly pressed
-    /// Escape. Its audio is deleted too, unless "Preserve temporary audio"
-    /// is on. Shutdown and platform failures must use the separate recovery
-    /// preservation path below.
+    /// Escape. A recording longer than a few seconds waits in Recovery as
+    /// `Cancelled` for a day; a shorter one is deleted with its audio, unless
+    /// "Preserve temporary audio" is on. Either way the workflow returns to
+    /// Ready without asking for attention. Shutdown and platform failures
+    /// must use the separate recovery preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
         let id = self.recording_job()?;
         tracing::info!(job_id = %id, "dictation discard requested");
@@ -689,7 +691,12 @@ where
         {
             Ok(discarded) => {
                 self.settle(id, WorkflowSignal::DiscardCommitted { job_id: id });
-                tracing::info!(job_id = %id, "dictation discarded");
+                tracing::info!(
+                    job_id = %id,
+                    duration_seconds = capture.duration_seconds,
+                    kept_in_recovery = discarded.stage == JobStage::Cancelled,
+                    "dictation discarded"
+                );
                 Ok(discarded)
             }
             Err(error) => {

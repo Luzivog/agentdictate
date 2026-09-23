@@ -7,6 +7,7 @@ use chrono::Utc;
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::migrations::migrate;
+use crate::retention::KEPT_CANCEL_SECONDS;
 use crate::schema::{row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
@@ -178,13 +179,16 @@ impl Runtime {
         Ok(interrupted)
     }
 
-    /// Permanently discards a recording after its audio has reached the
-    /// durable captured checkpoint. With `keep_audio` (the "Preserve
-    /// temporary audio" setting) only the job is deleted and the WAV stays,
-    /// like the audio of a completed dictation. Otherwise the shared recovery
-    /// deletion path moves the audio into quarantine before deleting the job
-    /// row, so a failed delete never strands a retryable row without its
-    /// only audio copy.
+    /// Discards a recording the user cancelled, after its audio has reached
+    /// the durable captured checkpoint. One longer than
+    /// `KEPT_CANCEL_SECONDS` becomes a `Cancelled` Recovery item with its
+    /// audio, which expires after a day, so a mistaken Esc after a long take
+    /// loses nothing. A shorter one is deleted: with `keep_audio` (the
+    /// "Preserve temporary audio" setting) only the job is deleted and the
+    /// WAV stays, like the audio of a completed dictation. Otherwise the
+    /// shared recovery deletion path moves the audio into quarantine before
+    /// deleting the job row, so a failed delete never strands a retryable
+    /// row without its only audio copy.
     pub fn discard_recording(
         &mut self,
         id: JobId,
@@ -197,6 +201,10 @@ impl Runtime {
                 expected: JobStage::Captured,
                 actual: current.stage,
             });
+        }
+        if current.duration_seconds > KEPT_CANCEL_SECONDS {
+            self.update_stage(id, JobStage::Cancelled, None)?;
+            return Ok(self.job(id)?.expect("updated job must be readable"));
         }
         if !keep_audio {
             return self.delete_recovery(id);
@@ -246,7 +254,7 @@ impl Runtime {
         }
         if !matches!(
             current.stage,
-            JobStage::Captured | JobStage::Interrupted | JobStage::Failed
+            JobStage::Captured | JobStage::Interrupted | JobStage::Failed | JobStage::Cancelled
         ) {
             return Err(RuntimeError::OperationNotAllowed {
                 operation: "retry transcription for",

@@ -62,6 +62,26 @@ impl RecordingController for FailingFinishRecorder {
     }
 }
 
+/// Writes audio and reports a recording of `seconds`.
+struct TimedRecorder {
+    seconds: f64,
+}
+
+impl Recorder for TimedRecorder {
+    fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
+        std::fs::write(&job.audio_path, b"RIFFtimed audio").unwrap();
+        Ok(())
+    }
+}
+
+impl RecordingController for TimedRecorder {
+    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+        Ok(CapturedRecording {
+            duration_seconds: self.seconds,
+        })
+    }
+}
+
 #[derive(Default)]
 struct SubmittedDelivery {
     attempts: usize,
@@ -559,8 +579,9 @@ fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
 }
 
+/// Five seconds is the longest recording Esc deletes outright.
 #[test]
-fn escape_discards_the_dictation_and_keeps_its_audio_only_when_retention_is_enabled() {
+fn escape_discards_a_short_dictation_and_keeps_its_audio_only_when_retention_is_enabled() {
     for preserve_temp_audio in [false, true] {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
@@ -574,7 +595,7 @@ fn escape_discards_the_dictation_and_keeps_its_audio_only_when_retention_is_enab
             runtime,
             settings,
             paths.clone(),
-            PreservingRecorder::default(),
+            TimedRecorder { seconds: 5.0 },
             FixedTranscriber,
             SubmittedDelivery::default(),
         );
@@ -592,6 +613,38 @@ fn escape_discards_the_dictation_and_keeps_its_audio_only_when_retention_is_enab
     }
 }
 
+/// Esc after a long take keeps it in Recovery for a day without asking for
+/// attention; "Transcribe" there copies the text like any Recovery retry.
+#[test]
+fn escape_after_a_long_recording_keeps_it_in_recovery_and_transcribing_it_copies() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let started = daemon.start_recording().unwrap();
+
+    let cancelled = daemon.discard_recording().unwrap();
+
+    assert_eq!(cancelled.stage, JobStage::Cancelled);
+    assert!(started.audio_path.is_file());
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+    assert_eq!(daemon.snapshot().recoverable_count, 1);
+    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    assert_eq!(recovery.job_id, started.id);
+    assert_eq!(recovery.stage, JobStage::Cancelled);
+    assert_eq!(
+        recovery.expires_at - recovery.updated_at,
+        chrono::TimeDelta::days(1)
+    );
+
+    let ticket = daemon.retry_transcription(started.id).unwrap();
+    let copied = daemon.complete_transcription(ticket.run()).unwrap();
+
+    assert_eq!(copied.stage, JobStage::Delivered);
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::CopyOnly]);
+    assert_eq!(daemon.snapshot().recoverable_count, 0);
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
 #[test]
 fn failed_escape_delete_restores_audio_and_surfaces_recovery_attention() {
     let directory = tempdir().unwrap();
@@ -602,7 +655,7 @@ fn failed_escape_delete_restores_audio_and_surfaces_recovery_attention() {
         runtime,
         Settings::default(),
         paths.clone(),
-        PreservingRecorder::default(),
+        TimedRecorder { seconds: 2.0 },
         FixedTranscriber,
         SubmittedDelivery::default(),
     );

@@ -1,6 +1,6 @@
 use agentdictate_core::{JobStage, RecoverySnapshot};
 
-use crate::retention::RECOVERY_LIFETIME;
+use crate::retention::recovery_lifetime;
 use crate::{DeliveryStatus, Runtime, RuntimeError};
 
 impl Runtime {
@@ -18,13 +18,14 @@ impl Runtime {
                         | JobStage::ReadyToDeliver
                         | JobStage::Interrupted
                         | JobStage::Failed
+                        | JobStage::Cancelled
                 )
             })
             .map(|job| RecoverySnapshot {
                 job_id: job.id,
                 stage: job.stage,
                 updated_at: job.updated_at,
-                expires_at: job.updated_at + RECOVERY_LIFETIME,
+                expires_at: job.updated_at + recovery_lifetime(job.stage),
                 duration_seconds: job.duration_seconds,
                 raw_transcript: job.raw_transcript,
                 final_text: job.final_text,

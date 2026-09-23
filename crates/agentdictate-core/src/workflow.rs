@@ -50,6 +50,9 @@ pub enum JobStage {
     NoSpeech,
     Interrupted,
     Failed,
+    /// Discarded with Esc or Cancel after long enough that it waits in
+    /// Recovery for a day, in case the discard was a mistake.
+    Cancelled,
     Deleted,
 }
 
@@ -107,7 +110,8 @@ pub enum WorkflowSignal {
         job_id: JobId,
     },
     StopRequested,
-    /// The explicit user discard reached its durable `Deleted` checkpoint.
+    /// The explicit user discard reached its durable `Deleted` or
+    /// `Cancelled` checkpoint.
     DiscardCommitted {
         job_id: JobId,
     },

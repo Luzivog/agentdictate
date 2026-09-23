@@ -59,8 +59,9 @@ lag behind this repository. See [packages](docs/INSTALL.md#packages).
 3. Click into any text field, press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and
    press it again. Keep that field focused until the text appears.
 
-Press <kbd>Esc</kbd> while recording to throw the recording away. You can close the
-window; dictation keeps working. To stop AgentDictate, choose **Quit AgentDictate**
+Press <kbd>Esc</kbd> while recording to throw the recording away. If you recorded
+for more than 5 seconds, it waits in **History**, under **Recovery**, for a day in
+case you change your mind. You can close the window; dictation keeps working. To stop AgentDictate, choose **Quit AgentDictate**
 in the tray menu.
 
 ## Everyday use
@@ -92,7 +93,8 @@ in the tray menu.
   **Settings** deletes every transcript. Deleted text is overwritten on disk, not
   just hidden.
 - A failed dictation waits in **Recovery**, with its text and audio, for 7 days, then
-  both are deleted.
+  both are deleted. A recording you cancelled with <kbd>Esc</kbd> after more than 5
+  seconds waits there for a day.
 - Usage numbers, such as minutes and estimated cost, are kept without text.
 - Logs can contain transcript text.
 

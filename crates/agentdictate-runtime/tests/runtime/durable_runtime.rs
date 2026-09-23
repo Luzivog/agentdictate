@@ -785,36 +785,47 @@ fn capture_finalization_failure_can_interrupt_the_recording_durably() {
     );
 }
 
+/// Esc on a recording of at most five seconds deletes it with its audio. A
+/// longer one waits in Recovery as cancelled, audio kept, for a day, and
+/// "Transcribe again" can still take it.
 #[test]
-fn explicit_discard_deletes_the_captured_job_and_its_audio() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path: database_path.clone(),
-        saw_durable_starting_job: false,
-    };
-    let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/discarded.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
-        .unwrap();
-    runtime.capture_recording(job.id, 12.0).unwrap();
+fn explicit_discard_deletes_short_recordings_and_keeps_longer_ones_for_a_day() {
+    for (seconds, kept) in [(5.0, false), (5.5, true)] {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("agentdictate.db");
+        let audio_path = directory.path().join("discarded.wav");
+        let mut runtime = Runtime::open(&database_path).unwrap();
+        let job = runtime
+            .start_recording(
+                request(&audio_path, TRANSCRIPTION_MODEL),
+                &mut crate::support::ReadyRecorder,
+            )
+            .unwrap();
+        std::fs::write(&audio_path, b"RIFF").unwrap();
+        runtime.capture_recording(job.id, seconds).unwrap();
 
-    let discarded = runtime.discard_recording(job.id, false).unwrap();
+        let discarded = runtime.discard_recording(job.id, false).unwrap();
+        drop(runtime);
 
-    assert_eq!(discarded.stage, JobStage::Deleted);
-    assert!(!discarded.audio_path.exists());
-    assert!(runtime.recoverable_jobs().unwrap().is_empty());
-    assert!(runtime.recoveries().unwrap().is_empty());
-    drop(runtime);
-    let restarted = Runtime::open(&database_path).unwrap();
-    assert!(restarted.job(job.id).unwrap().is_none());
-    assert!(restarted.recoveries().unwrap().is_empty());
+        let mut restarted = Runtime::open(&database_path).unwrap();
+        let recoveries = restarted.recoveries().unwrap();
+        assert_eq!(audio_path.exists(), kept, "{seconds} s");
+        if !kept {
+            assert_eq!(discarded.stage, JobStage::Deleted);
+            assert!(restarted.job(job.id).unwrap().is_none());
+            assert!(recoveries.is_empty());
+            continue;
+        }
+        assert_eq!(discarded.stage, JobStage::Cancelled);
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].stage, JobStage::Cancelled);
+        assert_eq!(
+            recoveries[0].expires_at - recoveries[0].updated_at,
+            chrono::TimeDelta::days(1)
+        );
+        let retrying = restarted.prepare_transcription_retry(job.id).unwrap();
+        assert_eq!(retrying.stage, JobStage::Transcribing);
+    }
 }
 
 /// Also covers rows from the retired ChatGPT subscription route: their

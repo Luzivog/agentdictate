@@ -18,10 +18,13 @@ where
     local.format(format).to_string()
 }
 
+/// What a Recovery item needs, which decides its label and its button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStage {
     Transcription,
     Delivery,
+    /// Discarded with Esc; transcribing it anyway is the user's choice.
+    Cancelled,
 }
 
 impl RecoveryStage {
@@ -29,6 +32,7 @@ impl RecoveryStage {
         match self {
             Self::Transcription => "Needs transcription",
             Self::Delivery => "Ready to paste",
+            Self::Cancelled => "Cancelled — transcribe anyway?",
         }
     }
 
@@ -36,6 +40,7 @@ impl RecoveryStage {
         match self {
             Self::Transcription => "Transcribe again",
             Self::Delivery => "Paste again",
+            Self::Cancelled => "Transcribe",
         }
     }
 }

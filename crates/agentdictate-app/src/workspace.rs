@@ -153,7 +153,7 @@ impl WorkspaceClient {
                     .parse::<JobId>()
                     .map_err(|_| WorkspaceError::InvalidRecoveryId { id })?;
                 match stage {
-                    RecoveryStage::Transcription => {
+                    RecoveryStage::Transcription | RecoveryStage::Cancelled => {
                         ClientCommandKind::RetryTranscription { job_id }
                     }
                     RecoveryStage::Delivery => ClientCommandKind::RetryDelivery { job_id },
@@ -497,7 +497,9 @@ fn workspace_view_model(
                     ));
             RecoveryItemViewModel::new(
                 entry.job_id.to_string(),
-                if delivery {
+                if entry.stage == agentdictate_core::JobStage::Cancelled {
+                    RecoveryStage::Cancelled
+                } else if delivery {
                     RecoveryStage::Delivery
                 } else {
                     RecoveryStage::Transcription
