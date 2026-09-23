@@ -90,14 +90,16 @@ language is sent as a `languages[]` hint.
 ## Empty captures and failures
 
 - **Silence.** When recognition returns nothing and the WAV is near-silent, the
-  dictation ends quietly: no paste, no History entry, no Recovery item. Near-silent
+  dictation ends without a paste, History entry, or Recovery item, and the overlay
+  and a notification say "Didn't hear anything". Near-silent
   means a PCM16 peak of at most 128 and an RMS of at most 32, roughly -48 dBFS and
   -60 dBFS. This is not a duration cutoff, so a short recognized word still pastes.
   The audio follows the **Keep audio recordings** setting.
 - **Empty result from audible audio.** The dictation goes to Recovery with its audio,
   because something was said.
-- **Network or API errors.** A request that fails before OpenAI answers is resent
-  once, and a rejected WebM/Opus upload is resent once as WAV. Any other error sends
+- **Network or API errors.** A request that fails to reach OpenAI is resent once,
+  and a rejected WebM/Opus upload is resent once as WAV. A request that reached
+  OpenAI but got no answer within 180 seconds is not resent. Any other error sends
   the dictation to Recovery with its audio.
 - **Paste problems.** If the focused window keeps changing, or the text cannot be
   published, nothing is pasted and the dictation stays in Recovery. Once the paste
@@ -114,7 +116,7 @@ transcribe anyway?**, for 24 hours.
 ## Evaluate a change
 
 `agentdictate-evaluate` replays cases through the production vocabulary handling and,
-on request, the production transcription transports. It never opens the microphone
+on request, the production transcription transport. It never opens the microphone
 or pastes into another app. Build it once:
 
 ```bash

@@ -11,7 +11,7 @@ pipeline, where data lives, and the decisions that shape them.
 | Process | Started by | Owns |
 | --- | --- | --- |
 | `agentdictated --service` | The `agentdictated.service` user unit | Hotkey, recording, transcription, SQLite, delivery, audio ducking, tray, IPC server |
-| `agentdictate` | The user, the desktop entry, or the tray | Settings window, plus the `start`, `stop`, `cancel`, and `setup-access` commands |
+| `agentdictate` | The user, the desktop entry, or the tray | Settings window, plus the `start`, `stop`, `cancel`, `paste-last`, and `setup-access` commands |
 | `agentdictate --overlay-helper` | The daemon, once per recording | The recording overlay window |
 | `agentdictate-evaluate` | A developer | Headless replay of dictation cases; not installed |
 
@@ -77,9 +77,9 @@ Recovery", "Didn't hear anything · Check your microphone", or "Copied — press
 Ctrl+V". It has no buttons, and its window's input region is empty, so it never
 takes a click. The daemon also shows a desktop notification through
 `org.freedesktop.Notifications` on the session bus, which never takes the focus.
-Clicking it opens the window. A failure that transcribing again can fix offers
-**Try again**, which transcribes the Recovery item and copies its text; copied text
-offers **Paste again**. Each
+Clicking a failure's notification opens the window. A failure that transcribing
+again can fix offers **Try again**, which transcribes the Recovery item and copies its
+text; copied text, and a paste that wasn't confirmed, offer **Paste again**. Each
 notification replaces the previous one. A retry from the settings window, and a
 shutdown, announce nothing.
 
@@ -180,11 +180,12 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    now, as it does for every Recovery retry; without ffmpeg, the WAV itself is
    uploaded. The app posts the audio to `/v1/audio/transcriptions` with the model,
    `languages[]`, `keywords[]` (the vocabulary spellings), and `prompt` (the
-   context). A request that fails before OpenAI returns any status is sent once
-   more, and an HTTP 400 about the file resends the WAV once. Nothing else is
-   retried.
-4. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
-   job is removed and nothing is pasted or kept in History. Any other empty result or
+   context). A request that fails before it reaches OpenAI is sent once more, and an
+   HTTP 400 about the file resends the WAV once. Nothing else is retried, not even a
+   request that got no answer within the 180 s limit.
+4. **Empty results.** An empty result from a near-silent WAV ends with the "Didn't
+   hear anything" notice: the job is removed and nothing is pasted or kept in
+   History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.
    Every failure is stored with a typed reason, `FailureKind` (offline, API key
    missing or refused, rate limited, service error, nothing heard, microphone,

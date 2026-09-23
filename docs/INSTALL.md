@@ -107,7 +107,9 @@ Turning **Start AgentDictate when I log in** off only affects future logins.
 **What leaves your computer.** Each dictation's audio goes to OpenAI's
 `/v1/audio/transcriptions` endpoint, with the language hint, the context text, and
 your vocabulary spellings, unless you use Literal mode, which sends only the
-language. A request that fails before OpenAI answers is sent once more.
+language. A request that fails to reach OpenAI is sent once more. **Transcribe
+again** in Recovery and **Try again** on a notification send a saved recording again,
+when you ask.
 
 **What stays on your computer.**
 

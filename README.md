@@ -89,7 +89,8 @@ in the tray menu.
 ## Privacy
 
 - Your audio is sent to OpenAI for each dictation, with your language, context, and
-  vocabulary hints. Nothing is sent while you are not recording.
+  vocabulary hints. Otherwise nothing is sent, unless you ask to transcribe a saved
+  recording again.
 - Your API key is stored unencrypted in `~/.config/agentdictate/config.json`,
   readable only by you.
 - After a successful paste, AgentDictate keeps the text only in History, for as long

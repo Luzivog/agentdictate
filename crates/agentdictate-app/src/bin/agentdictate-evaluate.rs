@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     let config_path = get("--config")
         .map(PathBuf::from)
         .unwrap_or(AppPaths::from_environment()?.config_file);
-    // Read without pricing repair or other mutation of the user's configuration.
+    // Read only: `load_settings` would create a missing file and fix its mode.
     let mut settings: Settings = if config_path.exists() {
         serde_json::from_slice(&fs::read(config_path)?)?
     } else {
@@ -69,14 +69,12 @@ fn main() -> anyhow::Result<()> {
     let mut count = 0;
     for case in parsed {
         let start = Instant::now();
-        let mut actual_model = None;
         let result = match mode.as_str() {
             "speech" => {
                 let audio = case
                     .audio
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("case {} has no audio path", case.id))?;
-                actual_model = Some(settings.transcription_model.clone());
                 transport.transcribe_audio(TranscriptionRequest {
                     keywords: &keywords,
                     audio_path: audio,
@@ -109,7 +107,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(
             file,
             "{}",
-            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":actual_model,"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
+            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
         )?;
     }
     println!(
