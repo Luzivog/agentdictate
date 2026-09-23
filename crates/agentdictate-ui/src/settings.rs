@@ -21,13 +21,6 @@ macro_rules! settings_fields {
                     searchable: false,
                     read: provider,
                 },
-                transcription_model: String {
-                    from: cloned,
-                    apply: validate_draft(validated_transcription_model),
-                    options: catalog(transcription_model_options),
-                    searchable: true,
-                    read: string,
-                },
                 language: String {
                     from: cloned,
                     apply: value(trimmed),
@@ -48,15 +41,6 @@ macro_rules! settings_fields {
                     options: plain(paste_shortcut_options),
                     searchable: false,
                     read: string,
-                },
-            }
-            dependent_select {
-            }
-            input {
-                custom_transcription_model: String {
-                    from: cloned,
-                    apply: validate_draft(validated_custom_transcription_model),
-                    placeholder: "Custom OpenAI model",
                 },
             }
             text_area {
@@ -169,24 +153,6 @@ macro_rules! define_settings_draft {
                 },
             )*
         }
-        dependent_select {
-            $(
-                $dependent_field:ident: $dependent_type:ty {
-                    from: $dependent_from:ident,
-                    apply: $dependent_apply_kind:ident($dependent_apply:ident),
-                    $($dependent_control:tt)*
-                },
-            )*
-        }
-        input {
-            $(
-                $input_field:ident: $input_type:ty {
-                    from: $input_from:ident,
-                    apply: $input_apply_kind:ident($input_apply:ident),
-                    $($input_control:tt)*
-                },
-            )*
-        }
         text_area {
             $(
                 $text_area_field:ident: $text_area_type:ty {
@@ -226,8 +192,6 @@ macro_rules! define_settings_draft {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct SettingsDraft {
             $(pub $select_field: $select_type,)*
-            $(pub $dependent_field: $dependent_type,)*
-            $(pub $input_field: $input_type,)*
             $(pub $text_area_field: $text_area_type,)*
             $(pub $number_field: $number_type,)*
             $(pub $draft_only_field: $draft_only_type,)*
@@ -247,8 +211,6 @@ macro_rules! define_settings_draft {
             pub fn apply_to(&self, current: &Settings) -> Result<Settings, SettingsDraftError> {
                 let mut updated = current.clone();
                 $(updated.$select_field = apply_settings_field!(self, $select_field, $select_apply_kind($select_apply));)*
-                $(updated.$dependent_field = apply_settings_field!(self, $dependent_field, $dependent_apply_kind($dependent_apply));)*
-                $(updated.$input_field = apply_settings_field!(self, $input_field, $input_apply_kind($input_apply));)*
                 $(updated.$text_area_field = apply_settings_field!(self, $text_area_field, $text_area_apply_kind($text_area_apply));)*
                 $(updated.$number_field = apply_settings_field!(self, $number_field, $number_apply_kind($number_apply));)*
                 $(updated.$draft_only_field = apply_settings_field!(self, $draft_only_field, $draft_only_apply_kind($draft_only_apply));)*
@@ -262,8 +224,6 @@ macro_rules! define_settings_draft {
             fn from(settings: &Settings) -> Self {
                 Self {
                     $($select_field: from_settings_field!(settings, $select_field, $select_from),)*
-                    $($dependent_field: from_settings_field!(settings, $dependent_field, $dependent_from),)*
-                    $($input_field: from_settings_field!(settings, $input_field, $input_from),)*
                     $($text_area_field: from_settings_field!(settings, $text_area_field, $text_area_from),)*
                     $($number_field: from_settings_field!(settings, $number_field, $number_from),)*
                     $($draft_only_field: from_settings_field!(settings, $draft_only_field, $draft_only_from),)*
@@ -304,29 +264,6 @@ fn stringified(value: &impl Display) -> String {
 
 fn trimmed(value: &str) -> String {
     value.trim().to_owned()
-}
-
-fn validated_transcription_model(draft: &SettingsDraft) -> Result<String, SettingsDraftError> {
-    if draft.transcription_provider == TranscriptionProvider::OpenAiApi {
-        required("Transcription model", &draft.transcription_model)
-    } else {
-        Ok(trimmed(&draft.transcription_model))
-    }
-}
-
-fn validated_custom_transcription_model(
-    draft: &SettingsDraft,
-) -> Result<String, SettingsDraftError> {
-    if draft.transcription_provider == TranscriptionProvider::OpenAiApi
-        && draft.transcription_model.trim() == "Custom"
-    {
-        required(
-            "Custom transcription model",
-            &draft.custom_transcription_model,
-        )
-    } else {
-        Ok(trimmed(&draft.custom_transcription_model))
-    }
 }
 
 fn validated_hotkey(value: &str) -> Result<String, SettingsDraftError> {

@@ -12,15 +12,14 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ModelCatalogFallback, ModelCatalogSnapshot,
-    ModelCatalogStatus, Settings, TranscriptionProvider, WorkflowPhase, WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, Settings, TranscriptionProvider, WorkflowPhase,
+    WorkflowSnapshot,
 };
 use agentdictate_ui::{
-    AgentDictateWindowFrame, CommandSink, HistoryViewModel, ModelCatalogViewModel,
-    RecoveryItemViewModel, RecoveryStage, ReplacementDraft, ReplacementRuleViewModel,
-    ReplacementsViewModel, Route, SettingsShell, ShellViewModel, TranscriptViewModel,
-    UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction,
-    WorkspaceActionSink, WorkspaceViewModel, test_support,
+    AgentDictateWindowFrame, CommandSink, HistoryViewModel, RecoveryItemViewModel, RecoveryStage,
+    ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel, Route, SettingsShell,
+    ShellViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals,
+    UsageViewModel, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -299,139 +298,6 @@ fn history(
 ) -> HistoryViewModel {
     let count = transcripts.len() as u64;
     HistoryViewModel::from_page(recoveries, transcripts, count, String::new(), false)
-}
-
-#[gpui::test]
-fn settings_explains_when_cached_model_choices_are_shown(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        model_catalog: ModelCatalogViewModel::from(ModelCatalogSnapshot {
-            status: ModelCatalogStatus::Failed {
-                fallback: ModelCatalogFallback::Cached,
-                message: "Network unavailable".to_owned(),
-            },
-            ..ModelCatalogSnapshot::default()
-        }),
-        ..WorkspaceViewModel::default()
-    });
-    let refreshed = model.workspace.clone();
-    let mut harness = Harness::open_model_with_actions(
-        cx,
-        size(px(1_100.), px(780.)),
-        model,
-        Arc::new(move |_| Ok(refreshed.clone())),
-    );
-
-    harness.bounds("settings-model-catalog-cached");
-}
-
-#[gpui::test]
-fn opening_connected_settings_refreshes_the_account_catalog_once(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let _harness = Harness::open_connected_with(
-        cx,
-        ShellViewModel::from_snapshot(
-            Route::Settings,
-            WorkflowSnapshot {
-                phase: WorkflowPhase::Ready,
-            },
-        ),
-        Settings::default(),
-        true,
-        Arc::clone(&commands),
-    );
-
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        commands[0].kind,
-        ClientCommandKind::RefreshModelCatalog { .. }
-    ));
-}
-
-#[gpui::test]
-fn entering_settings_refreshes_once_without_render_polling(cx: &mut TestAppContext) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected_with(
-        cx,
-        ShellViewModel::from_snapshot(
-            Route::Overview,
-            WorkflowSnapshot {
-                phase: WorkflowPhase::Ready,
-            },
-        ),
-        Settings::default(),
-        true,
-        Arc::clone(&commands),
-    );
-
-    assert!(commands.lock().expect("command lock").is_empty());
-    harness.click(Route::Settings.navigation_id());
-    harness.click(Route::Settings.navigation_id());
-    harness.cx.run_until_parked();
-
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        commands[0].kind,
-        ClientCommandKind::RefreshModelCatalog { .. }
-    ));
-}
-
-#[gpui::test]
-fn catalog_updates_do_not_reset_the_current_dirty_settings_draft(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Settings,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        model_catalog: ModelCatalogViewModel::from(ModelCatalogSnapshot {
-            status: ModelCatalogStatus::Failed {
-                fallback: ModelCatalogFallback::Cached,
-                message: "Offline".to_owned(),
-            },
-            ..ModelCatalogSnapshot::default()
-        }),
-        ..WorkspaceViewModel::default()
-    });
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness =
-        Harness::open_connected_with(cx, model, Settings::default(), false, Arc::clone(&commands));
-
-    harness.scroll_route_by(-120.);
-    harness.scroll_to("toggle-streaming");
-    harness.click("toggle-streaming");
-    harness.bounds("settings-save-bar");
-    harness.shell.update(harness.cx, |shell, cx| {
-        shell.apply_workspace_update(
-            WorkspaceViewModel {
-                model_catalog: ModelCatalogViewModel::default(),
-                ..shell.view_model().workspace.clone()
-            },
-            cx,
-        );
-    });
-    harness.cx.run_until_parked();
-    harness.bounds("settings-model-catalog-builtin");
-    harness.scroll_route_by(10_000.);
-    harness.click("save-settings");
-
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.transcription_model == "gpt-transcribe"
-                && settings.cleanup_model == "gpt-5.4-nano"
-                && settings.streaming_enabled
-    ));
 }
 
 #[gpui::test]
@@ -1286,7 +1152,6 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
 
     harness.bounds("settings-input-transcription-provider");
-    harness.bounds("settings-input-transcription-model");
     harness.bounds("settings-input-language");
     harness.bounds("settings-hotkey-change");
     harness.bounds("settings-input-recording-mode");
@@ -1338,9 +1203,7 @@ fn chatgpt_subscription_replaces_api_controls_with_one_managed_model_status(
     harness.bounds("settings-transcription-managed-by-chatgpt");
     harness.bounds("settings-input-language");
     harness.bounds("settings-api-key");
-    assert!(!harness.has("settings-input-transcription-model"));
     assert!(!harness.has("settings-input-transcription-prompt"));
-    assert!(!harness.has("settings-model-catalog-builtin"));
     harness.click("save-settings");
 
     let commands = commands.lock().expect("command lock");

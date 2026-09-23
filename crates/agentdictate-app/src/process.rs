@@ -1,5 +1,5 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::{io, path::PathBuf};
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ProcessingStage,
@@ -11,7 +11,6 @@ use agentdictate_runtime::{
     Runtime, RuntimeError, load_settings, save_settings,
 };
 
-use crate::model_catalog::ModelCatalog;
 use crate::{
     AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, OverlayUpdate,
     ReqwestOpenAiTransport, SpeechRouter, SystemDeliverer, SystemRecordingController,
@@ -41,7 +40,6 @@ pub struct AgentProcess {
     database_file: PathBuf,
     recordings_directory: PathBuf,
     runtime_directory: PathBuf,
-    model_catalog: ModelCatalog,
     history_index_maintenance: HistoryIndexMaintenance,
     recording_priority: Option<RecordingPriorityGuard>,
     hotkey_control: Option<Arc<dyn HotkeyReconfigurer>>,
@@ -55,7 +53,6 @@ impl AgentProcess {
         let settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
         runtime.reconcile_recovery_deletions(&paths.recordings)?;
-        let model_catalog = ModelCatalog::open(&paths.cache, &settings.openai_api_key);
         let speech = SpeechRouter::new(
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
             CodexSubscriptionTransport::new(),
@@ -85,7 +82,6 @@ impl AgentProcess {
             database_file: paths.database_file,
             recordings_directory: paths.recordings,
             runtime_directory: paths.runtime,
-            model_catalog,
             history_index_maintenance,
             recording_priority: None,
             hotkey_control: None,
@@ -159,12 +155,6 @@ impl AgentProcess {
     /// and the daemon remains available.
     pub fn start_post_listener_maintenance(&self) -> std::io::Result<std::thread::JoinHandle<()>> {
         let settings = self.daemon.settings().clone();
-        if let Err(error) = self
-            .model_catalog
-            .refresh_in_background(&settings.openai_api_key)
-        {
-            tracing::warn!(%error, "could not start OpenAI model discovery");
-        }
         let autostart_file = self.autostart_file.clone();
         let daemon_service_file = self.daemon_service_file.clone();
         let systemctl_command = self.systemctl_command.clone();
@@ -197,12 +187,10 @@ impl AgentProcess {
     }
 
     fn workspace_message(&self, request_id: u64) -> Result<ServerMessage, RuntimeError> {
-        let mut workspace = self.daemon.workspace_snapshot()?;
-        workspace.model_catalog = self.model_catalog.snapshot(
-            self.daemon.settings().active_transcription_model(),
-            self.daemon.settings().active_cleanup_model(),
-        );
-        Ok(ServerMessage::workspace(request_id, workspace))
+        Ok(ServerMessage::workspace(
+            request_id,
+            self.daemon.workspace_snapshot()?,
+        ))
     }
 
     fn history_page_message(
@@ -308,13 +296,6 @@ impl AgentProcess {
             .set_api_key(&settings.openai_api_key);
         transcriber.update_settings(settings.clone());
         self.daemon.update_settings(settings);
-        self.refresh_model_catalog()?;
-        Ok(())
-    }
-
-    fn refresh_model_catalog(&self) -> io::Result<()> {
-        self.model_catalog
-            .refresh_in_background(&self.daemon.settings().openai_api_key)?;
         Ok(())
     }
 
@@ -405,7 +386,6 @@ impl IpcHandler for AgentProcess {
         let returns_workspace = matches!(
             command_tag,
             ClientCommandTag::GetWorkspace
-                | ClientCommandTag::RefreshModelCatalog
                 | ClientCommandTag::RetryTranscription
                 | ClientCommandTag::RetryDelivery
                 | ClientCommandTag::DeleteRecovery
@@ -419,9 +399,6 @@ impl IpcHandler for AgentProcess {
         let result: anyhow::Result<()> = match command.kind {
             ClientCommandKind::GetSnapshot { .. } => Ok(()),
             ClientCommandKind::GetWorkspace { .. } => Ok(()),
-            ClientCommandKind::RefreshModelCatalog { .. } => {
-                self.refresh_model_catalog().map_err(Into::into)
-            }
             ClientCommandKind::GetHistoryPage { .. } => Ok(()),
             ClientCommandKind::StartRecording { mode, .. } => self
                 .daemon
@@ -539,7 +516,6 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
     match command {
         ClientCommandKind::GetSnapshot { request_id }
         | ClientCommandKind::GetWorkspace { request_id }
-        | ClientCommandKind::RefreshModelCatalog { request_id }
         | ClientCommandKind::GetHistoryPage { request_id, .. }
         | ClientCommandKind::StartRecording { request_id, .. }
         | ClientCommandKind::StopRecording { request_id }

@@ -2,8 +2,7 @@ use gpui::{AppContext, Context, Entity, ScrollHandle, Window};
 use gpui_component::input::{InputEvent, InputState};
 
 use crate::{
-    ModelCatalogViewModel, ReplacementDraft, Route, ShellViewModel, ThemeTokens, WorkspaceAction,
-    WorkspaceActionSink,
+    ReplacementDraft, Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
 };
 
 use super::{
@@ -15,7 +14,6 @@ pub(super) struct SettingsEditState {
     pub(super) current: agentdictate_core::Settings,
     pub(super) baseline: agentdictate_core::Settings,
     pub(super) form: SettingsFormState,
-    pub(super) applied_model_catalog: ModelCatalogViewModel,
     pub(super) dirty: bool,
     pub(super) shortcut_capture_active: bool,
     pub(super) shortcut_capture_error: Option<String>,
@@ -111,9 +109,8 @@ impl SettingsShell {
                 .placeholder("Search every transcript")
                 .default_value(initial_history_search)
         });
-        let applied_model_catalog = model.workspace.model_catalog.clone();
-        let form = SettingsFormState::new(&settings, &applied_model_catalog, window, cx);
-        let mut subscriptions = form.subscriptions(window, cx);
+        let form = SettingsFormState::new(&settings, window, cx);
+        let mut subscriptions = form.subscriptions(cx);
         subscriptions.push(
             cx.subscribe(&api_key_input, |shell, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -132,23 +129,13 @@ impl SettingsShell {
             },
         ));
 
-        let mut next_request_id = 1;
-        let mut routes = RouteUiState {
+        let routes = RouteUiState {
             entries: std::array::from_fn(|_| RouteUiEntry::default()),
             history_search_input,
             replacement_editor: None,
             pending_destructive_action: None,
             overview_recent_expanded: false,
         };
-        if has_api_key && model.active_route == Route::Settings {
-            if let Err(error) = command_sink(
-                agentdictate_core::ClientCommand::refresh_model_catalog(next_request_id),
-            ) {
-                routes.entry_mut(Route::Settings).feedback =
-                    Some(format!("Could not refresh models: {error}"));
-            }
-            next_request_id += 1;
-        }
 
         Self {
             model,
@@ -157,7 +144,6 @@ impl SettingsShell {
                 current: settings.clone(),
                 baseline: settings,
                 form,
-                applied_model_catalog,
                 dirty: false,
                 shortcut_capture_active: false,
                 shortcut_capture_error: None,
@@ -167,7 +153,7 @@ impl SettingsShell {
                 api_key_input,
                 api_key_feedback: None,
                 command_sink,
-                next_request_id,
+                next_request_id: 1,
             },
             workspace_actions: WorkspaceActionState {
                 sink: workspace_action_sink,
@@ -190,9 +176,6 @@ impl SettingsShell {
     pub(super) fn select_route(&mut self, route: Route, cx: &mut Context<Self>) {
         let previous_route = self.model.active_route;
         self.model.select_route(route);
-        if route == Route::Settings && previous_route != Route::Settings {
-            self.request_model_catalog_refresh();
-        }
         self.routes.pending_destructive_action = None;
         self.clear_route_feedback_for(previous_route);
         self.settings_commands.api_key_feedback = None;

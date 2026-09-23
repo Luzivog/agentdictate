@@ -7,7 +7,7 @@ use crate::snapshots::{
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -48,13 +48,6 @@ impl ClientCommand {
     #[must_use]
     pub const fn get_workspace(request_id: u64) -> Self {
         Self::with_kind(ClientCommandKind::GetWorkspace { request_id })
-    }
-
-    /// Returns the current cached/bundled catalog immediately while asking
-    /// the daemon to refresh account availability in the background.
-    #[must_use]
-    pub const fn refresh_model_catalog(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::RefreshModelCatalog { request_id })
     }
 
     #[must_use]
@@ -171,7 +164,6 @@ impl ClientCommand {
         match &self.kind {
             ClientCommandKind::GetSnapshot { .. } => ClientCommandTag::GetSnapshot,
             ClientCommandKind::GetWorkspace { .. } => ClientCommandTag::GetWorkspace,
-            ClientCommandKind::RefreshModelCatalog { .. } => ClientCommandTag::RefreshModelCatalog,
             ClientCommandKind::GetHistoryPage { .. } => ClientCommandTag::GetHistoryPage,
             ClientCommandKind::StartRecording { .. } => ClientCommandTag::StartRecording,
             ClientCommandKind::StopRecording { .. } => ClientCommandTag::StopRecording,
@@ -203,7 +195,6 @@ impl ClientCommand {
 pub enum ClientCommandTag {
     GetSnapshot,
     GetWorkspace,
-    RefreshModelCatalog,
     GetHistoryPage,
     StartRecording,
     StopRecording,
@@ -229,7 +220,6 @@ impl ClientCommandTag {
     pub const ALL: &'static [Self] = &[
         Self::GetSnapshot,
         Self::GetWorkspace,
-        Self::RefreshModelCatalog,
         Self::GetHistoryPage,
         Self::StartRecording,
         Self::StopRecording,
@@ -258,9 +248,6 @@ pub enum ClientCommandKind {
         request_id: u64,
     },
     GetWorkspace {
-        request_id: u64,
-    },
-    RefreshModelCatalog {
         request_id: u64,
     },
     GetHistoryPage {
@@ -344,25 +331,24 @@ mod tests {
         match tag {
             ClientCommandTag::GetSnapshot => 0,
             ClientCommandTag::GetWorkspace => 1,
-            ClientCommandTag::RefreshModelCatalog => 2,
-            ClientCommandTag::GetHistoryPage => 3,
-            ClientCommandTag::StartRecording => 4,
-            ClientCommandTag::StopRecording => 5,
-            ClientCommandTag::Cancel => 6,
-            ClientCommandTag::RecorderExited => 7,
-            ClientCommandTag::RetryTranscription => 8,
-            ClientCommandTag::RetryDelivery => 9,
-            ClientCommandTag::DeleteRecovery => 10,
-            ClientCommandTag::CreateReplacement => 11,
-            ClientCommandTag::UpdateReplacement => 12,
-            ClientCommandTag::DeleteReplacement => 13,
-            ClientCommandTag::DeleteHistory => 14,
-            ClientCommandTag::ClearHistory => 15,
-            ClientCommandTag::CopyTranscript => 16,
-            ClientCommandTag::UpdateSettings => 17,
-            ClientCommandTag::SetApiKey => 18,
-            ClientCommandTag::HotkeyStatusChanged => 19,
-            ClientCommandTag::Quit => 20,
+            ClientCommandTag::GetHistoryPage => 2,
+            ClientCommandTag::StartRecording => 3,
+            ClientCommandTag::StopRecording => 4,
+            ClientCommandTag::Cancel => 5,
+            ClientCommandTag::RecorderExited => 6,
+            ClientCommandTag::RetryTranscription => 7,
+            ClientCommandTag::RetryDelivery => 8,
+            ClientCommandTag::DeleteRecovery => 9,
+            ClientCommandTag::CreateReplacement => 10,
+            ClientCommandTag::UpdateReplacement => 11,
+            ClientCommandTag::DeleteReplacement => 12,
+            ClientCommandTag::DeleteHistory => 13,
+            ClientCommandTag::ClearHistory => 14,
+            ClientCommandTag::CopyTranscript => 15,
+            ClientCommandTag::UpdateSettings => 16,
+            ClientCommandTag::SetApiKey => 17,
+            ClientCommandTag::HotkeyStatusChanged => 18,
+            ClientCommandTag::Quit => 19,
         }
     }
 

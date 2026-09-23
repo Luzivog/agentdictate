@@ -7,7 +7,7 @@ use gpui_component::{
 
 use agentdictate_core::TranscriptionProvider;
 
-use crate::{ModelCatalogViewModel, SettingsDraft, settings::settings_fields};
+use crate::{SettingsDraft, settings::settings_fields};
 
 use super::SettingsShell;
 
@@ -40,45 +40,12 @@ impl SelectItem for SettingOption {
 
 pub(super) type SettingSelectState = SelectState<SearchableVec<SettingOption>>;
 
-macro_rules! select_options {
-    (plain($factory:ident), $catalog:ident) => {{
-        let _ = $catalog;
-        $factory()
-    }};
-    (catalog($factory:ident), $catalog:ident) => {
-        $factory($catalog)
-    };
-}
-
 macro_rules! read_select {
     (provider, $state:expr, $fallback:expr, $cx:ident) => {
         selected_transcription_provider($state, $fallback, $cx)
     };
     (string, $state:expr, $fallback:expr, $cx:ident) => {
         selected_setting($state, &$fallback, $cx)
-    };
-}
-
-macro_rules! sync_catalog_select {
-    (
-        plain($factory:ident),
-        $state:expr,
-        $selected:expr,
-        $catalog:ident,
-        $window:ident,
-        $cx:ident
-    ) => {{
-        let _ = stringify!($factory);
-    }};
-    (
-        catalog($factory:ident),
-        $state:expr,
-        $selected:expr,
-        $catalog:ident,
-        $window:ident,
-        $cx:ident
-    ) => {
-        replace_select_options($state, $factory($catalog), $selected, $window, $cx);
     };
 }
 
@@ -89,28 +56,9 @@ macro_rules! define_settings_form {
                 $select_field:ident: $select_type:ty {
                     from: $select_from:ident,
                     apply: $select_apply_kind:ident($select_apply:ident),
-                    options: $select_options_kind:ident($select_options:ident),
+                    options: plain($select_options:ident),
                     searchable: $select_searchable:literal,
                     read: $select_read:ident,
-                },
-            )*
-        }
-        dependent_select {
-            $(
-                $dependent_field:ident: $dependent_type:ty {
-                    from: $dependent_from:ident,
-                    apply: $dependent_apply_kind:ident($dependent_apply:ident),
-                    depends_on: $dependent_depends_on:ident,
-                    options: $dependent_options:ident,
-                },
-            )*
-        }
-        input {
-            $(
-                $input_field:ident: $input_type:ty {
-                    from: $input_from:ident,
-                    apply: $input_apply_kind:ident($input_apply:ident),
-                    placeholder: $input_placeholder:literal,
                 },
             )*
         }
@@ -155,8 +103,6 @@ macro_rules! define_settings_form {
         pub(super) struct SettingsFormState {
             pub(super) draft: SettingsDraft,
             $(pub(super) $select_field: Entity<SettingSelectState>,)*
-            $(pub(super) $dependent_field: Entity<SettingSelectState>,)*
-            $(pub(super) $input_field: Entity<InputState>,)*
             $(pub(super) $text_area_field: Entity<TextareaState>,)*
             $(pub(super) $number_field: Entity<InputState>,)*
         }
@@ -164,42 +110,16 @@ macro_rules! define_settings_form {
         impl SettingsFormState {
             pub(super) fn new(
                 settings: &agentdictate_core::Settings,
-                catalog: &ModelCatalogViewModel,
                 window: &mut Window,
                 cx: &mut Context<SettingsShell>,
             ) -> Self {
                 let draft = SettingsDraft::from(settings);
-                $(
-                    let $dependent_field = {
-                        let dependency = active_cleanup_model(&draft);
-                        let selected = catalog.normalized_reasoning_effort(
-                            &dependency,
-                            &draft.$dependent_field,
-                        );
-                        settings_select(
-                            $dependent_options(catalog, &dependency),
-                            &selected,
-                            false,
-                            window,
-                            cx,
-                        )
-                    };
-                )*
                 Self {
                     $(
                         $select_field: settings_select(
-                            select_options!($select_options_kind($select_options), catalog),
+                            $select_options(),
                             draft.$select_field.as_str(),
                             $select_searchable,
-                            window,
-                            cx,
-                        ),
-                    )*
-                    $($dependent_field,)*
-                    $(
-                        $input_field: settings_input(
-                            draft.$input_field.clone(),
-                            $input_placeholder,
                             window,
                             cx,
                         ),
@@ -237,24 +157,13 @@ macro_rules! define_settings_form {
                         cx
                     );
                 )*
-                $(
-                    draft.$dependent_field = selected_setting(
-                        &self.$dependent_field,
-                        &draft.$dependent_field,
-                        cx,
-                    );
-                )*
-                $(draft.$input_field = self.$input_field.read(cx).value().to_string();)*
                 $(draft.$text_area_field = self.$text_area_field.read(cx).value().to_string();)*
                 $(draft.$number_field = self.$number_field.read(cx).value().to_string();)*
                 draft
             }
 
             pub(super) fn inputs(&self) -> Vec<Entity<InputState>> {
-                vec![
-                    $(self.$input_field.clone(),)*
-                    $(self.$number_field.clone(),)*
-                ]
+                vec![$(self.$number_field.clone(),)*]
             }
 
             pub(super) fn text_areas(&self) -> Vec<Entity<TextareaState>> {
@@ -262,27 +171,17 @@ macro_rules! define_settings_form {
             }
 
             pub(super) fn selects(&self) -> Vec<Entity<SettingSelectState>> {
-                vec![
-                    $(self.$select_field.clone(),)*
-                    $(self.$dependent_field.clone(),)*
-                ]
+                vec![$(self.$select_field.clone(),)*]
             }
 
             pub(super) fn reset(
                 &mut self,
                 settings: &agentdictate_core::Settings,
-                catalog: &ModelCatalogViewModel,
                 window: &mut Window,
                 cx: &mut Context<SettingsShell>,
             ) {
-                let _ = catalog;
                 self.draft = SettingsDraft::from(settings);
                 let draft = self.draft.clone();
-                $(
-                    self.$input_field.update(cx, |input, cx| {
-                        input.set_value(draft.$input_field.clone(), window, cx);
-                    });
-                )*
                 $(
                     self.$text_area_field.update(cx, |input, cx| {
                         input.set_value(draft.$text_area_field.clone(), window, cx);
@@ -302,49 +201,10 @@ macro_rules! define_settings_form {
                         );
                     });
                 )*
-                $(
-                    {
-                        let dependency = active_cleanup_model(&draft);
-                        let selected = catalog.normalized_reasoning_effort(
-                            &dependency,
-                            &draft.$dependent_field,
-                        );
-                        replace_select_options(
-                            &self.$dependent_field,
-                            $dependent_options(catalog, &dependency),
-                            &selected,
-                            window,
-                            cx,
-                        );
-                    }
-                )*
             }
 
-            pub(super) fn sync_model_catalog(
-                &self,
-                catalog: &ModelCatalogViewModel,
-                window: &mut Window,
-                cx: &mut Context<SettingsShell>,
-            ) {
-                let draft = self.snapshot(cx);
-                $(
-                    sync_catalog_select!(
-                        $select_options_kind($select_options),
-                        &self.$select_field,
-                        draft.$select_field.as_str(),
-                        catalog,
-                        window,
-                        cx
-                    );
-                )*
-
-            }
-
-            // `window` is only needed when the form has dependent selects.
-            #[allow(unused_variables)]
             pub(super) fn subscriptions(
                 &self,
-                window: &mut Window,
                 cx: &mut Context<SettingsShell>,
             ) -> Vec<Subscription> {
                 fn on_input_change(
@@ -380,17 +240,6 @@ macro_rules! define_settings_form {
                     )
                 }));
                 $(
-                    subscriptions.push(cx.subscribe_in(
-                        &self.$dependent_depends_on,
-                        window,
-                        |shell, _, event: &SelectEvent<SearchableVec<SettingOption>>, window, cx| {
-                            if matches!(event, SelectEvent::Confirm(Some(_))) {
-                                shell.cleanup_model_selection_changed(window, cx);
-                            }
-                        },
-                    ));
-                )*
-                $(
                     let _ = stringify!($shortcut_field);
                     subscriptions.push(cx.observe_keystrokes(|shell, event, _window, cx| {
                         if shell.settings.shortcut_capture_active {
@@ -406,19 +255,6 @@ macro_rules! define_settings_form {
 }
 
 settings_fields!(define_settings_form);
-
-fn settings_input(
-    value: String,
-    placeholder: &'static str,
-    window: &mut Window,
-    cx: &mut Context<SettingsShell>,
-) -> Entity<InputState> {
-    cx.new(|cx| {
-        InputState::new(window, cx)
-            .placeholder(placeholder)
-            .default_value(value)
-    })
-}
 
 fn settings_text_area(
     value: String,
@@ -483,25 +319,6 @@ fn settings_select(
     })
 }
 
-fn replace_select_options(
-    state: &Entity<SettingSelectState>,
-    mut options: Vec<SettingOption>,
-    selected: &str,
-    window: &mut Window,
-    cx: &mut Context<SettingsShell>,
-) {
-    if !options.iter().any(|option| option.value == selected) {
-        options.push(SettingOption::new(
-            format!("{selected} — current value"),
-            selected.to_owned(),
-        ));
-    }
-    state.update(cx, |state, cx| {
-        state.set_items(SearchableVec::new(options), window, cx);
-        state.set_selected_value(&selected.to_owned(), window, cx);
-    });
-}
-
 pub(super) fn selected_setting(
     state: &Entity<SettingSelectState>,
     fallback: &str,
@@ -522,15 +339,6 @@ pub(super) fn selected_transcription_provider(
     selected_setting(state, fallback.as_str(), cx)
         .parse()
         .unwrap_or(fallback)
-}
-
-fn transcription_model_options(catalog: &ModelCatalogViewModel) -> Vec<SettingOption> {
-    catalog
-        .transcription_models
-        .iter()
-        .map(|model| SettingOption::new(model.label.clone(), model.id.clone()))
-        .chain(std::iter::once(SettingOption::new("Custom…", "Custom")))
-        .collect()
 }
 
 fn transcription_provider_options() -> Vec<SettingOption> {

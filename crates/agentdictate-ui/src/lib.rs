@@ -7,7 +7,6 @@ mod assets;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod history;
-mod model_catalog;
 mod overlay;
 mod replacements;
 mod route;
@@ -30,10 +29,6 @@ pub use desktop::{
 };
 pub use history::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, RecoveryViewModel, TranscriptViewModel,
-};
-pub use model_catalog::{
-    ModelCatalogOptionViewModel, ModelCatalogStatusSource, ModelCatalogStatusViewModel,
-    ModelCatalogViewModel, ReasoningOptionViewModel,
 };
 pub use overlay::{
     ActiveRecordingPresentation, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD, OVERLAY_FADE_IN,

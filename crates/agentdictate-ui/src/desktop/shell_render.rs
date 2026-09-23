@@ -72,7 +72,6 @@ impl RoutePageModel {
             },
             Route::Settings => Self::Settings(Box::new(SettingsPageModel {
                 draft: shell.settings.form.snapshot(cx),
-                model_catalog: workspace.model_catalog.clone(),
                 settings_dirty: shell.settings.dirty,
                 has_api_key: shell.settings_commands.has_api_key,
                 api_key_input: shell.settings_commands.api_key_input.clone(),
@@ -150,7 +149,6 @@ impl RoutePageModel {
 
 impl Render for SettingsShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_model_catalog_editor(window, cx);
         let route = self.model.active_route;
         let chrome = ShellChromeModel {
             navigation: self.model.navigation,

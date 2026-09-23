@@ -130,16 +130,11 @@ third-party clients may make it, account eligibility, allowance, or billing.
 The route may not be enabled for every account and can stop working without
 notice. It does not require an OpenAI Platform API key.
 
-The OpenAI API transcription route sends the recording with the selected model
-and any applicable language or prompt text. Cleanup sends the transcript,
+The OpenAI API transcription route sends the recording to `gpt-transcribe` with
+any applicable language, prompt, and vocabulary text. Cleanup sends the transcript,
 cleanup instructions, selected model, and optional reasoning effort. Both
 require a Platform API key and can incur Platform charges. A suspiciously short
 API transcription can trigger one paid retry with `whisper-1`.
-
-When a Platform API key is saved, daemon startup and model-catalog refreshes use
-it for an authenticated `/v1/models` request. This happens even when
-**ChatGPT subscription** is selected and **Cleanup** is off. AgentDictate caches
-the returned model IDs and a key fingerprint in its XDG cache directory.
 
 The Platform API key is stored unencrypted in the XDG config directory with
 user-only `0600` permissions. The SQLite database and retained WAV files are

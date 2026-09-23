@@ -10,8 +10,6 @@ use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript}
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
-use crate::model_catalog::{TranscriptionProfile, transcription_profile};
-
 /// 32 kbps Opus reduces the 256 kbps PCM payload by roughly 8x before container
 /// overhead. Recognition quality still depends on the audio and selected model.
 const UPLOAD_OPUS_BITRATE: &str = "32k";
@@ -149,11 +147,12 @@ fn rejects_upload_format(status: StatusCode, body: &str) -> bool {
         .any(|word| message.contains(word))
 }
 
-/// Builds the multipart body for one transcription attempt. A multipart form
-/// is consumed by sending, so every attempt builds its own.
+/// Builds the multipart body for one transcription attempt, in the request
+/// shape of `gpt-transcribe`: a JSON response, a `languages[]` list and
+/// vocabulary `keywords[]`. A multipart form is consumed by sending, so every
+/// attempt builds its own.
 fn transcription_form(
     request: &TranscriptionRequest<'_>,
-    profile: TranscriptionProfile,
     upload: &UploadAudio,
 ) -> Result<reqwest::blocking::multipart::Form, ExternalError> {
     let file = reqwest::blocking::multipart::Part::bytes(upload.bytes.clone())
@@ -162,31 +161,19 @@ fn transcription_form(
         .map_err(|error| ExternalError::new(format!("Invalid audio upload: {error}")))?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("model", request.model.to_owned())
+        .text("response_format", "json")
         .part("file", file);
-    let language = request.language.trim();
     let prompt = request.prompt.trim();
-    match profile {
-        TranscriptionProfile::AgentDictateGpt => {
-            form = form.text("response_format", "json");
-            for language in language.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                form = form.text("languages[]", language.to_owned());
-            }
-            for keyword in request.keywords {
-                form = form.text("keywords[]", keyword.clone());
-            }
-        }
-        TranscriptionProfile::OpenAiGpt => {
-            form = form.text("response_format", "json");
-            if !language.is_empty() {
-                form = form.text("language", language.to_owned());
-            }
-        }
-        TranscriptionProfile::Standard => {
-            form = form.text("response_format", "text");
-            if !language.is_empty() {
-                form = form.text("language", language.to_owned());
-            }
-        }
+    for language in request
+        .language
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        form = form.text("languages[]", language.to_owned());
+    }
+    for keyword in request.keywords {
+        form = form.text("keywords[]", keyword.clone());
     }
     if !prompt.is_empty() {
         form = form.text("prompt", prompt.to_owned());
@@ -625,18 +612,6 @@ impl SpeechTransport for ReqwestOpenAiTransport {
             }
         }
         self.actual_model = Some(request.model.to_owned());
-        if request.model.trim().is_empty() {
-            return Err(ExternalError::new(
-                "The selected transcription model could not be used. Choose another model or check the custom model name.",
-            ));
-        }
-        let profile =
-            transcription_profile(request.model).unwrap_or(TranscriptionProfile::Standard);
-        if profile != TranscriptionProfile::AgentDictateGpt && request.language.contains(',') {
-            return Err(ExternalError::new(
-                "This model accepts one language hint; choose one language or automatic detection",
-            ));
-        }
         let mut upload = prepare_upload_audio(
             &self.ffmpeg,
             request.audio_path,
@@ -644,36 +619,30 @@ impl SpeechTransport for ReqwestOpenAiTransport {
         )?;
         let request_started = Instant::now();
         let (mut status, mut body) =
-            self.send_transcription(|| transcription_form(&request, profile, &upload))?;
+            self.send_transcription(|| transcription_form(&request, &upload))?;
         if upload.format == UploadFormat::WebmOpus && rejects_upload_format(status, &body) {
             tracing::warn!(
                 error = %Self::response_error(status, &body),
                 "OpenAI rejected the compressed audio; retrying with the original WAV"
             );
             upload = wav_upload(request.audio_path)?;
-            (status, body) =
-                self.send_transcription(|| transcription_form(&request, profile, &upload))?;
+            (status, body) = self.send_transcription(|| transcription_form(&request, &upload))?;
         }
         let request_ms = request_started.elapsed().as_millis() as u64;
         if !status.is_success() {
             return Err(Self::response_error(status, &body));
         }
-        let text =
-            if profile != TranscriptionProfile::Standard || body.trim_start().starts_with('{') {
-                serde_json::from_str::<Value>(&body)
-                    .ok()
-                    .and_then(|payload| {
-                        payload
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .ok_or_else(|| {
-                        ExternalError::new("OpenAI returned an invalid transcription response")
-                    })?
-            } else {
-                body.trim().to_owned()
-            };
+        let text = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or_else(|| {
+                ExternalError::new("OpenAI returned an invalid transcription response")
+            })?;
         let text = text.trim().to_owned();
         tracing::info!(
             model = request.model,

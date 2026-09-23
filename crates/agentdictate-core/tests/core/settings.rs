@@ -1,4 +1,4 @@
-use agentdictate_core::{Settings, SettingsSnapshot, TranscriptionProvider};
+use agentdictate_core::{Settings, SettingsSnapshot, TRANSCRIPTION_MODEL, TranscriptionProvider};
 
 #[test]
 fn reasoning_effort_has_one_exhaustive_settings_and_openai_mapping() {
@@ -42,7 +42,7 @@ fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
     )
     .unwrap();
 
-    assert_eq!(settings.active_transcription_model(), "my-transcriber");
+    assert_eq!(settings.transcription_model, TRANSCRIPTION_MODEL);
     assert_eq!(
         settings.transcription_provider,
         TranscriptionProvider::OpenAiApi
@@ -52,6 +52,27 @@ fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
     assert_eq!(settings.audio_ducking_volume_percent, 15);
     assert_eq!(settings.audio_ducking_fade_out_ms, 600);
     assert_eq!(settings.audio_ducking_fade_in_ms, 600);
+}
+
+#[test]
+fn retired_transcription_models_load_as_the_built_in_model() {
+    let model = |stored: &str| {
+        serde_json::from_value::<Settings>(serde_json::json!({ "transcription_model": stored }))
+            .unwrap()
+            .transcription_model
+    };
+
+    for retired in [
+        "",
+        "whisper-1",
+        "gpt-4o-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe-diarize",
+        "gpt-4o-mini-transcribe-2025-12-15",
+    ] {
+        assert_eq!(model(retired), TRANSCRIPTION_MODEL, "{retired:?}");
+    }
+    assert_eq!(model(" gpt-future-transcribe "), "gpt-future-transcribe");
 }
 
 #[test]

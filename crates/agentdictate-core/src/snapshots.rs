@@ -104,21 +104,6 @@ pub struct UsageSnapshot {
     pub weekly_activity: Vec<UsageDaySnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCatalogOrigin {
-    Account,
-    Bundled,
-    Current,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCatalogSupport {
-    Confirmed,
-    Unverified,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
@@ -171,46 +156,6 @@ impl ReasoningEffort {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ModelCatalogEntry {
-    pub id: String,
-    pub origin: ModelCatalogOrigin,
-    pub support: ModelCatalogSupport,
-    #[serde(default)]
-    pub reasoning_efforts: Vec<ReasoningEffort>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelCatalogFallback {
-    Cached,
-    Builtin,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum ModelCatalogStatus {
-    Live {
-        refreshed_at: DateTime<Utc>,
-    },
-    Cached {
-        refreshed_at: DateTime<Utc>,
-    },
-    #[default]
-    Builtin,
-    Failed {
-        fallback: ModelCatalogFallback,
-        message: String,
-    },
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ModelCatalogSnapshot {
-    pub transcription_models: Vec<ModelCatalogEntry>,
-    pub cleanup_models: Vec<ModelCatalogEntry>,
-    pub status: ModelCatalogStatus,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     #[serde(default)]
@@ -226,6 +171,4 @@ pub struct WorkspaceSnapshot {
     pub history_search: String,
     pub replacements: Vec<ReplacementRule>,
     pub usage: UsageSnapshot,
-    #[serde(default)]
-    pub model_catalog: ModelCatalogSnapshot,
 }

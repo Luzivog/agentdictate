@@ -24,9 +24,9 @@ use thiserror::Error;
 
 use crate::daemon::OVERVIEW_RECENT_HISTORY_LIMIT;
 use agentdictate_ui::{
-    HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel, RecoveryStage,
-    ReplacementRuleViewModel, ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel,
-    UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
+    HistoryViewModel, RecoveryItemViewModel, RecoveryStage, ReplacementRuleViewModel,
+    ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals,
+    UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
 
 #[derive(Debug, Error)]
@@ -323,26 +323,15 @@ impl WorkspaceClient {
         Ok(workspace_view_model(&state.snapshot, state.period))
     }
 
-    /// Watches SQLite database, rollback-journal, and WAL writes and emits a
-    /// freshly queried workspace after each filesystem event batch. This is
-    /// event-driven: callers do not need a refresh interval or debounce delay.
+    /// Watches SQLite database, rollback-journal, and WAL writes, and the
+    /// overlay health file, and emits a freshly queried workspace after each
+    /// filesystem event batch. This is event-driven: callers do not need a
+    /// refresh interval or debounce delay.
     pub fn watch(
         self: &Arc<Self>,
         database_file: impl AsRef<Path>,
     ) -> io::Result<Receiver<WorkspaceViewModel>> {
-        let watcher = DatabaseChangeWatcher::new(database_file.as_ref())?;
-        self.watch_changes(watcher)
-    }
-
-    /// Also observes the daemon's atomically replaced model catalog so a
-    /// completed background refresh can update Settings without polling.
-    pub fn watch_with_catalog(
-        self: &Arc<Self>,
-        database_file: impl AsRef<Path>,
-        catalog_file: impl AsRef<Path>,
-    ) -> io::Result<Receiver<WorkspaceViewModel>> {
-        let mut watcher =
-            DatabaseChangeWatcher::with_catalog(database_file.as_ref(), catalog_file.as_ref())?;
+        let mut watcher = DatabaseChangeWatcher::new(database_file.as_ref())?;
         watcher.add_file(&self.runtime_directory.join(crate::OVERLAY_HEALTH_FILE))?;
         self.watch_changes(watcher)
     }
@@ -384,14 +373,6 @@ struct DatabaseChangeWatcher {
 
 impl DatabaseChangeWatcher {
     fn new(database_file: &Path) -> io::Result<Self> {
-        Self::for_files(database_file, None)
-    }
-
-    fn with_catalog(database_file: &Path, catalog_file: &Path) -> io::Result<Self> {
-        Self::for_files(database_file, Some(catalog_file))
-    }
-
-    fn for_files(database_file: &Path, catalog_file: Option<&Path>) -> io::Result<Self> {
         // SAFETY: `inotify_init1` has no pointer parameters. On success the
         // returned descriptor is uniquely owned by `File` below.
         let raw_descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
@@ -407,22 +388,20 @@ impl DatabaseChangeWatcher {
             | libc::IN_CREATE
             | libc::IN_DELETE
             | libc::IN_ATTRIB;
-        for file in [Some(database_file), catalog_file].into_iter().flatten() {
-            let parent = file
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let parent = CString::new(parent.as_os_str().as_bytes()).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "workspace directory contains a NUL byte",
-                )
-            })?;
-            // SAFETY: the descriptor is live and `parent` owns a
-            // NUL-terminated path for the duration of the call.
-            if unsafe { libc::inotify_add_watch(raw_descriptor, parent.as_ptr(), mask) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
+        let parent = database_file
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent = CString::new(parent.as_os_str().as_bytes()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "workspace directory contains a NUL byte",
+            )
+        })?;
+        // SAFETY: the descriptor is live and `parent` owns a NUL-terminated
+        // path for the duration of the call.
+        if unsafe { libc::inotify_add_watch(raw_descriptor, parent.as_ptr(), mask) } < 0 {
+            return Err(io::Error::last_os_error());
         }
         let database_name = database_file.file_name().ok_or_else(|| {
             io::Error::new(
@@ -435,14 +414,11 @@ impl DatabaseChangeWatcher {
             name.push(suffix);
             name.as_os_str().as_bytes().to_vec()
         };
-        let mut watched_names = vec![
+        let watched_names = vec![
             database_name.as_bytes().to_vec(),
             sidecar_name("-wal"),
             sidecar_name("-journal"),
         ];
-        if let Some(catalog_name) = catalog_file.and_then(Path::file_name) {
-            watched_names.push(catalog_name.as_bytes().to_vec());
-        }
         Ok(Self {
             descriptor,
             watched_names,
@@ -592,7 +568,6 @@ pub fn workspace_view_model(
         ReplacementsViewModel::new(replacements),
         usage_view_model(&snapshot.usage, period),
     )
-    .with_model_catalog(ModelCatalogViewModel::from(snapshot.model_catalog.clone()))
     .with_overlay_unavailable(snapshot.overlay_unavailable)
 }
 
@@ -656,9 +631,8 @@ mod tests {
     };
 
     use agentdictate_core::{
-        AppSnapshot, ClientCommandKind, HistoryPageSnapshot, HistorySnapshot, ModelCatalogEntry,
-        ModelCatalogOrigin, ModelCatalogSnapshot, ModelCatalogStatus, ModelCatalogSupport,
-        ServerMessage, UsageDaySnapshot,
+        AppSnapshot, ClientCommandKind, HistoryPageSnapshot, HistorySnapshot, ServerMessage,
+        UsageDaySnapshot,
     };
     use agentdictate_runtime::{IpcHandler, IpcServer};
     use chrono::{TimeZone, Utc};
@@ -704,16 +678,6 @@ mod tests {
                     },
                 }],
             },
-            model_catalog: ModelCatalogSnapshot {
-                transcription_models: vec![ModelCatalogEntry {
-                    id: "account-transcriber".to_owned(),
-                    origin: ModelCatalogOrigin::Account,
-                    support: ModelCatalogSupport::Unverified,
-                    reasoning_efforts: Vec::new(),
-                }],
-                status: ModelCatalogStatus::Builtin,
-                ..ModelCatalogSnapshot::default()
-            },
             ..WorkspaceSnapshot::default()
         };
 
@@ -723,10 +687,6 @@ mod tests {
         assert_eq!(week.history.transcripts[0].text, "one two three");
         assert_eq!(week.usage.totals.dictations, 2);
         assert_eq!(week.usage.activity[0].dictations, 2);
-        assert_eq!(
-            week.model_catalog.transcription_models[0].label,
-            "account-transcriber — compatibility unverified"
-        );
         assert_eq!(all.usage.totals.dictations, 9);
         assert_eq!(all.usage.activity.len(), 1);
         assert_eq!(all.usage.activity[0].dictations, 9);
@@ -1188,7 +1148,6 @@ mod tests {
         let directory = tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         let database = directory.path().join("history.sqlite");
-        let catalog = directory.path().join("catalog.json");
         let server = IpcServer::bind(&runtime).unwrap();
         let server_thread = std::thread::spawn(move || {
             server
@@ -1204,7 +1163,7 @@ mod tests {
             runtime.clone(),
             WorkspaceSnapshot::default(),
         ));
-        let updates = client.watch_with_catalog(&database, &catalog).unwrap();
+        let updates = client.watch(&database).unwrap();
         std::fs::write(runtime.join(crate::OVERLAY_HEALTH_FILE), []).unwrap();
         assert!(
             updates
@@ -1213,43 +1172,6 @@ mod tests {
                 .overlay_unavailable
         );
         assert!(client.view_model().unwrap().overlay_unavailable);
-        server_thread.join().unwrap();
-    }
-
-    #[test]
-    fn atomic_model_catalog_change_emits_a_fresh_workspace_without_polling() {
-        let directory = tempdir().unwrap();
-        let runtime_directory = directory.path().join("runtime");
-        let database_file = directory.path().join("data/agentdictate.sqlite");
-        let catalog_file = directory.path().join("cache/model-catalog.json");
-        std::fs::create_dir_all(database_file.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(catalog_file.parent().unwrap()).unwrap();
-        std::fs::write(&database_file, []).unwrap();
-        let server = IpcServer::bind(&runtime_directory).unwrap();
-        let remote_snapshot = Arc::new(Mutex::new(WorkspaceSnapshot::default()));
-        let server_snapshot = Arc::clone(&remote_snapshot);
-        let server_thread = std::thread::spawn(move || {
-            server
-                .serve_next(&mut WorkspaceHandler {
-                    snapshot: server_snapshot,
-                })
-                .unwrap();
-        });
-        let client = Arc::new(WorkspaceClient::new(
-            runtime_directory,
-            WorkspaceSnapshot::default(),
-        ));
-        let updates = client
-            .watch_with_catalog(&database_file, &catalog_file)
-            .unwrap();
-        remote_snapshot.lock().unwrap().history_total = 41;
-
-        let temporary = catalog_file.with_extension("json.tmp");
-        std::fs::write(&temporary, b"fresh catalog").unwrap();
-        std::fs::rename(temporary, catalog_file).unwrap();
-
-        let update = updates.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(update.history.transcript_count, 41);
         server_thread.join().unwrap();
     }
 }

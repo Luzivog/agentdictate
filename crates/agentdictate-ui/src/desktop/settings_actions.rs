@@ -3,7 +3,7 @@ use gpui::{Context, Window};
 #[cfg(feature = "test-support")]
 use agentdictate_core::TranscriptionProvider;
 
-use crate::{Route, SettingsDraft};
+use crate::SettingsDraft;
 
 use super::SettingsShell;
 
@@ -56,19 +56,6 @@ fn captured_shortcut(keystroke: &gpui::Keystroke) -> Result<String, String> {
 }
 
 impl SettingsShell {
-    pub(super) fn sync_model_catalog_editor(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let catalog = self.model.workspace.model_catalog.clone();
-        if catalog == self.settings.applied_model_catalog {
-            return;
-        }
-        self.settings.form.sync_model_catalog(&catalog, window, cx);
-        self.settings.applied_model_catalog = catalog;
-    }
-
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn select_transcription_provider_for_test(
@@ -92,22 +79,6 @@ impl SettingsShell {
     #[doc(hidden)]
     pub fn settings_draft_for_test(&self, cx: &gpui::App) -> SettingsDraft {
         self.settings.form.snapshot(cx)
-    }
-
-    pub(super) fn request_model_catalog_refresh(&mut self) {
-        if !self.settings_commands.has_api_key {
-            return;
-        }
-        let request_id = self.settings_commands.next_request_id;
-        self.settings_commands.next_request_id += 1;
-        if let Err(error) = (self.settings_commands.command_sink)(
-            agentdictate_core::ClientCommand::refresh_model_catalog(request_id),
-        ) {
-            self.set_route_feedback_for(
-                Route::Settings,
-                format!("Could not refresh models: {error}"),
-            );
-        }
     }
 
     pub(super) fn save_settings_editor(&mut self, cx: &mut Context<Self>) {
@@ -160,9 +131,8 @@ impl SettingsShell {
 
     pub(super) fn discard_settings_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let baseline = self.settings.baseline.clone();
-        let catalog = self.model.workspace.model_catalog.clone();
         self.settings.current = baseline.clone();
-        self.settings.form.reset(&baseline, &catalog, window, cx);
+        self.settings.form.reset(&baseline, window, cx);
         self.settings.dirty = false;
         self.settings.shortcut_capture_active = false;
         self.settings.shortcut_capture_error = None;

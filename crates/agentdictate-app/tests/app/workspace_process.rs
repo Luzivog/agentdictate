@@ -64,36 +64,6 @@ fn blank_replacement_is_rejected_without_mutating_workspace() {
     ));
 }
 
-#[test]
-fn catalog_refresh_returns_a_bundled_workspace_without_waiting_for_the_network() {
-    let directory = tempdir().unwrap();
-    let mut process = AgentProcess::open(app_paths(directory.path())).unwrap();
-
-    let response = process.handle(ClientCommand::refresh_model_catalog(5));
-
-    let ServerMessageKind::Workspace { workspace, .. } = response.kind else {
-        panic!("workspace query should return workspace data");
-    };
-    assert_eq!(
-        workspace.model_catalog.status,
-        agentdictate_core::ModelCatalogStatus::Builtin
-    );
-    assert!(
-        workspace
-            .model_catalog
-            .transcription_models
-            .iter()
-            .any(|model| model.id == "gpt-transcribe")
-    );
-    assert!(
-        workspace
-            .model_catalog
-            .cleanup_models
-            .iter()
-            .any(|model| model.id == "gpt-5.4-nano")
-    );
-}
-
 fn app_paths(root: &Path) -> AppPaths {
     AppPaths::from_roots(
         root.join("config"),

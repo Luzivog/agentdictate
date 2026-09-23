@@ -120,7 +120,7 @@ fn main() -> anyhow::Result<()> {
                     keywords: &keywords,
                     audio_path: audio,
                     provider: settings.transcription_provider,
-                    model: settings.active_transcription_model(),
+                    model: &settings.transcription_model,
                     language: &options.language,
                     prompt: &options.context,
                     duration_seconds: 0.0,
@@ -156,7 +156,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(
             file,
             "{}",
-            json!({"id":case.id,"mode":mode,"model":if mode=="cleanup" { &options.cleanup_model } else {settings.active_transcription_model()},"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":transport.actual_model(),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"guard_fallback":guard_error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
+            json!({"id":case.id,"mode":mode,"model":if mode=="cleanup" { &options.cleanup_model } else {&settings.transcription_model},"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":transport.actual_model(),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"guard_fallback":guard_error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
         )?;
     }
     println!(
@@ -252,7 +252,7 @@ fn replay_live(
         audio_path: path.0.clone(),
         duration_seconds: pcm.len() as f64 / 32000.0,
         transcription_provider: settings.transcription_provider,
-        transcription_model: settings.active_transcription_model().into(),
+        transcription_model: settings.transcription_model.clone(),
         raw_transcript: String::new(),
         final_text: String::new(),
         copied_to_clipboard: false,
@@ -282,7 +282,7 @@ fn replay_live(
         keywords: &keywords,
         audio_path: &path.0,
         provider: settings.transcription_provider,
-        model: settings.active_transcription_model(),
+        model: &settings.transcription_model,
         language: &options.language,
         prompt: &options.context,
         duration_seconds: job.duration_seconds,

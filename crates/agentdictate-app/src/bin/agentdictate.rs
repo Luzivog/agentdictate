@@ -59,9 +59,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = paths.runtime.clone();
     let workspace_client = Arc::new(WorkspaceClient::new(runtime.clone(), *workspace));
     let mut workspace_model = workspace_client.view_model()?;
-    let workspace_updates = match workspace_client
-        .watch_with_catalog(&paths.database_file, paths.model_catalog_cache_file())
-    {
+    let workspace_updates = match workspace_client.watch(&paths.database_file) {
         Ok(updates) => {
             // The watcher is registered before this refresh. A database write
             // racing with window startup is therefore either observed by the

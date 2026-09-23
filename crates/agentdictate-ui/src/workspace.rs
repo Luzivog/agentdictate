@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    HistoryViewModel, ModelCatalogViewModel, RecoveryStage, ReplacementDraft,
-    ReplacementsViewModel, TranscriptViewModel, UsagePeriod, UsageViewModel,
+    HistoryViewModel, RecoveryStage, ReplacementDraft, ReplacementsViewModel, TranscriptViewModel,
+    UsagePeriod, UsageViewModel,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +61,6 @@ pub struct WorkspaceViewModel {
     pub recent_transcripts: Vec<TranscriptViewModel>,
     pub replacements: ReplacementsViewModel,
     pub usage: UsageViewModel,
-    pub model_catalog: ModelCatalogViewModel,
 }
 
 /// Executes one workspace action and returns the fresh presentation snapshot
@@ -84,19 +83,12 @@ impl WorkspaceViewModel {
             recent_transcripts,
             replacements,
             usage,
-            model_catalog: ModelCatalogViewModel::default(),
         }
     }
 
     #[must_use]
     pub fn with_overlay_unavailable(mut self, unavailable: bool) -> Self {
         self.overlay_unavailable = unavailable;
-        self
-    }
-
-    #[must_use]
-    pub fn with_model_catalog(mut self, model_catalog: ModelCatalogViewModel) -> Self {
-        self.model_catalog = model_catalog;
         self
     }
 }

@@ -216,7 +216,7 @@ where
                 audio_path: path,
                 started_at: now,
                 transcription_provider: self.settings.transcription_provider,
-                transcription_model: self.settings.active_transcription_model().to_owned(),
+                transcription_model: self.settings.transcription_model.clone(),
             },
             &mut self.recorder,
         ) {
@@ -557,7 +557,6 @@ where
             history_search: history_page.search,
             replacements,
             usage,
-            model_catalog: Default::default(),
         })
     }
 

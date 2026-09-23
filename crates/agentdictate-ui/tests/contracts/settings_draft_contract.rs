@@ -12,7 +12,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     };
     let mut draft = SettingsDraft::from(&original);
     draft.transcription_provider = TranscriptionProvider::ChatGptSubscription;
-    draft.transcription_model = "gpt-4o-transcribe".to_owned();
     draft.language = "en".to_owned();
     draft.transcription_prompt = "Leadlord, AgentDictate".to_owned();
     draft.hotkey = "Alt+Space".to_owned();
@@ -33,7 +32,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
         updated.transcription_provider,
         TranscriptionProvider::ChatGptSubscription
     );
-    assert_eq!(updated.transcription_model, "gpt-4o-transcribe");
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
     assert_eq!(updated.hotkey, "Alt+Space");
@@ -97,19 +95,6 @@ fn settings_draft_rejects_invalid_modes_and_out_of_range_volume() {
 }
 
 #[test]
-fn subscription_does_not_validate_the_hidden_api_model() {
-    let original = Settings {
-        transcription_model: "Custom".to_owned(),
-        custom_transcription_model: String::new(),
-        ..Settings::default()
-    };
-    let mut draft = SettingsDraft::from(&original);
-    draft.transcription_provider = TranscriptionProvider::ChatGptSubscription;
-
-    assert!(draft.apply_to(&original).is_ok());
-}
-
-#[test]
 fn settings_draft_reports_unsaved_text_and_toggle_changes() {
     let persisted = Settings::default();
     let mut draft = SettingsDraft::from(&persisted);
@@ -165,7 +150,7 @@ fn discarding_changes_restores_the_entire_persisted_form() {
 fn applying_a_draft_preserves_settings_that_the_form_does_not_expose() {
     let original = Settings {
         openai_api_key: "secret".to_owned(),
-        custom_transcription_model: "private-transcriber".to_owned(),
+        transcription_model: "private-transcriber".to_owned(),
         custom_cleanup_model: "private-cleaner".to_owned(),
         sound_feedback: true,
         start_sound: true,
@@ -203,21 +188,4 @@ fn api_key_changes_do_not_participate_in_the_ordinary_form_dirty_state() {
     };
 
     assert!(!draft.is_dirty_against(&credential_rotated));
-}
-
-#[test]
-fn custom_model_choices_round_trip_without_collapsing_the_custom_sentinel() {
-    let persisted = Settings {
-        transcription_model: "Custom".to_owned(),
-        custom_transcription_model: "whisper-enterprise".to_owned(),
-        cleanup_model: "Custom".to_owned(),
-        custom_cleanup_model: "cleanup-enterprise".to_owned(),
-        ..Settings::default()
-    };
-
-    let draft = SettingsDraft::from(&persisted);
-
-    assert_eq!(draft.transcription_model, "Custom");
-    assert_eq!(draft.custom_transcription_model, "whisper-enterprise");
-    assert_eq!(draft.apply_to(&persisted).unwrap(), persisted);
 }

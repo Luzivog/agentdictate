@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CLEANUP_PROMPT: &str = crate::FAITHFUL_CLEANUP_INSTRUCTION;
 
+/// The OpenAI model every dictation uses. `Settings::transcription_model` can
+/// override it from config.json to try a newer model; the app has no picker.
+pub const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TranscriptionProvider {
     #[default]
@@ -100,8 +104,8 @@ impl Default for CleanupPrice {
 pub struct Settings {
     pub openai_api_key: String,
     pub transcription_provider: TranscriptionProvider,
+    #[serde(deserialize_with = "deserialize_transcription_model")]
     pub transcription_model: String,
-    pub custom_transcription_model: String,
     pub language: String,
     pub transcription_prompt: String,
     pub vocabulary: Vec<crate::VocabularyEntry>,
@@ -140,15 +144,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    #[must_use]
-    pub fn active_transcription_model(&self) -> &str {
-        if self.transcription_model == "Custom" {
-            self.custom_transcription_model.trim()
-        } else {
-            &self.transcription_model
-        }
-    }
-
     #[must_use]
     pub fn active_cleanup_model(&self) -> &str {
         if self.cleanup_model == "Custom" {
@@ -210,8 +205,7 @@ impl Default for Settings {
         Self {
             openai_api_key: String::new(),
             transcription_provider: TranscriptionProvider::OpenAiApi,
-            transcription_model: "gpt-transcribe".into(),
-            custom_transcription_model: String::new(),
+            transcription_model: TRANSCRIPTION_MODEL.into(),
             language: String::new(),
             transcription_prompt: String::new(),
             vocabulary: Vec::new(),
@@ -249,6 +243,21 @@ impl Default for Settings {
             cleanup_prices: default_cleanup_prices(),
         }
     }
+}
+
+/// Reads a stored model override. Models OpenAI shuts down on 2027-02-26
+/// (whisper-1 and the gpt-4o transcribe family), a blank value, and the old
+/// picker's "Custom" sentinel all mean the built-in model.
+fn deserialize_transcription_model<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let model = String::deserialize(deserializer)?;
+    let model = model.trim();
+    let retired = matches!(model, "" | "Custom" | "whisper-1")
+        || model.starts_with("gpt-4o-transcribe")
+        || model.starts_with("gpt-4o-mini-transcribe");
+    Ok(if retired { TRANSCRIPTION_MODEL } else { model }.to_owned())
 }
 
 /// Settings projection safe to send to presentation processes and diagnostics.

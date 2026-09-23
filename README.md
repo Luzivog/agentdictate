@@ -74,20 +74,15 @@ those policies or training controls cover AgentDictate's direct call, whether
 third-party clients may make it, which accounts can access it, or how requests
 are limited or billed. The route can stop working without notice.
 
-OpenAI API transcription uploads the recording with the selected model and any
+OpenAI API transcription uploads the recording to `gpt-transcribe` with any
 applicable language, context, or vocabulary hints. Optional streaming sends audio
 while recording to `gpt-live-transcribe`. Both require an OpenAI Platform API
 key and can incur Platform charges outside a ChatGPT subscription. New dictations
 use direct transcription without a cleanup call. Historical recovery jobs and
 explicit cleanup evaluations can still upload the transcript and saved instructions
-to the paid OpenAI API. A failed live stream can use the selected file model,
+to the paid OpenAI API. A failed live stream falls back to `gpt-transcribe`,
 which can add a second transcription charge.
 Subscription failures never fall back to the paid API route.
-
-When a Platform API key is saved, daemon startup and model-catalog refreshes use
-it for an authenticated `/v1/models` request. This happens even when
-**ChatGPT subscription** is selected. AgentDictate caches
-the returned model IDs and a key fingerprint in its XDG cache directory.
 
 ## Local storage
 

@@ -9,7 +9,6 @@ mod daemon;
 pub mod diagnostics;
 mod hotkey_dispatch;
 mod live_transcription;
-mod model_catalog;
 mod openai;
 mod overlay_process;
 mod process;
@@ -62,11 +61,6 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
-    #[must_use]
-    pub fn model_catalog_cache_file(&self) -> PathBuf {
-        self.cache.join("model-catalog.json")
-    }
-
     pub fn from_environment() -> io::Result<Self> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)

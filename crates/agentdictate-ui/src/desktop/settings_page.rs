@@ -10,18 +10,15 @@ use gpui_component::{
 };
 
 use crate::action::action_button;
-use crate::{ModelCatalogViewModel, SettingsDraft, ThemeTokens};
+use crate::{SettingsDraft, ThemeTokens};
 
 use super::{
     SettingsShell, gpui_color,
-    settings_form::{
-        SettingSelectState, SettingsFormState, selected_setting, selected_transcription_provider,
-    },
+    settings_form::{SettingSelectState, SettingsFormState, selected_transcription_provider},
 };
 
 pub(super) struct SettingsPageModel {
     pub(super) draft: SettingsDraft,
-    pub(super) model_catalog: ModelCatalogViewModel,
     pub(super) settings_dirty: bool,
     pub(super) has_api_key: bool,
     pub(super) api_key_input: Entity<InputState>,
@@ -74,7 +71,6 @@ pub(super) fn surface(
 ) -> gpui::Div {
     let SettingsPageModel {
         draft: settings,
-        model_catalog,
         has_api_key,
         api_key_input,
         api_key_feedback,
@@ -122,13 +118,7 @@ pub(super) fn surface(
                 theme,
                 cx,
             ))
-            .child(dictation_section(
-                &settings,
-                &model_catalog,
-                &settings_form,
-                theme,
-                cx,
-            ))
+            .child(dictation_section(&settings, &settings_form, theme, cx))
             .child(output_section(&settings, &settings_form, theme, cx))
             .child(recording_audio_section(
                 &settings,
@@ -326,7 +316,6 @@ fn account_section(
 
 fn dictation_section(
     settings: &SettingsDraft,
-    model_catalog: &ModelCatalogViewModel,
     editor: &SettingsFormState,
     theme: ThemeTokens,
     cx: &Context<SettingsShell>,
@@ -366,35 +355,6 @@ fn dictation_section(
             theme,
         ))
     })
-    .when(!uses_chatgpt_subscription, |section| {
-        section
-            .child(model_catalog_status(model_catalog, theme))
-            .child(select_row(
-                "Speech model",
-                "OpenAI transcription model",
-                "settings-input-transcription-model",
-                editor.transcription_model.clone(),
-                false,
-                theme,
-            ))
-            .when(
-                selected_setting(
-                    &editor.transcription_model,
-                    &settings.transcription_model,
-                    cx,
-                ) == "Custom",
-                |section| {
-                    section.child(input_row(
-                        "Custom speech model",
-                        "Exact OpenAI model identifier",
-                        "settings-input-custom-transcription-model",
-                        editor.custom_transcription_model.clone(),
-                        false,
-                        theme,
-                    ))
-                },
-            )
-    })
     .child(select_row(
         "Language",
         "One language or automatic detection. English & French requires gpt-transcribe.",
@@ -413,41 +373,6 @@ fn dictation_section(
             theme,
         ))
     })
-}
-
-fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeTokens) -> gpui::Div {
-    let status = &model_catalog.status;
-    let selector = status.selector();
-    h_flex()
-        .debug_selector(move || selector.to_owned())
-        .min_h(px(34.))
-        .gap_2()
-        .border_b_1()
-        .border_color(gpui_color(theme.border))
-        .pb_2()
-        .text_xs()
-        .child(
-            gpui::div()
-                .size_1p5()
-                .rounded_full()
-                .bg(gpui_color(if status.is_error {
-                    theme.danger
-                } else {
-                    theme.success
-                })),
-        )
-        .child(
-            h_flex()
-                .min_w_0()
-                .flex_wrap()
-                .gap_x_2()
-                .child(status.label)
-                .child(
-                    gpui::div()
-                        .text_color(gpui_color(theme.text_muted))
-                        .child(status.detail.clone()),
-                ),
-        )
 }
 
 fn output_section(
@@ -850,33 +775,6 @@ fn shortcut_row(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn input_row(
-    label: &'static str,
-    detail: &'static str,
-    selector: &'static str,
-    input: Entity<InputState>,
-    disabled: bool,
-    theme: ThemeTokens,
-) -> gpui::Div {
-    h_flex()
-        .debug_selector(move || selector.to_owned())
-        .min_h(px(54.))
-        .items_start()
-        .flex_wrap()
-        .justify_between()
-        .gap_6()
-        .border_b_1()
-        .border_color(gpui_color(theme.border))
-        .py_2()
-        .child(stacked_setting_label(label, detail, theme))
-        .child(
-            control_slot(selector, SettingsControlKind::Choice)
-                .child(Input::new(&input).small().w_full().disabled(disabled)),
-        )
-        .when(disabled, |row| row.opacity(0.48))
-}
-
-#[allow(clippy::too_many_arguments)]
 fn prompt_row(
     label: &'static str,
     detail: &'static str,
@@ -934,23 +832,6 @@ fn setting_label(label: &'static str, detail: &'static str, theme: ThemeTokens) 
     v_flex()
         .min_w(px(220.))
         .flex_1()
-        .gap_0p5()
-        .child(gpui::div().text_sm().child(label))
-        .child(
-            gpui::div()
-                .text_xs()
-                .text_color(gpui_color(theme.text_muted))
-                .child(detail),
-        )
-}
-
-fn stacked_setting_label(
-    label: &'static str,
-    detail: &'static str,
-    theme: ThemeTokens,
-) -> gpui::Div {
-    v_flex()
-        .w_full()
         .gap_0p5()
         .child(gpui::div().text_sm().child(label))
         .child(
