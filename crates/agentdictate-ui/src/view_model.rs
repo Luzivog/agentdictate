@@ -31,6 +31,9 @@ pub struct ReadinessFix {
     pub detail: String,
     /// Setup fixes it, and the card opens Setup.
     pub opens_setup: bool,
+    /// A terminal command the fix starts with, which the card shows with a
+    /// Copy button.
+    pub command: Option<String>,
 }
 
 impl ReadinessFix {
@@ -39,6 +42,7 @@ impl ReadinessFix {
             title,
             detail: detail.into(),
             opens_setup: false,
+            command: None,
         }
     }
 
@@ -51,17 +55,38 @@ impl ReadinessFix {
 }
 
 /// Why other apps can read the keyboard, and what to do about it. Granting
-/// access cannot override another app's rule, so that rule must go.
+/// access cannot override another app's rule, because udev applies that
+/// rule's mode last, so that rule must go first.
 pub(crate) fn exposed_input_detail(exposed: &ExposedInput) -> String {
     match &exposed.rule {
         Some(rule) => format!(
-            "{} lets every app read your keyboard. Remove it to keep your typing private.",
+            "{} lets every app read your keyboard. Delete it, or change its MODE to \"0660\", \
+             then run agentdictate setup-access.",
             rule.display()
         ),
-        None => {
-            "Every app on this computer can read your keyboard. Granting access makes it private again."
-                .to_owned()
-        }
+        None => "Every app on this computer can read your keyboard. Granting access should make \
+                 it private again; if not, delete the udev rule that opens it."
+            .to_owned(),
+    }
+}
+
+/// The command that deletes another app's world-access rule.
+fn delete_rule_command(exposed: &ExposedInput) -> Option<String> {
+    let rule = exposed.rule.as_ref()?;
+    Some(format!("sudo rm {}", shell_quoted(&rule.to_string_lossy())))
+}
+
+/// `text` as one shell word: unchanged when that is safe, else in single
+/// quotes.
+fn shell_quoted(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "/._-+@=:,".contains(character));
+    if plain {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', r"'\''"))
     }
 }
 
@@ -105,6 +130,7 @@ impl HomeStatus {
         } else if let Some(exposed) = exposed_input {
             ReadinessFix {
                 opens_setup: exposed.rule.is_none(),
+                command: delete_rule_command(exposed),
                 ..ReadinessFix::new(
                     "Other apps can read your keyboard",
                     exposed_input_detail(exposed),

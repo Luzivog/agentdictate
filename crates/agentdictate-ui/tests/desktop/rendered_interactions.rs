@@ -70,8 +70,36 @@ fn home_shows_one_ready_line_or_one_fix_card(cx: &mut TestAppContext) {
 
     harness.update_workspace(|workspace| workspace.readiness.transcription_key = false);
     assert!(!harness.has("home-ready"));
+    assert!(!harness.has("home-fix-command"));
     harness.click("home-fix-open-setup");
     assert_eq!(harness.active_route(), Route::Setup);
+}
+
+#[gpui::test]
+fn the_fix_card_copies_its_command(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    harness.update_workspace(|workspace| {
+        workspace.readiness = Readiness {
+            shortcut: HotkeyReadiness::Ready,
+            transcription_key: true,
+            desktop: DesktopReadiness {
+                exposed_input: Some(ExposedInput {
+                    rule: Some("/etc/udev/rules.d/99-open-input.rules".into()),
+                }),
+                ..DesktopReadiness::default()
+            },
+        };
+    });
+
+    harness.click("home-fix-copy-command");
+
+    assert_eq!(
+        harness
+            .cx
+            .read_from_clipboard()
+            .and_then(|item| item.text()),
+        Some("sudo rm /etc/udev/rules.d/99-open-input.rules".to_owned())
+    );
 }
 
 /// One banner area says why the window cannot follow the daemon, on every

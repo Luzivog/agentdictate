@@ -1,5 +1,5 @@
 use agentdictate_core::format_duration_words;
-use gpui::{App, Context, SharedString, prelude::*, px, relative};
+use gpui::{App, ClipboardItem, Context, SharedString, prelude::*, px, relative};
 use gpui_component::{
     ActiveTheme, Selectable, Sizable, StyledExt, chart::AreaChart, h_flex, tooltip::Tooltip, v_flex,
 };
@@ -155,7 +155,10 @@ fn readiness(status: HomeStatus, theme: ThemeTokens, cx: &mut Context<SettingsSh
                             .text_xs()
                             .text_color(gpui_color(theme.text_muted))
                             .child(fix.detail),
-                    ),
+                    )
+                    .when_some(fix.command, |card, command| {
+                        card.child(fix_command(command, theme, cx))
+                    }),
             )
             .when(fix.opens_setup, |card| {
                 card.child(
@@ -169,6 +172,33 @@ fn readiness(status: HomeStatus, theme: ThemeTokens, cx: &mut Context<SettingsSh
                 )
             }),
     }
+}
+
+/// A command the fix card asks to run in a terminal, with a Copy button.
+fn fix_command(command: String, theme: ThemeTokens, cx: &mut Context<SettingsShell>) -> gpui::Div {
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(
+            gpui::div()
+                .debug_selector(|| "home-fix-command".to_owned())
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(gpui_color(theme.canvas))
+                .text_xs()
+                .child(command.clone()),
+        )
+        .child(
+            action_button("home-fix-copy-command")
+                .debug_selector(|| "home-fix-copy-command".to_owned())
+                .small()
+                .label("Copy")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(command.clone()));
+                })),
+        )
 }
 
 fn activity_header(

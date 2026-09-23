@@ -48,7 +48,7 @@ fn home_says_ready_with_the_shortcut_or_shows_the_most_important_fix() {
     let HomeStatus::Fix(fix) = HomeStatus::new(
         &readiness(|readiness| {
             readiness.desktop.exposed_input = Some(ExposedInput {
-                rule: Some("/etc/udev/rules.d/99-vibetyper-uinput.rules".into()),
+                rule: Some("/etc/udev/rules.d/99-open-input.rules".into()),
             });
             readiness.desktop.missing_tools = vec![MissingTool::Ffmpeg];
         }),
@@ -57,12 +57,52 @@ fn home_says_ready_with_the_shortcut_or_shows_the_most_important_fix() {
         panic!("world-readable keyboards need a fix");
     };
     assert_eq!(fix.title, "Other apps can read your keyboard");
+    assert!(
+        fix.detail
+            .starts_with("/etc/udev/rules.d/99-open-input.rules lets every app")
+    );
     assert_eq!(
-        fix.detail,
-        "/etc/udev/rules.d/99-vibetyper-uinput.rules lets every app read your keyboard. Remove it to keep your typing private."
+        fix.command.as_deref(),
+        Some("sudo rm /etc/udev/rules.d/99-open-input.rules")
     );
     // Granting access can't override another app's rule.
     assert!(!fix.opens_setup);
+}
+
+/// The rule another package installed wins over AgentDictate's, so the
+/// card asks to delete it first, with a command that is safe to paste.
+#[test]
+fn the_exposed_input_fix_deletes_the_open_rule_before_setup_access() {
+    let fix = |rule: Option<&str>| {
+        let HomeStatus::Fix(fix) = HomeStatus::new(
+            &readiness(|readiness| {
+                readiness.desktop.exposed_input = Some(ExposedInput {
+                    rule: rule.map(Into::into),
+                });
+            }),
+            "Ctrl+Space",
+        ) else {
+            panic!("world-readable keyboards need a fix");
+        };
+        fix
+    };
+
+    let unusual = fix(Some("/etc/udev/rules.d/my input's.rules"));
+    assert_eq!(
+        unusual.command.as_deref(),
+        Some(r"sudo rm '/etc/udev/rules.d/my input'\''s.rules'")
+    );
+    assert!(
+        unusual
+            .detail
+            .ends_with("then run agentdictate setup-access.")
+    );
+
+    // Without a rule to delete, granting access in Setup applies the
+    // private mode again.
+    let unknown = fix(None);
+    assert_eq!(unknown.command, None);
+    assert!(unknown.opens_setup);
 }
 
 #[test]
