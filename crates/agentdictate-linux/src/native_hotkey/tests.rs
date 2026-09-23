@@ -90,6 +90,9 @@ fn native_listener_opens_polls_reads_and_reconnects_evdev_keyboards() {
     let (mut replacement, replacement_path) =
         virtual_keyboard().expect("replacement virtual keyboard");
     *discovered.lock().expect("discovery paths lock") = vec![replacement_path];
+    // The replacement's creation and ACL events may have fired before it was
+    // listed above; one more device change makes the listener look again.
+    nudge_input_directory();
     receive_until(&listener, |event| {
         matches!(
             event,
@@ -313,10 +316,18 @@ fn test_keyboard_or_skip(test: &str) -> Option<(VirtualDevice, PathBuf)> {
 
 /// The listener under test grabs this keyboard when it opens it (see
 /// `open_keyboard`), so its presses never reach the desktop. Running daemons
-/// also ignore its name (`AGENTDICTATE_TEST_DEVICE_NAME`), and its only key,
-/// F24, is bound by nothing (xkb maps F20–F23 to mic and touchpad toggles).
+/// also ignore its name (`AGENTDICTATE_TEST_DEVICE_NAME`), and the only key
+/// the tests press, F24, is bound by nothing (xkb maps F20–F23 to mic and
+/// touchpad toggles).
 fn virtual_keyboard() -> io::Result<(VirtualDevice, PathBuf)> {
+    // udev only classifies a device as a keyboard (ID_INPUT_KEYBOARD) when it
+    // has every key from Esc to S, and the input-access rule grants the
+    // session user access to keyboards only. Declaring them lets the test
+    // read its own device on a host without world-readable input nodes.
     let mut keys = AttributeSet::<KeyCode>::new();
+    for code in KeyCode::KEY_ESC.code()..=KeyCode::KEY_S.code() {
+        keys.insert(KeyCode::new(code));
+    }
     keys.insert(KeyCode::KEY_F24);
     let mut keyboard = VirtualDevice::builder()?
         .name(AGENTDICTATE_TEST_DEVICE_NAME)
@@ -327,7 +338,38 @@ fn virtual_keyboard() -> io::Result<(VirtualDevice, PathBuf)> {
         .next()
         .transpose()?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "virtual event node"))?;
+    wait_until_readable(&path)?;
     Ok((keyboard, path))
+}
+
+/// Creates and drops a throwaway uinput device, so `/dev/input` changes and
+/// the listener runs discovery again. It uses the test name, so running
+/// daemons ignore it.
+fn nudge_input_directory() {
+    let mut keys = AttributeSet::<KeyCode>::new();
+    keys.insert(KeyCode::KEY_F24);
+    let nudge = VirtualDevice::builder()
+        .and_then(|builder| builder.name(AGENTDICTATE_TEST_DEVICE_NAME).with_keys(&keys))
+        .and_then(|builder| builder.build())
+        .expect("uinput worked for the replacement keyboard");
+    drop(nudge);
+}
+
+/// udev applies the session ACL to a fresh node asynchronously. Without
+/// access after a few seconds, the caller skips instead of failing.
+fn wait_until_readable(path: &std::path::Path) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match std::fs::File::open(path) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.kind() == io::ErrorKind::PermissionDenied && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn press_f24(keyboard: &mut VirtualDevice) {
