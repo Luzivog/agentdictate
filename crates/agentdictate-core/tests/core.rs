@@ -1,7 +1,3 @@
-#[path = "core/costs.rs"]
-mod costs;
-#[path = "core/costs_golden.rs"]
-mod costs_golden;
 #[path = "core/dictation.rs"]
 mod dictation;
 #[path = "core/property.rs"]

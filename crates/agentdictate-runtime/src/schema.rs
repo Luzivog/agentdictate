@@ -74,17 +74,6 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     estimated_total_cost REAL NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS pricing_settings (
-    model_name TEXT NOT NULL,
-    model_type TEXT NOT NULL,
-    input_price_per_1m_tokens REAL NOT NULL DEFAULT 0,
-    output_price_per_1m_tokens REAL NOT NULL DEFAULT 0,
-    price_per_audio_minute REAL NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'USD',
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (model_name, model_type)
-);
-
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON dictation_sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON transcript_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_history_session_id ON transcript_history(session_id);

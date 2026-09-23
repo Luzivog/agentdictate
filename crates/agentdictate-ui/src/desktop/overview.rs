@@ -5,7 +5,7 @@ use gpui_component::{
 };
 
 use crate::action::action_button;
-use crate::usage::format_currency_amount;
+use crate::usage::format_usd;
 use crate::{
     HistoryViewModel, Route, ThemeTokens, TranscriptViewModel, UsageDayViewModel, UsagePeriod,
     UsageViewModel, WorkspaceAction,
@@ -77,7 +77,6 @@ pub(super) fn surface(
                                     plot.child(activity_plot(
                                         activity,
                                         peak_audio_seconds,
-                                        usage.currency.clone(),
                                         tick_margin,
                                         theme,
                                         cx,
@@ -231,7 +230,6 @@ fn summary_metric(
 fn activity_plot(
     data: Vec<UsageDayViewModel>,
     peak_audio_seconds: u64,
-    currency: String,
     tick_margin: usize,
     theme: ThemeTokens,
     cx: &App,
@@ -247,7 +245,6 @@ fn activity_plot(
             let (left, width, marker_x) = hover_geometry(index, point_count);
             let marker_y = marker_top(point.audio_seconds as f64, maximum);
             let group: SharedString = format!("activity-point-{index}").into();
-            let currency = currency.clone();
             gpui::div()
                 .group(group.clone())
                 .id(("overview-activity-point", index))
@@ -258,8 +255,7 @@ fn activity_plot(
                 .h_full()
                 .tooltip(move |window, cx| {
                     let point = point.clone();
-                    let currency = currency.clone();
-                    Tooltip::element(move |_, cx| activity_tooltip(&point, &currency, cx))
+                    Tooltip::element(move |_, cx| activity_tooltip(&point, cx))
                         .p_0()
                         .build(window, cx)
                 })
@@ -306,7 +302,7 @@ fn activity_plot(
         )
 }
 
-fn activity_tooltip(point: &UsageDayViewModel, currency: &str, cx: &App) -> gpui::Div {
+fn activity_tooltip(point: &UsageDayViewModel, cx: &App) -> gpui::Div {
     v_flex()
         .w(px(230.))
         .gap_2()
@@ -326,7 +322,7 @@ fn activity_tooltip(point: &UsageDayViewModel, currency: &str, cx: &App) -> gpui
         .child(tooltip_row("Words", point.words.to_string(), cx))
         .child(tooltip_row(
             "Est. cost",
-            format_currency_amount(currency, point.estimated_cost_usd),
+            format_usd(point.estimated_cost_usd),
             cx,
         ))
 }

@@ -158,9 +158,6 @@ fn applying_a_draft_preserves_settings_that_the_form_does_not_expose() {
         launch_window_on_startup: true,
         restore_clipboard_after_paste: true,
         debug_mode: true,
-        currency: "EUR".to_owned(),
-        transcription_prices: Default::default(),
-        cleanup_prices: Default::default(),
         ..Settings::default()
     };
     let mut draft = SettingsDraft::from(&original);

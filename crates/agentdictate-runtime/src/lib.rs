@@ -25,7 +25,6 @@ pub use ports::{
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest,
     RuntimeError, RuntimeEvent, Transcriber, Transcript,
 };
-mod pricing;
 mod recovery;
 pub use recovery::RecoveryEntry;
 mod runtime;

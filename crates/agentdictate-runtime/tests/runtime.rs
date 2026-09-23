@@ -8,7 +8,7 @@ mod history_usage;
 mod ipc_round_trip;
 #[path = "runtime/migration_parity.rs"]
 mod migration_parity;
-#[path = "runtime/pricing_recovery.rs"]
-mod pricing_recovery;
+#[path = "runtime/recovery.rs"]
+mod recovery;
 #[path = "runtime/support.rs"]
 mod support;

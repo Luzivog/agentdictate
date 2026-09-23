@@ -3,28 +3,6 @@
 use agentdictate_ui::{UsagePeriod, UsageTotals, UsageViewModel};
 
 #[test]
-fn usage_costs_follow_the_configured_currency_without_losing_usd_compatibility() {
-    let totals = UsageTotals {
-        estimated_cost_usd: 1.25,
-        ..UsageTotals::default()
-    };
-
-    assert_eq!(
-        UsageViewModel::new(UsagePeriod::Last30Days, totals, Vec::new()).cost_value(),
-        "$1.25",
-    );
-    let euros =
-        UsageViewModel::new(UsagePeriod::Last30Days, totals, Vec::new()).with_currency("eur");
-    assert_eq!(euros.currency, "EUR");
-    assert_eq!(euros.cost_value(), "€1.25");
-    assert_eq!(euros.format_cost(0.4), "€0.40");
-
-    let canadian =
-        UsageViewModel::new(UsagePeriod::Last30Days, totals, Vec::new()).with_currency("CAD");
-    assert_eq!(canadian.cost_value(), "CAD 1.25");
-}
-
-#[test]
 fn selected_period_totals_expose_weighted_average_words_per_minute() {
     let usage = UsageViewModel::new(
         UsagePeriod::Last7Days,

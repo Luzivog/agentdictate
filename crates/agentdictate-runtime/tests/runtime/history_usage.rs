@@ -10,7 +10,7 @@ use tempfile::TempDir;
 
 use crate::support::{ReadyRecorder, request, request_with_provider};
 
-const TRANSCRIPTION_MODEL: &str = "gpt-4o-transcribe";
+const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
 struct FixedTranscriber;
 
@@ -103,16 +103,6 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         TranscriptionProvider::ChatGptSubscription
     );
     assert_eq!(recorded.estimated_transcription_cost, 0.0);
-
-    let mut repriced = Settings::default();
-    repriced
-        .transcription_prices
-        .get_mut("gpt-4o-transcribe")
-        .unwrap()
-        .price_per_audio_minute = 99.0;
-    runtime.sync_pricing(&repriced).unwrap();
-    let repriced = runtime.history(recorded.id).unwrap().unwrap();
-    assert_eq!(repriced.estimated_transcription_cost, 0.0);
     assert_eq!(
         rusqlite::Connection::open(database_path)
             .unwrap()
@@ -152,7 +142,7 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     assert_eq!(first.raw_word_count, 4);
     assert_eq!(first.final_word_count, 4);
     assert_eq!(first.final_character_count, 21);
-    assert!((first.estimated_transcription_cost - 0.006).abs() < f64::EPSILON);
+    assert!((first.estimated_total_cost - 0.0045).abs() < f64::EPSILON);
     assert!(first.copied_to_clipboard);
     assert!(first.paste_triggered);
     assert!(first.success);
@@ -167,7 +157,7 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     assert_eq!(usage.all_time.average_wpm, 4.0);
     assert_eq!(
         usage.most_used_transcription_model.as_deref(),
-        Some("gpt-4o-transcribe")
+        Some(TRANSCRIPTION_MODEL)
     );
 
     let series = runtime.usage_series(1, UsageMetric::Words).unwrap();
@@ -932,34 +922,6 @@ fn deleting_cross_midnight_history_repairs_the_session_start_day() {
 
     let points = runtime.usage_series(2, UsageMetric::Sessions).unwrap();
     assert!(points.iter().all(|point| point.value == 0.0));
-}
-
-#[test]
-fn pricing_sync_reprices_existing_history_and_usage() {
-    let directory = TempDir::new().unwrap();
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
-    let delivered = delivered_job(&mut runtime, &directory);
-    runtime
-        .complete_delivered(delivered.id, &Settings::default())
-        .unwrap();
-    let mut repriced = Settings::default();
-    repriced
-        .transcription_prices
-        .get_mut("gpt-4o-transcribe")
-        .unwrap()
-        .price_per_audio_minute = 0.012;
-
-    runtime.sync_pricing(&repriced).unwrap();
-
-    let entry = runtime
-        .list_history(HistoryQuery::default())
-        .unwrap()
-        .remove(0);
-    assert!((entry.estimated_transcription_cost - 0.012).abs() < f64::EPSILON);
-    let usage = runtime.usage_summary().unwrap();
-    assert!(
-        (usage.all_time.estimated_total_cost - entry.estimated_total_cost).abs() < f64::EPSILON
-    );
 }
 
 #[test]

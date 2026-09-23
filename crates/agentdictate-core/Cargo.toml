@@ -14,8 +14,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 proptest = "1"
-# Exact float parsing keeps the Python golden values bit-comparable.
-serde_json = { workspace = true, features = ["float_roundtrip"] }
+serde_json.workspace = true
 
 [[bench]]
 name = "replacements"

@@ -1,6 +1,6 @@
 use std::fs;
 
-use agentdictate_runtime::{DeliveryStatus, JobStage, Runtime, Settings};
+use agentdictate_runtime::{DeliveryStatus, JobStage, Runtime};
 use chrono::Utc;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -21,48 +21,6 @@ fn insert_job(connection: &Connection, audio_path: &str, state: &str, stage: &st
             params![now, state, stage, audio_path, runtime_id],
         )
         .unwrap();
-}
-
-#[test]
-fn pricing_sync_upserts_the_python_compatible_table_and_is_idempotent() {
-    let directory = TempDir::new().unwrap();
-    let database = directory.path().join("history.db");
-    let mut runtime = Runtime::open(&database).unwrap();
-
-    runtime.sync_pricing(&Settings::default()).unwrap();
-    let first = read_pricing(&database);
-    runtime.sync_pricing(&Settings::default()).unwrap();
-    let second = read_pricing(&database);
-
-    assert_eq!(first, second, "repeated syncs converge without duplicates");
-    let transcription = first
-        .iter()
-        .filter(|(_, model_type, _)| model_type == "transcription")
-        .count();
-    assert_eq!(
-        transcription,
-        Settings::default().transcription_prices.len(),
-        "every default transcription model is priced"
-    );
-}
-
-fn read_pricing(database: &std::path::Path) -> Vec<(String, String, f64)> {
-    let connection = Connection::open(database).unwrap();
-    let mut statement = connection
-        .prepare("SELECT model_name, model_type, price_per_audio_minute FROM pricing_settings")
-        .unwrap();
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, f64>(2)?,
-            ))
-        })
-        .unwrap();
-    let mut entries: Vec<_> = rows.map(|row| row.unwrap()).collect();
-    entries.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-    entries
 }
 
 #[test]

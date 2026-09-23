@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -61,44 +60,6 @@ impl std::error::Error for ParseTranscriptionProviderError {}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct TranscriptionPrice {
-    pub model_name: String,
-    pub price_per_audio_minute: f64,
-    pub currency: String,
-}
-
-impl Default for TranscriptionPrice {
-    fn default() -> Self {
-        Self {
-            model_name: String::new(),
-            price_per_audio_minute: 0.0,
-            currency: "USD".into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CleanupPrice {
-    pub model_name: String,
-    pub input_price_per_1m_tokens: f64,
-    pub output_price_per_1m_tokens: f64,
-    pub currency: String,
-}
-
-impl Default for CleanupPrice {
-    fn default() -> Self {
-        Self {
-            model_name: String::new(),
-            input_price_per_1m_tokens: 0.0,
-            output_price_per_1m_tokens: 0.0,
-            currency: "USD".into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Settings {
     pub openai_api_key: String,
     pub transcription_provider: TranscriptionProvider,
@@ -129,57 +90,6 @@ pub struct Settings {
     pub preserve_temp_audio: bool,
     pub save_history: bool,
     pub paste_shortcut: String,
-    pub currency: String,
-    pub transcription_prices: BTreeMap<String, TranscriptionPrice>,
-    pub cleanup_prices: BTreeMap<String, CleanupPrice>,
-}
-
-impl Settings {
-    /// Repairs the historical all-zero pricing file while preserving any
-    /// deliberate non-zero customizations and unknown future models.
-    pub fn repair_pricing_defaults(&mut self) -> bool {
-        let transcription_defaults = default_transcription_prices();
-        let all_transcription_prices_zero = transcription_defaults.keys().all(|model| {
-            self.transcription_prices
-                .get(model)
-                .is_none_or(|price| price.price_per_audio_minute <= 0.0)
-        });
-        let mut changed = false;
-        if all_transcription_prices_zero {
-            self.transcription_prices = transcription_defaults;
-            changed = true;
-        } else {
-            for (model, price) in transcription_defaults {
-                if let std::collections::btree_map::Entry::Vacant(entry) =
-                    self.transcription_prices.entry(model)
-                {
-                    entry.insert(price);
-                    changed = true;
-                }
-            }
-        }
-
-        let cleanup_defaults = default_cleanup_prices();
-        let all_cleanup_prices_zero = cleanup_defaults.keys().all(|model| {
-            self.cleanup_prices.get(model).is_none_or(|price| {
-                price.input_price_per_1m_tokens <= 0.0 && price.output_price_per_1m_tokens <= 0.0
-            })
-        });
-        if all_cleanup_prices_zero {
-            self.cleanup_prices = cleanup_defaults;
-            changed = true;
-        } else {
-            for (model, price) in cleanup_defaults {
-                if let std::collections::btree_map::Entry::Vacant(entry) =
-                    self.cleanup_prices.entry(model)
-                {
-                    entry.insert(price);
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
 }
 
 impl Default for Settings {
@@ -213,9 +123,6 @@ impl Default for Settings {
             preserve_temp_audio: false,
             save_history: true,
             paste_shortcut: "Automatic".into(),
-            currency: "USD".into(),
-            transcription_prices: default_transcription_prices(),
-            cleanup_prices: default_cleanup_prices(),
         }
     }
 }
@@ -252,50 +159,6 @@ impl From<&Settings> for SettingsSnapshot {
             has_api_key,
         }
     }
-}
-
-fn default_transcription_prices() -> BTreeMap<String, TranscriptionPrice> {
-    [
-        ("gpt-transcribe", 0.0045),
-        ("gpt-live-transcribe", 0.017),
-        ("gpt-4o-transcribe", 0.006),
-        ("gpt-4o-mini-transcribe", 0.003),
-        ("whisper-1", 0.006),
-    ]
-    .into_iter()
-    .map(|(model, price)| {
-        (
-            model.into(),
-            TranscriptionPrice {
-                model_name: model.into(),
-                price_per_audio_minute: price,
-                currency: "USD".into(),
-            },
-        )
-    })
-    .collect()
-}
-
-fn default_cleanup_prices() -> BTreeMap<String, CleanupPrice> {
-    [
-        ("gpt-5.4-nano", 0.05, 0.40),
-        ("gpt-5.4-mini", 0.25, 2.00),
-        ("gpt-5.5", 1.25, 10.00),
-        ("gpt-5.6-luna", 0.20, 1.20),
-    ]
-    .into_iter()
-    .map(|(model, input, output)| {
-        (
-            model.into(),
-            CleanupPrice {
-                model_name: model.into(),
-                input_price_per_1m_tokens: input,
-                output_price_per_1m_tokens: output,
-                currency: "USD".into(),
-            },
-        )
-    })
-    .collect()
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

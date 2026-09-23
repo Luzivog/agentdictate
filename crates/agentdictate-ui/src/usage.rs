@@ -66,7 +66,6 @@ pub struct UsageViewModel {
     pub period: UsagePeriod,
     pub totals: UsageTotals,
     pub activity: Vec<UsageDayViewModel>,
-    pub currency: String,
 }
 
 impl UsageViewModel {
@@ -75,19 +74,7 @@ impl UsageViewModel {
             period,
             totals,
             activity,
-            currency: "USD".to_owned(),
         }
-    }
-
-    pub fn with_currency(mut self, currency: impl Into<String>) -> Self {
-        let currency = currency.into();
-        let currency = currency.trim();
-        self.currency = if currency.is_empty() {
-            "USD".to_owned()
-        } else {
-            currency.to_uppercase()
-        };
-        self
     }
 
     pub fn dictations_value(&self) -> String {
@@ -105,7 +92,7 @@ impl UsageViewModel {
     }
 
     pub fn cost_value(&self) -> String {
-        self.format_cost(self.totals.estimated_cost_usd)
+        format_usd(self.totals.estimated_cost_usd)
     }
 
     pub fn average_wpm_value(&self) -> String {
@@ -117,10 +104,6 @@ impl UsageViewModel {
         average_wpm.to_string()
     }
 
-    pub fn format_cost(&self, value: f64) -> String {
-        format_currency_amount(&self.currency, value)
-    }
-
     pub fn peak_audio_seconds(&self) -> u64 {
         self.activity
             .iter()
@@ -130,14 +113,9 @@ impl UsageViewModel {
     }
 }
 
-pub(crate) fn format_currency_amount(currency: &str, value: f64) -> String {
-    let value = value.max(0.0);
-    match currency {
-        "USD" => format!("${value:.2}"),
-        "EUR" => format!("€{value:.2}"),
-        "GBP" => format!("£{value:.2}"),
-        currency => format!("{currency} {value:.2}"),
-    }
+/// Formats an estimated cost; OpenAI bills in US dollars.
+pub(crate) fn format_usd(value: f64) -> String {
+    format!("${:.2}", value.max(0.0))
 }
 
 impl Default for UsageViewModel {

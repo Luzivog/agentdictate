@@ -7,7 +7,7 @@ use crate::{
 
 use super::{
     CommandSink, SettingsShell, history_action_lane::HistoryActionLane,
-    settings_form::SettingsFormState, workspace_actions::workspace_with_currency,
+    settings_form::SettingsFormState,
 };
 
 pub(super) struct SettingsEditState {
@@ -92,7 +92,7 @@ impl SettingsShell {
     /// Builds the settings window's shell around the daemon's settings and the
     /// sinks that send commands and workspace actions back to it.
     pub fn new(
-        mut model: ShellViewModel,
+        model: ShellViewModel,
         settings: agentdictate_core::Settings,
         has_api_key: bool,
         command_sink: CommandSink,
@@ -100,7 +100,6 @@ impl SettingsShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        model.workspace = workspace_with_currency(model.workspace, &settings.currency);
         let api_key_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("sk-…").masked(true));
         let initial_history_search = model.workspace.history.search.clone();

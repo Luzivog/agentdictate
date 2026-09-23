@@ -11,7 +11,7 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 #[test]
-fn python_settings_json_keeps_values_and_repairs_missing_pricing() {
+fn python_settings_json_keeps_values_and_ignores_retired_fields() {
     let directory = TempDir::new().unwrap();
     let settings_path = directory.path().join("config.json");
     fs::write(
@@ -32,15 +32,6 @@ fn python_settings_json_keeps_values_and_repairs_missing_pricing() {
 
     assert_eq!(settings.hotkey, "Alt+Space");
     assert_eq!(settings.max_recording_seconds, 45);
-    assert_eq!(
-        settings.transcription_prices["gpt-transcribe"].price_per_audio_minute,
-        0.0045
-    );
-    assert_eq!(
-        settings.cleanup_prices["gpt-5.4-nano"].input_price_per_1m_tokens,
-        0.05
-    );
-    assert!(!settings_path.with_extension("json.tmp").exists());
 }
 
 #[test]
@@ -239,7 +230,6 @@ fn fresh_database_contains_the_complete_python_compatible_schema() {
         "external_dictation_imports",
         "replacement_mappings",
         "daily_stats",
-        "pricing_settings",
         "dictation_jobs",
     ] {
         let exists = connection

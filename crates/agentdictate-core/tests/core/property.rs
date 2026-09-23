@@ -1,6 +1,5 @@
 use agentdictate_core::{
     ClientCommand, PROTOCOL_VERSION, ReplacementRule, ServerMessage, Settings, apply_replacements,
-    estimate_session_cost,
 };
 use proptest::prelude::*;
 
@@ -57,18 +56,6 @@ proptest! {
     ) {
         let rules = [rule(&source, &replacement, true)];
         let _ = apply_replacements(&text, &rules);
-    }
-
-    #[test]
-    fn cleanup_disabled_sessions_report_zero_cleanup_tokens(
-        duration in 0.0..600.0f64,
-        raw in any::<String>(),
-        price in 0.0..1.0f64,
-    ) {
-        let estimate = estimate_session_cost(duration, &raw, None, true, price, 0.05, 0.4);
-        prop_assert_eq!(estimate.cleanup_input_tokens, 0);
-        prop_assert_eq!(estimate.cleanup_output_tokens, 0);
-        prop_assert_eq!(estimate.total_cost, estimate.transcription_cost);
     }
 
     #[test]

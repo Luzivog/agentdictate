@@ -92,25 +92,3 @@ fn settings_sent_to_the_ui_never_include_the_api_key() {
     );
     assert!(!wire.contains("sk-private-value"));
 }
-
-#[test]
-fn legacy_zero_price_maps_are_repaired_to_current_defaults() {
-    let mut settings = Settings::default();
-    for price in settings.transcription_prices.values_mut() {
-        price.price_per_audio_minute = 0.0;
-    }
-    for price in settings.cleanup_prices.values_mut() {
-        price.input_price_per_1m_tokens = 0.0;
-        price.output_price_per_1m_tokens = 0.0;
-    }
-
-    assert!(settings.repair_pricing_defaults());
-    assert_eq!(
-        settings.transcription_prices["gpt-transcribe"].price_per_audio_minute,
-        0.0045
-    );
-    assert_eq!(
-        settings.cleanup_prices["gpt-5.4-nano"].output_price_per_1m_tokens,
-        0.40
-    );
-}

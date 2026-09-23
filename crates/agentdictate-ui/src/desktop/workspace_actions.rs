@@ -14,7 +14,7 @@ impl SettingsShell {
         workspace: WorkspaceViewModel,
         cx: &mut Context<Self>,
     ) {
-        self.model.workspace = workspace_with_currency(workspace, &self.settings.current.currency);
+        self.model.workspace = workspace;
         cx.notify();
     }
 
@@ -52,10 +52,7 @@ impl SettingsShell {
                     shell.workspace_actions.in_flight = false;
                     match result {
                         Ok(workspace) => {
-                            shell.model.workspace = workspace_with_currency(
-                                workspace,
-                                &shell.settings.current.currency,
-                            );
+                            shell.model.workspace = workspace;
                             match success_feedback {
                                 Some(message) => {
                                     shell.set_route_feedback_for(feedback_route, message);
@@ -215,12 +212,4 @@ impl SettingsShell {
     pub fn route_feedback_for_test(&self, route: Route) -> Option<&str> {
         self.routes.entry(route).feedback.as_deref()
     }
-}
-
-pub(super) fn workspace_with_currency(
-    mut workspace: WorkspaceViewModel,
-    currency: &str,
-) -> WorkspaceViewModel {
-    workspace.usage = workspace.usage.with_currency(currency);
-    workspace
 }

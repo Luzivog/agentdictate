@@ -219,11 +219,6 @@ impl AgentProcess {
             }
             return Err(error.into());
         }
-        if let Err(error) = self.daemon.sync_pricing(&settings) {
-            // The settings file is authoritative and startup will reconcile
-            // pricing again. Do not report a failed save after it committed.
-            tracing::error!(%error, "could not synchronize pricing cache");
-        }
         if start_on_login_changed {
             match std::env::current_exe() {
                 Ok(executable) => {
@@ -324,9 +319,6 @@ fn run_post_listener_maintenance(
             return;
         }
     };
-    if let Err(error) = runtime.sync_pricing(settings) {
-        tracing::warn!(%error, "could not synchronize pricing cache");
-    }
     match runtime.clean_up_finished_jobs(settings, recordings_directory) {
         Ok(cleanup) if cleanup == FinishedJobCleanup::default() => {}
         Ok(cleanup) => tracing::info!(

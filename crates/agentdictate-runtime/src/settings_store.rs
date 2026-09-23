@@ -17,11 +17,7 @@ pub fn load_settings(path: impl AsRef<Path>) -> Result<Settings, RuntimeError> {
 
     let contents = fs::read_to_string(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    let mut settings: Settings = serde_json::from_str(&contents)?;
-    if settings.repair_pricing_defaults() {
-        save_settings(path, &settings)?;
-    }
-    Ok(settings)
+    Ok(serde_json::from_str(&contents)?)
 }
 
 pub fn save_settings(path: impl AsRef<Path>, settings: &Settings) -> Result<(), RuntimeError> {

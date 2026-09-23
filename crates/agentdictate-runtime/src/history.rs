@@ -1,6 +1,6 @@
 use agentdictate_core::{
     AppliedReplacement, JobId, JobStage, Settings, TranscriptionProvider,
-    count_words_ascii_history, estimate_session_cost,
+    count_words_ascii_history, transcription_price_per_minute,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -333,33 +333,20 @@ fn record_session(
         |row| row.get(0),
     )?;
     let replacements_applied = deserialize_replacements(&replacements_json)?;
-    let api_transcription_price = settings
-        .transcription_prices
-        .get(&job.transcription_model)
-        .map_or(0.0, |price| price.price_per_audio_minute);
-    let transcription_price = job
+    // Priced once, at today's price: that is what these minutes cost.
+    let price_per_minute = job
         .transcription_provider
-        .marginal_price_per_audio_minute(api_transcription_price);
-    let cost = estimate_session_cost(
-        job.duration_seconds,
-        &job.raw_transcript,
-        None,
-        false,
-        transcription_price,
-        0.0,
-        0.0,
-    );
+        .marginal_price_per_audio_minute(transcription_price_per_minute(&job.transcription_model));
+    let cost = job.duration_seconds.max(0.0) / 60.0 * price_per_minute;
     transaction.execute(
         r#"
         INSERT INTO dictation_sessions (
             started_at, ended_at, duration_seconds, transcription_model,
             transcription_provider, raw_word_count,
             final_word_count, final_character_count,
-            estimated_transcription_cost, estimated_cleanup_cost,
-            estimated_total_cost, success, error_message, runtime_job_id
-        ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, NULL, ?12
-        )
+            estimated_transcription_cost, estimated_total_cost, success,
+            error_message, runtime_job_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 1, NULL, ?10)
         "#,
         params![
             timestamp(job.started_at),
@@ -370,9 +357,7 @@ fn record_session(
             count_words_ascii_history(&job.raw_transcript),
             count_words_ascii_history(&job.final_text),
             job.final_text.chars().count() as u64,
-            cost.transcription_cost,
-            cost.cleanup_cost,
-            cost.total_cost,
+            cost,
             job.id.to_string(),
         ],
     )?;

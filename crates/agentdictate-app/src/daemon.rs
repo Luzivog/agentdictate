@@ -677,10 +677,6 @@ where
         self.publish_overlay_update();
     }
 
-    pub fn sync_pricing(&mut self, settings: &Settings) -> Result<(), RuntimeError> {
-        self.runtime.sync_pricing(settings)
-    }
-
     pub const fn transcriber_mut(&mut self) -> &mut T {
         &mut self.transcriber
     }
