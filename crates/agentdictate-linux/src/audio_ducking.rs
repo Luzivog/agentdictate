@@ -172,9 +172,9 @@ impl<P> VolumeControl<P> {
     }
 }
 
-/// A running fade. It owns the saved output until it is stopped, so exactly
-/// one party writes the volume at a time and no lock is held across a
-/// pactl call.
+/// A running duck or fade. It owns the saved output until it is stopped, so
+/// exactly one party writes the volume at a time and no lock is held across
+/// a pactl call.
 struct RampWorker {
     cancel: mpsc::Sender<()>,
     handle: thread::JoinHandle<Option<SavedOutput>>,
@@ -216,40 +216,37 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
         ducker
     }
 
+    /// Starts ducking the default output and returns at once, so the recorder
+    /// never waits for the sound server. The worker first retries an output
+    /// an earlier restore could not put back, then snapshots, records, and
+    /// fades the default output. `restore` cancels it at any point.
     pub fn duck(&mut self, settings: &Settings) {
-        self.restore_with_fade(0);
-        // A failed restore keeps its original. Never snapshot a reduced volume
-        // as the baseline for another recording, including on a different output.
-        if !settings.audio_ducking_enabled || self.saved.is_some() {
+        self.stop_worker();
+        if !settings.audio_ducking_enabled && self.saved.is_none() {
             return;
         }
-        let pactl = &self.control.pactl;
-        let snapshot = (|| {
-            let name = pactl.default_sink()?;
-            let original = pactl.sink_volume(&name)?;
-            Ok::<_, io::Error>(SavedOutput {
-                name,
-                applied: original.clone(),
-                original,
-            })
-        })();
-        let saved = match snapshot {
-            Ok(saved) => saved,
+        let plan = settings.audio_ducking_enabled.then_some(DuckPlan {
+            percent: settings.audio_ducking_volume_percent,
+            fade_ms: settings.audio_ducking_fade_out_ms,
+        });
+        if plan.is_some() {
+            self.fade_in_ms = settings.audio_ducking_fade_in_ms;
+        }
+        let previous = self.saved.take();
+        let (cancel, cancelled) = mpsc::channel();
+        let control = Arc::clone(&self.control);
+        let owned = previous.clone();
+        match thread::Builder::new()
+            .name("agentdictate-audio-ducking".into())
+            .spawn(move || duck_output(&control, owned, plan, &cancelled))
+        {
+            Ok(handle) => self.worker = Some(RampWorker { cancel, handle }),
             Err(error) => {
-                tracing::warn!(%error, "audio ducking output snapshot failed");
-                return;
+                tracing::warn!(%error, "audio ducking worker unavailable; ducking inline");
+                let (_keep, never_cancelled) = mpsc::channel();
+                self.saved = duck_output(&self.control, previous, plan, &never_cancelled);
             }
-        };
-        // Without a durable record, a crash could leave the output ducked.
-        if let Err(error) = self.control.persist(&saved) {
-            tracing::warn!(%error, "audio ducking skipped: could not save the volume to restore");
-            return;
         }
-        let target = ducking_target_volumes(&saved.original, settings.audio_ducking_volume_percent);
-        tracing::info!(sink = %saved.name, original = ?saved.original, ?target, "audio output ducking started");
-        self.fade_in_ms = settings.audio_ducking_fade_in_ms;
-        self.saved = Some(saved);
-        self.ramp(target, settings.audio_ducking_fade_out_ms, false);
     }
 
     pub fn restore(&mut self) {
@@ -259,15 +256,12 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
     fn restore_with_fade(&mut self, fade_ms: u32) {
         self.stop_worker();
         let Some(output) = &self.saved else { return };
-        match self.control.pactl.sink_volume(&output.name) {
-            Ok(current) if current != output.applied => {
-                // A volume key or mixer change is the user's new preference.
-                tracing::info!(sink = %output.name, ?current, "audio ducking preserved external volume change");
+        match still_ducked(&self.control, output) {
+            Ok(true) => {}
+            Ok(false) => {
                 self.saved = None;
-                self.control.forget();
                 return;
             }
-            Ok(_) => {}
             Err(error) => {
                 tracing::warn!(sink = %output.name, %error, "audio ducking restore read failed");
                 return;
@@ -277,7 +271,7 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
         self.ramp(target, fade_ms, true);
     }
 
-    /// Cancels a running fade and takes back the output it owned. Waits at
+    /// Cancels a running duck or fade and takes back the output it owned. Waits at
     /// most for one in-flight pactl call, which its deadline bounds.
     fn stop_worker(&mut self) {
         let Some(RampWorker { cancel, handle }) = self.worker.take() else {
@@ -290,24 +284,27 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
         });
     }
 
-    // One ramp implementation owns writes in both directions.
+    /// Restores `saved` to `target`, fading on a worker when `fade_ms` > 0.
     fn ramp(&mut self, target: Vec<u32>, fade_ms: u32, restoring: bool) {
         let Some(saved) = self.saved.take() else {
             return;
         };
         if fade_ms > 0 {
-            let steps = ramp_plan(&saved.applied, &target, fade_ms);
-            let step_delay = Duration::from_millis(u64::from(fade_ms.div_ceil(steps.len() as u32)));
             let (cancel, cancelled) = mpsc::channel();
             let control = Arc::clone(&self.control);
             let owned = saved.clone();
+            let owned_target = target.clone();
             match thread::Builder::new()
                 .name("agentdictate-audio-ducking".into())
                 .spawn(move || {
-                    let started_at = Instant::now();
-                    apply_ramp(&control, owned, &steps, restoring, |step| {
-                        wait_unless_cancelled(&cancelled, started_at + step_delay * step)
-                    })
+                    fade(
+                        &control,
+                        owned,
+                        &owned_target,
+                        fade_ms,
+                        restoring,
+                        &cancelled,
+                    )
                 }) {
                 Ok(handle) => {
                     self.worker = Some(RampWorker { cancel, handle });
@@ -320,6 +317,100 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
         }
         self.saved = apply_ramp(&self.control, saved, &[target], restoring, |_| true);
     }
+}
+
+/// How far and how fast a recording ducks the output.
+#[derive(Clone, Copy)]
+struct DuckPlan {
+    percent: u8,
+    fade_ms: u32,
+}
+
+/// The ducking worker. Puts back an output an earlier restore left reduced
+/// (never snapshotting a reduced volume as a new baseline), then, with a
+/// plan, snapshots the default output, records it durably, and fades it
+/// down. Returns the output that now needs restoring. Once the owner
+/// cancels, it stops before its next volume write.
+fn duck_output<P: Pactl>(
+    control: &VolumeControl<P>,
+    previous: Option<SavedOutput>,
+    plan: Option<DuckPlan>,
+    cancelled: &mpsc::Receiver<()>,
+) -> Option<SavedOutput> {
+    if let Some(output) = previous {
+        match still_ducked(control, &output) {
+            Ok(true) => {
+                let original = output.original.clone();
+                if let Some(unrestored) = apply_ramp(control, output, &[original], true, |_| true) {
+                    return Some(unrestored);
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(sink = %output.name, %error, "audio ducking restore read failed");
+                return Some(output);
+            }
+        }
+    }
+    let plan = plan?;
+    if matches!(cancelled.try_recv(), Err(mpsc::TryRecvError::Disconnected)) {
+        return None;
+    }
+    let pactl = &control.pactl;
+    let snapshot = (|| {
+        let name = pactl.default_sink()?;
+        let original = pactl.sink_volume(&name)?;
+        Ok::<_, io::Error>(SavedOutput {
+            name,
+            applied: original.clone(),
+            original,
+        })
+    })();
+    let saved = match snapshot {
+        Ok(saved) => saved,
+        Err(error) => {
+            tracing::warn!(%error, "audio ducking output snapshot failed");
+            return None;
+        }
+    };
+    // Without a durable record, a crash could leave the output ducked.
+    if let Err(error) = control.persist(&saved) {
+        tracing::warn!(%error, "audio ducking skipped: could not save the volume to restore");
+        return None;
+    }
+    let target = ducking_target_volumes(&saved.original, plan.percent);
+    tracing::info!(sink = %saved.name, original = ?saved.original, ?target, "audio output ducking started");
+    fade(control, saved, &target, plan.fade_ms, false, cancelled)
+}
+
+/// Moves `saved` to `target` in `fade_ms` steps until the owner cancels.
+fn fade<P: Pactl>(
+    control: &VolumeControl<P>,
+    saved: SavedOutput,
+    target: &[u32],
+    fade_ms: u32,
+    restoring: bool,
+    cancelled: &mpsc::Receiver<()>,
+) -> Option<SavedOutput> {
+    let steps = ramp_plan(&saved.applied, target, fade_ms);
+    let step_delay = Duration::from_millis(u64::from(fade_ms.div_ceil(steps.len() as u32)));
+    let started_at = Instant::now();
+    apply_ramp(control, saved, &steps, restoring, |step| {
+        wait_unless_cancelled(cancelled, started_at + step_delay * step)
+    })
+}
+
+/// Reads the output's volume. `Ok(false)` means the user changed it since
+/// AgentDictate's last write: that is their new preference, so the record is
+/// dropped and nothing is restored.
+fn still_ducked<P: Pactl>(control: &VolumeControl<P>, output: &SavedOutput) -> io::Result<bool> {
+    let current = control.pactl.sink_volume(&output.name)?;
+    if current != output.applied {
+        tracing::info!(sink = %output.name, ?current, "audio ducking preserved external volume change");
+        control.forget();
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 impl<P: Pactl + Send + Sync + 'static> Drop for PlaybackDucker<P> {
@@ -485,7 +576,7 @@ mod tests {
         }
     }
 
-    /// Lets a running fade finish instead of cancelling it.
+    /// Lets a running duck or fade finish instead of cancelling it.
     fn finish_fade(ducker: &mut PlaybackDucker<FakePactl>) {
         if let Some(RampWorker { cancel, handle }) = ducker.worker.take() {
             ducker.saved = handle.join().unwrap();
@@ -524,6 +615,7 @@ mod tests {
     fn default_output_change_does_not_redirect_restoration() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         pactl.state().default = "speakers".into();
         ducker.restore();
         {
@@ -533,6 +625,7 @@ mod tests {
             assert!(state.writes.iter().all(|(name, _)| name == "headphones"));
         }
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         assert_eq!(pactl.state().volumes["speakers"], vec![21_253, 21_253]);
         drop(ducker);
         assert_eq!(pactl.state().volumes["speakers"], vec![40_000, 40_000]);
@@ -542,9 +635,11 @@ mod tests {
     fn failed_restore_never_becomes_a_new_ducking_baseline() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         pactl.state().fail_write = Some(vec![65_536, 32_768]);
         ducker.restore();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         assert_eq!(pactl.state().writes.len(), 1);
         assert_eq!(
             ducker.saved.as_ref().unwrap().original,
@@ -552,6 +647,7 @@ mod tests {
         );
         pactl.state().fail_write = None;
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         ducker.restore();
         assert_eq!(pactl.state().volumes["headphones"], vec![65_536, 32_768]);
     }
@@ -560,6 +656,7 @@ mod tests {
     fn disappeared_output_keeps_its_original_without_touching_another_device() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         let disconnected = {
             let mut state = pactl.state();
             state.default = "speakers".into();
@@ -567,6 +664,7 @@ mod tests {
         };
         ducker.restore();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         assert_eq!(pactl.state().writes.len(), 1);
         pactl
             .state()
@@ -580,6 +678,7 @@ mod tests {
     fn user_volume_change_is_preserved_on_stop() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         pactl
             .state()
             .volumes
@@ -593,8 +692,10 @@ mod tests {
     fn new_recording_cancels_a_restore_fade_before_it_can_overwrite_ducking() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 100));
+        finish_fade(&mut ducker);
         ducker.restore();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         thread::sleep(Duration::from_millis(150));
         assert_eq!(pactl.state().volumes["headphones"], vec![34_821, 17_411]);
         drop(ducker);
@@ -605,6 +706,10 @@ mod tests {
     fn stop_during_fade_out_cancels_all_later_ducking_writes() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(100, 0));
+        // Stop after the first of the fade's two steps.
+        while pactl.state().writes.is_empty() {
+            thread::sleep(Duration::from_millis(1));
+        }
         ducker.restore();
         thread::sleep(Duration::from_millis(150));
         assert_eq!(pactl.state().volumes["headphones"], vec![65_536, 32_768]);
@@ -614,6 +719,7 @@ mod tests {
     fn failed_fade_restoration_retains_original_for_retry() {
         let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 100));
+        finish_fade(&mut ducker);
         pactl.state().fail_write = Some(vec![65_536, 32_768]);
         ducker.restore();
         finish_fade(&mut ducker);
@@ -637,6 +743,7 @@ mod tests {
     fn a_daemon_that_died_while_ducking_restores_the_volume_at_its_next_start() {
         let (directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         let record = fs::metadata(state_file(&directory)).unwrap();
         assert_eq!(
             std::os::unix::fs::PermissionsExt::mode(&record.permissions()) & 0o777,
@@ -652,6 +759,7 @@ mod tests {
         assert!(!state_file(&directory).exists());
         // The next recording ducks from the real volume, not the ducked one.
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         assert_eq!(pactl.state().volumes["headphones"], vec![34_821, 17_411]);
         ducker.restore();
         assert_eq!(pactl.state().volumes["headphones"], vec![65_536, 32_768]);
@@ -661,6 +769,7 @@ mod tests {
     fn a_volume_changed_after_a_crash_is_kept_and_its_record_dropped() {
         let (directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
+        finish_fade(&mut ducker);
         std::mem::forget(ducker);
         pactl
             .state()

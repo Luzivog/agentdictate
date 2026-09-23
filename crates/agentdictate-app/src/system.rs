@@ -252,6 +252,8 @@ impl SystemRecordingController {
 
 impl Recorder for SystemRecordingController {
     fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
+        // Ducking only hands its work to a worker, so the recorder starts at
+        // once while the output fades down beside it.
         self.ducker.duck(&self.settings);
         let started = match self.recorder.begin(
             job.id,

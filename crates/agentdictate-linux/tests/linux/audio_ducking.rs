@@ -10,7 +10,7 @@ use agentdictate_linux::{
 use support::TestDirectory;
 
 #[test]
-fn a_hung_pactl_skips_ducking_within_its_deadline() {
+fn a_hung_pactl_neither_delays_the_recording_nor_ducks() {
     let directory = TestDirectory::new();
     let calls = directory.path().join("calls");
     let pactl = directory.executable(
@@ -30,9 +30,14 @@ fn a_hung_pactl_skips_ducking_within_its_deadline() {
         audio_ducking_enabled: true,
         ..Settings::default()
     });
+
+    // The snapshot hangs for its whole one-second deadline on the worker.
+    assert!(started.elapsed() < Duration::from_millis(500));
+    while !calls.exists() {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     ducker.restore();
     drop(ducker);
-
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(
         std::fs::read_to_string(calls).unwrap(),
