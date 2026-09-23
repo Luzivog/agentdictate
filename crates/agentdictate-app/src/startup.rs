@@ -450,7 +450,7 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let greeting = ServerMessage {
                 protocol_version: PROTOCOL_VERSION + 1,
-                ..SnapshotHandler.snapshot(0)
+                ..SnapshotHandler.snapshot()
             };
             writeln!(stream, "{}", serde_json::to_string(&greeting).unwrap()).unwrap();
         });
@@ -582,9 +582,8 @@ mod tests {
     struct SnapshotHandler;
 
     impl IpcHandler for SnapshotHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
+        fn snapshot(&self) -> ServerMessage {
             ServerMessage::snapshot(
-                request_id,
                 AppSnapshot {
                     workflow: Workflow::new().snapshot(),
                     hotkey: HotkeyReadiness::Ready,

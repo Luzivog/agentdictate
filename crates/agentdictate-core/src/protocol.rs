@@ -7,7 +7,7 @@ use crate::snapshots::{
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -16,8 +16,15 @@ pub struct ClientCommand {
     pub kind: ClientCommandKind,
 }
 
+impl From<ClientCommandKind> for ClientCommand {
+    fn from(kind: ClientCommandKind) -> Self {
+        Self::new(kind)
+    }
+}
+
 impl ClientCommand {
-    const fn with_kind(kind: ClientCommandKind) -> Self {
+    #[must_use]
+    pub const fn new(kind: ClientCommandKind) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             kind,
@@ -25,40 +32,23 @@ impl ClientCommand {
     }
 
     #[must_use]
-    pub const fn start_recording(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::StartRecording {
-            request_id,
-            mode: None,
-        })
+    pub const fn start_recording() -> Self {
+        Self::new(ClientCommandKind::StartRecording { mode: None })
     }
 
     /// Overrides output mode for this recording without changing saved settings.
-    pub const fn start_recording_in_mode(request_id: u64, mode: crate::DictationMode) -> Self {
-        Self::with_kind(ClientCommandKind::StartRecording {
-            request_id,
-            mode: Some(mode),
-        })
-    }
-
     #[must_use]
-    pub const fn get_snapshot(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::GetSnapshot { request_id })
-    }
-
-    #[must_use]
-    pub const fn get_workspace(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::GetWorkspace { request_id })
+    pub const fn start_recording_in_mode(mode: crate::DictationMode) -> Self {
+        Self::new(ClientCommandKind::StartRecording { mode: Some(mode) })
     }
 
     #[must_use]
     pub fn get_history_page(
-        request_id: u64,
         search: impl Into<String>,
         page_size: usize,
         after: Option<HistoryPageCursor>,
     ) -> Self {
-        Self::with_kind(ClientCommandKind::GetHistoryPage {
-            request_id,
+        Self::new(ClientCommandKind::GetHistoryPage {
             request: HistoryPageRequest {
                 search: search.into(),
                 page_size,
@@ -67,219 +57,67 @@ impl ClientCommand {
         })
     }
 
-    #[must_use]
-    pub const fn stop_recording(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::StopRecording { request_id })
-    }
-
-    #[must_use]
-    pub const fn cancel(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::Cancel { request_id })
-    }
-
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn recorder_exited(request_id: u64, job_id: JobId) -> Self {
-        Self::with_kind(ClientCommandKind::RecorderExited { request_id, job_id })
-    }
-
-    #[must_use]
-    pub const fn retry_transcription(request_id: u64, job_id: JobId) -> Self {
-        Self::with_kind(ClientCommandKind::RetryTranscription { request_id, job_id })
-    }
-
-    #[must_use]
-    pub const fn retry_delivery(request_id: u64, job_id: JobId) -> Self {
-        Self::with_kind(ClientCommandKind::RetryDelivery { request_id, job_id })
-    }
-
-    #[must_use]
-    pub const fn delete_recovery(request_id: u64, job_id: JobId) -> Self {
-        Self::with_kind(ClientCommandKind::DeleteRecovery { request_id, job_id })
-    }
-
-    #[must_use]
-    pub const fn delete_history(request_id: u64, id: i64) -> Self {
-        Self::with_kind(ClientCommandKind::DeleteHistory { request_id, id })
-    }
-
-    #[must_use]
-    pub const fn clear_history(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::ClearHistory { request_id })
-    }
-
-    #[must_use]
-    pub const fn copy_transcript(request_id: u64, id: i64) -> Self {
-        Self::with_kind(ClientCommandKind::CopyTranscript { request_id, id })
-    }
-
-    /// Asks the daemon to capture the next shortcut pressed on any keyboard.
-    /// The reply is [`ServerMessageKind::HotkeyCaptured`].
-    #[must_use]
-    pub const fn capture_hotkey(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::CaptureHotkey { request_id })
-    }
-
-    /// Ends a pending shortcut capture; it replies `Cancelled`.
-    #[must_use]
-    pub const fn cancel_hotkey_capture(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::CancelHotkeyCapture { request_id })
-    }
-
-    #[must_use]
-    pub const fn quit(request_id: u64) -> Self {
-        Self::with_kind(ClientCommandKind::Quit { request_id })
-    }
-
-    #[doc(hidden)]
-    #[must_use]
-    pub fn hotkey_status_changed(request_id: u64, readiness: HotkeyReadiness) -> Self {
-        Self::with_kind(ClientCommandKind::HotkeyStatusChanged {
-            request_id,
-            readiness,
-        })
-    }
-
     /// Changes one setting; the daemon keeps every other setting it holds.
     #[must_use]
-    pub const fn change_setting(request_id: u64, change: SettingChange) -> Self {
-        Self::with_kind(ClientCommandKind::ChangeSetting { request_id, change })
+    pub const fn change_setting(change: SettingChange) -> Self {
+        Self::new(ClientCommandKind::ChangeSetting { change })
     }
 
     #[must_use]
-    pub fn set_api_key(request_id: u64, api_key: impl Into<String>) -> Self {
-        Self::with_kind(ClientCommandKind::SetApiKey {
-            request_id,
+    pub fn set_api_key(api_key: impl Into<String>) -> Self {
+        Self::new(ClientCommandKind::SetApiKey {
             api_key: SecretString(api_key.into()),
         })
     }
-
-    /// Returns the data-less command tag without cloning command payloads.
-    #[must_use]
-    pub const fn kind(&self) -> ClientCommandTag {
-        match &self.kind {
-            ClientCommandKind::GetSnapshot { .. } => ClientCommandTag::GetSnapshot,
-            ClientCommandKind::GetWorkspace { .. } => ClientCommandTag::GetWorkspace,
-            ClientCommandKind::GetHistoryPage { .. } => ClientCommandTag::GetHistoryPage,
-            ClientCommandKind::StartRecording { .. } => ClientCommandTag::StartRecording,
-            ClientCommandKind::StopRecording { .. } => ClientCommandTag::StopRecording,
-            ClientCommandKind::Cancel { .. } => ClientCommandTag::Cancel,
-            ClientCommandKind::RecorderExited { .. } => ClientCommandTag::RecorderExited,
-            ClientCommandKind::RetryTranscription { .. } => ClientCommandTag::RetryTranscription,
-            ClientCommandKind::RetryDelivery { .. } => ClientCommandTag::RetryDelivery,
-            ClientCommandKind::DeleteRecovery { .. } => ClientCommandTag::DeleteRecovery,
-            ClientCommandKind::DeleteHistory { .. } => ClientCommandTag::DeleteHistory,
-            ClientCommandKind::ClearHistory { .. } => ClientCommandTag::ClearHistory,
-            ClientCommandKind::CopyTranscript { .. } => ClientCommandTag::CopyTranscript,
-            ClientCommandKind::ChangeSetting { .. } => ClientCommandTag::ChangeSetting,
-            ClientCommandKind::SetApiKey { .. } => ClientCommandTag::SetApiKey,
-            ClientCommandKind::HotkeyStatusChanged { .. } => ClientCommandTag::HotkeyStatusChanged,
-            ClientCommandKind::CaptureHotkey { .. } => ClientCommandTag::CaptureHotkey,
-            ClientCommandKind::CancelHotkeyCapture { .. } => ClientCommandTag::CancelHotkeyCapture,
-            ClientCommandKind::Quit { .. } => ClientCommandTag::Quit,
-        }
-    }
 }
 
-/// Data-less discriminator for every command carried by [`ClientCommandKind`].
-///
-/// This is separate from the payload-bearing wire enum so existing command
-/// construction and pattern matching remain unchanged.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientCommandTag {
-    GetSnapshot,
-    GetWorkspace,
-    GetHistoryPage,
-    StartRecording,
-    StopRecording,
-    Cancel,
-    RecorderExited,
-    RetryTranscription,
-    RetryDelivery,
-    DeleteRecovery,
-    DeleteHistory,
-    ClearHistory,
-    CopyTranscript,
-    ChangeSetting,
-    SetApiKey,
-    HotkeyStatusChanged,
-    CaptureHotkey,
-    CancelHotkeyCapture,
-    Quit,
-}
-
+/// Every command a client can send. A reply always answers the command just
+/// sent on the same connection, so commands carry no request id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ClientCommandKind {
-    GetSnapshot {
-        request_id: u64,
-    },
-    GetWorkspace {
-        request_id: u64,
-    },
+    GetSnapshot,
+    GetWorkspace,
     GetHistoryPage {
-        request_id: u64,
         request: HistoryPageRequest,
     },
     StartRecording {
-        request_id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<crate::DictationMode>,
     },
-    StopRecording {
-        request_id: u64,
-    },
-    Cancel {
-        request_id: u64,
-    },
-    RecorderExited {
-        request_id: u64,
-        job_id: JobId,
-    },
+    /// Stops the recording; its transcription continues after the reply.
+    StopRecording,
+    /// Discards a recording, or stops waiting for a transcription, whose
+    /// result then waits in Recovery.
+    Cancel,
     RetryTranscription {
-        request_id: u64,
         job_id: JobId,
     },
     RetryDelivery {
-        request_id: u64,
         job_id: JobId,
     },
     DeleteRecovery {
-        request_id: u64,
         job_id: JobId,
     },
     DeleteHistory {
-        request_id: u64,
         id: i64,
     },
-    ClearHistory {
-        request_id: u64,
-    },
+    ClearHistory,
     CopyTranscript {
-        request_id: u64,
         id: i64,
     },
+    /// Captures the next shortcut pressed on any keyboard; the reply is
+    /// [`ServerMessageKind::HotkeyCaptured`].
+    CaptureHotkey,
+    /// Ends a pending shortcut capture; it replies `Cancelled`.
+    CancelHotkeyCapture,
     ChangeSetting {
-        request_id: u64,
         change: SettingChange,
     },
     SetApiKey {
-        request_id: u64,
         api_key: SecretString,
     },
-    HotkeyStatusChanged {
-        request_id: u64,
-        readiness: HotkeyReadiness,
-    },
-    CaptureHotkey {
-        request_id: u64,
-    },
-    CancelHotkeyCapture {
-        request_id: u64,
-    },
-    Quit {
-        request_id: u64,
-    },
+    Quit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -319,60 +157,45 @@ pub struct ServerMessage {
 }
 
 impl ServerMessage {
-    #[must_use]
-    pub fn snapshot(request_id: u64, snapshot: AppSnapshot, settings: &Settings) -> Self {
+    const fn new(kind: ServerMessageKind) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
-            kind: ServerMessageKind::Snapshot {
-                request_id,
-                snapshot,
-                settings: Box::new(SettingsSnapshot::from(settings)),
-            },
+            kind,
         }
     }
 
     #[must_use]
-    pub fn workspace(request_id: u64, workspace: WorkspaceSnapshot) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            kind: ServerMessageKind::Workspace {
-                request_id,
-                workspace: Box::new(workspace),
-            },
-        }
+    pub fn snapshot(snapshot: AppSnapshot, settings: &Settings) -> Self {
+        Self::new(ServerMessageKind::Snapshot {
+            snapshot,
+            settings: Box::new(SettingsSnapshot::from(settings)),
+        })
     }
 
     #[must_use]
-    pub fn history_page(request_id: u64, page: HistoryPageSnapshot) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            kind: ServerMessageKind::HistoryPage {
-                request_id,
-                page: Box::new(page),
-            },
-        }
+    pub fn workspace(workspace: WorkspaceSnapshot) -> Self {
+        Self::new(ServerMessageKind::Workspace {
+            workspace: Box::new(workspace),
+        })
     }
 
     #[must_use]
-    pub const fn hotkey_captured(request_id: u64, outcome: HotkeyCaptureOutcome) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            kind: ServerMessageKind::HotkeyCaptured {
-                request_id,
-                outcome,
-            },
-        }
+    pub fn history_page(page: HistoryPageSnapshot) -> Self {
+        Self::new(ServerMessageKind::HistoryPage {
+            page: Box::new(page),
+        })
     }
 
     #[must_use]
-    pub fn command_rejected(request_id: u64, error: impl Into<String>) -> Self {
-        Self {
-            protocol_version: PROTOCOL_VERSION,
-            kind: ServerMessageKind::CommandRejected {
-                request_id,
-                error: error.into(),
-            },
-        }
+    pub const fn hotkey_captured(outcome: HotkeyCaptureOutcome) -> Self {
+        Self::new(ServerMessageKind::HotkeyCaptured { outcome })
+    }
+
+    #[must_use]
+    pub fn command_rejected(error: impl Into<String>) -> Self {
+        Self::new(ServerMessageKind::CommandRejected {
+            error: error.into(),
+        })
     }
 }
 
@@ -380,24 +203,19 @@ impl ServerMessage {
 #[serde(tag = "message", rename_all = "snake_case")]
 pub enum ServerMessageKind {
     Snapshot {
-        request_id: u64,
         snapshot: AppSnapshot,
         settings: Box<SettingsSnapshot>,
     },
     Workspace {
-        request_id: u64,
         workspace: Box<WorkspaceSnapshot>,
     },
     HistoryPage {
-        request_id: u64,
         page: Box<HistoryPageSnapshot>,
     },
     HotkeyCaptured {
-        request_id: u64,
         outcome: HotkeyCaptureOutcome,
     },
     CommandRejected {
-        request_id: u64,
         error: String,
     },
 }

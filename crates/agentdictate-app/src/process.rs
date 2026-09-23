@@ -176,45 +176,41 @@ where
     pub(crate) fn handle_locked(&mut self, command: ClientCommandKind) -> (Reply, Followup<T>) {
         let daemon = &mut self.daemon;
         let handled: anyhow::Result<(Reply, Followup<T>)> = match command {
-            ClientCommandKind::GetSnapshot { .. } => Ok((Reply::Snapshot, Followup::None)),
-            ClientCommandKind::GetWorkspace { .. } => Ok((Reply::Workspace, Followup::None)),
-            ClientCommandKind::GetHistoryPage { request, .. } => {
+            ClientCommandKind::GetSnapshot => Ok((Reply::Snapshot, Followup::None)),
+            ClientCommandKind::GetWorkspace => Ok((Reply::Workspace, Followup::None)),
+            ClientCommandKind::GetHistoryPage { request } => {
                 Ok((Reply::HistoryPage(request), Followup::None))
             }
-            ClientCommandKind::StartRecording { mode, .. } => daemon
+            ClientCommandKind::StartRecording { mode } => daemon
                 .start_recording_in_mode(mode)
                 .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::StopRecording { .. } => daemon
+            ClientCommandKind::StopRecording => daemon
                 .stop_recording()
                 .map(|ticket| (Reply::Snapshot, Followup::Process(ticket)))
                 .map_err(Into::into),
             // Cancels a recording, or detaches the transcription in progress.
-            ClientCommandKind::Cancel { .. } if daemon.is_processing() => daemon
+            ClientCommandKind::Cancel if daemon.is_processing() => daemon
                 .cancel_processing()
                 .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::Cancel { .. } => daemon
+            ClientCommandKind::Cancel => daemon
                 .discard_recording()
                 .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::RecorderExited { job_id, .. } => daemon
-                .recorder_event(RecorderEvent::Exited { job_id })
-                .map(|_| (Reply::Snapshot, Followup::None))
-                .map_err(Into::into),
-            ClientCommandKind::RetryTranscription { job_id, .. } => daemon
+            ClientCommandKind::RetryTranscription { job_id } => daemon
                 .retry_transcription(job_id)
                 .map(|ticket| (Reply::Workspace, Followup::ProcessThenReply(ticket)))
                 .map_err(Into::into),
-            ClientCommandKind::RetryDelivery { job_id, .. } => daemon
+            ClientCommandKind::RetryDelivery { job_id } => daemon
                 .retry_delivery(job_id)
                 .map(|_| (Reply::Workspace, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::DeleteRecovery { job_id, .. } => daemon
+            ClientCommandKind::DeleteRecovery { job_id } => daemon
                 .delete_recovery(job_id)
                 .map(|_| (Reply::Workspace, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::DeleteHistory { id, .. } => daemon
+            ClientCommandKind::DeleteHistory { id } => daemon
                 .delete_history(id)
                 .map_err(anyhow::Error::from)
                 .and_then(|deleted| {
@@ -222,11 +218,11 @@ where
                         .then_some((Reply::Workspace, Followup::None))
                         .ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
                 }),
-            ClientCommandKind::ClearHistory { .. } => daemon
+            ClientCommandKind::ClearHistory => daemon
                 .clear_history()
                 .map(|()| (Reply::Workspace, Followup::None))
                 .map_err(Into::into),
-            ClientCommandKind::CopyTranscript { id, .. } => daemon
+            ClientCommandKind::CopyTranscript { id } => daemon
                 .transcript_text(id)
                 .map_err(anyhow::Error::from)
                 .and_then(|text| {
@@ -234,54 +230,47 @@ where
                 })
                 .and_then(|text| daemon.deliverer_mut().copy_text(&text).map_err(Into::into))
                 .map(|()| (Reply::Workspace, Followup::None)),
-            ClientCommandKind::ChangeSetting { change, .. } => self
+            ClientCommandKind::ChangeSetting { change } => self
                 .change_setting(change)
                 .map(|()| (Reply::Snapshot, Followup::None)),
-            ClientCommandKind::SetApiKey { api_key, .. } => self
+            ClientCommandKind::SetApiKey { api_key } => self
                 .set_api_key(api_key.expose_secret())
                 .map(|()| (Reply::Snapshot, Followup::None)),
-            ClientCommandKind::HotkeyStatusChanged { readiness, .. } => {
-                daemon.set_hotkey_readiness(readiness);
-                Ok((Reply::Snapshot, Followup::None))
-            }
-            ClientCommandKind::CaptureHotkey { .. } => self.hotkey_control().map(|control| {
+            ClientCommandKind::CaptureHotkey => self.hotkey_control().map(|control| {
                 (
                     Reply::Snapshot,
                     Followup::CaptureHotkey(Arc::clone(control)),
                 )
             }),
-            ClientCommandKind::CancelHotkeyCapture { .. } => self
+            ClientCommandKind::CancelHotkeyCapture => self
                 .hotkey_control()
                 .and_then(|control| control.cancel_capture())
                 .map(|()| (Reply::Snapshot, Followup::None)),
-            ClientCommandKind::Quit { .. } => Ok((Reply::Snapshot, Followup::Quit)),
+            ClientCommandKind::Quit => Ok((Reply::Snapshot, Followup::Quit)),
         };
         handled.unwrap_or_else(|error| (Reply::Rejected(error.to_string()), Followup::None))
     }
 
     /// Renders an IPC reply from the current state.
-    pub(crate) fn render(&self, request_id: u64, reply: Reply) -> ServerMessage {
+    pub(crate) fn render(&self, reply: Reply) -> ServerMessage {
         let rendered = match reply {
             Reply::Snapshot => Ok(ServerMessage::snapshot(
-                request_id,
                 self.daemon.snapshot(),
                 self.daemon.settings(),
             )),
             Reply::Workspace => self
                 .daemon
                 .workspace_snapshot()
-                .map(|workspace| ServerMessage::workspace(request_id, workspace)),
+                .map(ServerMessage::workspace),
             Reply::HistoryPage(request) => self
                 .daemon
                 .history_page(&request)
-                .map(|page| ServerMessage::history_page(request_id, page)),
-            Reply::HotkeyCaptured(outcome) => {
-                Ok(ServerMessage::hotkey_captured(request_id, outcome))
-            }
-            Reply::Rejected(error) => Ok(ServerMessage::command_rejected(request_id, error)),
+                .map(ServerMessage::history_page),
+            Reply::HotkeyCaptured(outcome) => Ok(ServerMessage::hotkey_captured(outcome)),
+            Reply::Rejected(error) => Ok(ServerMessage::command_rejected(error)),
         };
         rendered.unwrap_or_else(|error: RuntimeError| {
-            ServerMessage::command_rejected(request_id, error.to_string())
+            ServerMessage::command_rejected(error.to_string())
         })
     }
 
@@ -400,30 +389,6 @@ fn run_post_listener_maintenance(
     }
 }
 
-pub(crate) const fn request_id(command: &ClientCommandKind) -> u64 {
-    match command {
-        ClientCommandKind::GetSnapshot { request_id }
-        | ClientCommandKind::GetWorkspace { request_id }
-        | ClientCommandKind::GetHistoryPage { request_id, .. }
-        | ClientCommandKind::StartRecording { request_id, .. }
-        | ClientCommandKind::StopRecording { request_id }
-        | ClientCommandKind::Cancel { request_id }
-        | ClientCommandKind::RecorderExited { request_id, .. }
-        | ClientCommandKind::RetryTranscription { request_id, .. }
-        | ClientCommandKind::RetryDelivery { request_id, .. }
-        | ClientCommandKind::DeleteRecovery { request_id, .. }
-        | ClientCommandKind::DeleteHistory { request_id, .. }
-        | ClientCommandKind::ClearHistory { request_id }
-        | ClientCommandKind::CopyTranscript { request_id, .. }
-        | ClientCommandKind::ChangeSetting { request_id, .. }
-        | ClientCommandKind::SetApiKey { request_id, .. }
-        | ClientCommandKind::HotkeyStatusChanged { request_id, .. }
-        | ClientCommandKind::CaptureHotkey { request_id }
-        | ClientCommandKind::CancelHotkeyCapture { request_id }
-        | ClientCommandKind::Quit { request_id } => *request_id,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -434,7 +399,7 @@ mod tests {
         },
     };
 
-    use agentdictate_core::{ClientCommand, JobStage, KeepTranscripts, ServerMessageKind};
+    use agentdictate_core::{JobStage, KeepTranscripts, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };
@@ -553,8 +518,8 @@ mod tests {
         let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
         let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
         assert!(matches!(
-            handle.handle(ClientCommand::capture_hotkey(2)).kind,
-            ServerMessageKind::CommandRejected { request_id: 2, .. }
+            handle.handle(ClientCommandKind::CaptureHotkey.into()).kind,
+            ServerMessageKind::CommandRejected { .. }
         ));
         let (entered, capture_entered) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
@@ -566,28 +531,27 @@ mod tests {
         handle.with_process(|process| process.set_hotkey_control(control.clone()));
         let capturing = {
             let handle = handle.clone();
-            std::thread::spawn(move || handle.handle(ClientCommand::capture_hotkey(4)))
+            std::thread::spawn(move || handle.handle(ClientCommandKind::CaptureHotkey.into()))
         };
         capture_entered.recv().unwrap();
 
         let snapshot = {
             let handle = handle.clone();
-            std::thread::spawn(move || handle.snapshot(3))
+            std::thread::spawn(move || handle.snapshot())
         };
         assert!(matches!(
             snapshot.join().unwrap().kind,
-            ServerMessageKind::Snapshot { request_id: 3, .. }
+            ServerMessageKind::Snapshot { .. }
         ));
         release.send(()).unwrap();
         assert!(matches!(
             capturing.join().unwrap().kind,
             ServerMessageKind::HotkeyCaptured {
-                request_id: 4,
                 outcome: HotkeyCaptureOutcome::Captured { hotkey },
             } if hotkey.label() == "F9"
         ));
 
-        let cancelled = handle.handle(ClientCommand::cancel_hotkey_capture(5));
+        let cancelled = handle.handle(ClientCommandKind::CancelHotkeyCapture.into());
         assert!(matches!(cancelled.kind, ServerMessageKind::Snapshot { .. }));
         assert_eq!(control.cancels.load(Ordering::Relaxed), 1);
     }

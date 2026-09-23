@@ -36,7 +36,7 @@ pub enum IpcError {
 /// Answers IPC sessions. Sessions can run concurrently, so a handler does
 /// its own locking and holds a lock only while a command needs it.
 pub trait IpcHandler {
-    fn snapshot(&self, request_id: u64) -> ServerMessage;
+    fn snapshot(&self) -> ServerMessage;
     fn handle(&self, command: ClientCommand) -> ServerMessage;
 }
 
@@ -236,7 +236,7 @@ fn serve_session(
     idle_timeout: Duration,
 ) -> Result<(), IpcError> {
     stream.set_read_timeout(Some(idle_timeout))?;
-    write_message(&mut stream, &handler.snapshot(0))?;
+    write_message(&mut stream, &handler.snapshot())?;
     let reader_stream = stream.try_clone()?;
     let mut reader = BufReader::new(reader_stream);
     loop {

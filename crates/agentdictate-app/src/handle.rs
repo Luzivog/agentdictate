@@ -31,7 +31,7 @@ use agentdictate_linux::hotkey::HotkeySignal;
 use agentdictate_runtime::{IpcClient, IpcHandler, RecordingJob};
 
 use crate::daemon::copied;
-use crate::process::{Followup, HOTKEY_CAPTURE_TIMEOUT, Reply, request_id};
+use crate::process::{Followup, HOTKEY_CAPTURE_TIMEOUT, Reply};
 use crate::{
     AgentProcess, DaemonDeliverer, DaemonError, DaemonStatus, ProcessingTicket,
     ProductionTranscriber, RecorderEvent, RecordingController, SystemDeliverer,
@@ -363,12 +363,11 @@ where
     T: Transcriber,
     D: DaemonDeliverer + Send + 'static,
 {
-    fn snapshot(&self, request_id: u64) -> ServerMessage {
-        self.lock().render(request_id, Reply::Snapshot)
+    fn snapshot(&self) -> ServerMessage {
+        self.lock().render(Reply::Snapshot)
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
-        let request_id = request_id(&command.kind);
         let starts_work = matches!(
             command.kind,
             ClientCommandKind::StartRecording { .. }
@@ -376,10 +375,7 @@ where
                 | ClientCommandKind::RetryDelivery { .. }
         );
         if starts_work && self.shared.quitting.load(Ordering::Acquire) {
-            return ServerMessage::command_rejected(
-                request_id,
-                DaemonError::ShuttingDown.to_string(),
-            );
+            return ServerMessage::command_rejected(DaemonError::ShuttingDown.to_string());
         }
         let (reply, followup) = self.lock().handle_locked(command.kind);
         let reply = match followup {
@@ -401,7 +397,7 @@ where
                 Err(error) => Reply::Rejected(error.to_string()),
             },
         };
-        self.lock().render(request_id, reply)
+        self.lock().render(reply)
     }
 }
 

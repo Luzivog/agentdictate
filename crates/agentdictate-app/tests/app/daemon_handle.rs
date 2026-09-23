@@ -10,7 +10,8 @@ use agentdictate_app::{
     RecordingController, Transcriber, Trigger, TriggerOutcome,
 };
 use agentdictate_core::{
-    ClientCommand, JobStage, ServerMessageKind, SettingChange, Settings, WorkflowPhase,
+    ClientCommand, ClientCommandKind, JobStage, ServerMessageKind, SettingChange, Settings,
+    WorkflowPhase,
 };
 use agentdictate_linux::hotkey::HotkeySignal;
 use agentdictate_runtime::{
@@ -162,8 +163,8 @@ fn wait_for<T: Transcriber>(handle: &TestHandle<T>, done: impl Fn(WorkflowPhase)
 /// Starts and stops a dictation through IPC, as `agentdictate` would.
 fn record_and_stop<T: Transcriber>(handle: &TestHandle<T>) {
     for command in [
-        ClientCommand::start_recording(1),
-        ClientCommand::stop_recording(2),
+        ClientCommand::start_recording(),
+        ClientCommandKind::StopRecording.into(),
     ] {
         let response = handle.handle(command);
         assert!(
@@ -184,10 +185,9 @@ fn settings_and_snapshots_are_served_while_a_transcription_is_blocked() {
 
     let started = Instant::now();
     let saved = handle.handle(ClientCommand::change_setting(
-        3,
         SettingChange::PreserveTempAudio(true),
     ));
-    let snapshot = handle.snapshot(0);
+    let snapshot = handle.snapshot();
 
     assert!(started.elapsed() < Duration::from_secs(1));
     assert!(matches!(saved.kind, ServerMessageKind::Snapshot { .. }));
@@ -254,9 +254,9 @@ fn cancel_during_processing_detaches_and_allows_a_new_recording() {
     record_and_stop(&handle);
     gate.wait_until_entered();
 
-    handle.handle(ClientCommand::cancel(3));
+    handle.handle(ClientCommandKind::Cancel.into());
     assert_eq!(phase(&handle), WorkflowPhase::Ready);
-    handle.handle(ClientCommand::start_recording(4));
+    handle.handle(ClientCommand::start_recording());
     let WorkflowPhase::Recording { job_id: next } = phase(&handle) else {
         panic!("a new recording starts at once");
     };
@@ -360,6 +360,6 @@ fn processing_panic_is_reported_as_a_failed_job() {
             .error_message
             .is_some_and(|message| message.contains("stopped unexpectedly"))
     );
-    handle.handle(ClientCommand::start_recording(3));
+    handle.handle(ClientCommand::start_recording());
     assert!(matches!(phase(&handle), WorkflowPhase::Recording { .. }));
 }

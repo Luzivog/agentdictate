@@ -19,18 +19,14 @@ struct TestHandler {
 }
 
 impl IpcHandler for TestHandler {
-    fn snapshot(&self, request_id: u64) -> ServerMessage {
-        ServerMessage::snapshot(
-            request_id,
-            self.snapshot.lock().unwrap().clone(),
-            &self.settings,
-        )
+    fn snapshot(&self) -> ServerMessage {
+        ServerMessage::snapshot(self.snapshot.lock().unwrap().clone(), &self.settings)
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
         match command.kind {
-            ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
-            ClientCommandKind::StartRecording { request_id, .. } => {
+            ClientCommandKind::GetSnapshot => self.snapshot(),
+            ClientCommandKind::StartRecording { .. } => {
                 let mut snapshot = self.snapshot.lock().unwrap();
                 let job_id = agentdictate_runtime::JobId::new();
                 snapshot.workflow = self
@@ -39,7 +35,7 @@ impl IpcHandler for TestHandler {
                     .unwrap()
                     .apply(WorkflowSignal::StartRequested { job_id })
                     .unwrap();
-                ServerMessage::snapshot(request_id, snapshot.clone(), &self.settings)
+                ServerMessage::snapshot(snapshot.clone(), &self.settings)
             }
             _ => panic!("test handler received an unexpected command"),
         }
@@ -74,28 +70,23 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
 
     let (mut client, initial) = IpcClient::connect(&runtime_directory).unwrap();
     let ServerMessageKind::Snapshot {
-        request_id,
         snapshot: initial_snapshot,
         settings,
     } = initial.kind
     else {
         panic!("initial IPC message was not a snapshot")
     };
-    assert_eq!(request_id, 0);
     assert_eq!(initial_snapshot.recoverable_count, 2);
     assert_eq!(settings.values.openai_api_key, "");
     assert!(settings.has_api_key);
 
-    let response = client.send(ClientCommand::start_recording(42)).unwrap();
+    let response = client.send(ClientCommand::start_recording()).unwrap();
     let ServerMessageKind::Snapshot {
-        request_id,
-        snapshot: started,
-        ..
+        snapshot: started, ..
     } = response.kind
     else {
         panic!("command response was not a snapshot")
     };
-    assert_eq!(request_id, 42);
     assert!(matches!(
         started.workflow.phase,
         WorkflowPhase::Starting { .. }
@@ -144,12 +135,9 @@ fn silent_client_does_not_block_a_second_command_session() {
 
     let (silent, _) = IpcClient::connect(&runtime_directory).unwrap();
     let (mut active, _) = IpcClient::connect(&runtime_directory).unwrap();
-    let response = active.send(ClientCommand::start_recording(77)).unwrap();
+    let response = active.send(ClientCommand::start_recording()).unwrap();
 
-    assert!(matches!(
-        response.kind,
-        ServerMessageKind::Snapshot { request_id: 77, .. }
-    ));
+    assert!(matches!(response.kind, ServerMessageKind::Snapshot { .. }));
     drop(active);
     drop(silent);
     let (first, second) = accepts.join().unwrap();
@@ -166,23 +154,23 @@ struct CapturingHandler {
 }
 
 impl IpcHandler for CapturingHandler {
-    fn snapshot(&self, request_id: u64) -> ServerMessage {
+    fn snapshot(&self) -> ServerMessage {
         let snapshot = AppSnapshot {
             workflow: Workflow::new().snapshot(),
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 0,
             last_transcript: None,
         };
-        ServerMessage::snapshot(request_id, snapshot, &Settings::default())
+        ServerMessage::snapshot(snapshot, &Settings::default())
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
         match command.kind {
-            ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
-            ClientCommandKind::CaptureHotkey { request_id } => {
+            ClientCommandKind::GetSnapshot => self.snapshot(),
+            ClientCommandKind::CaptureHotkey => {
                 self.waiting.send(()).unwrap();
                 let outcome = self.outcomes.lock().unwrap().recv().unwrap();
-                ServerMessage::hotkey_captured(request_id, outcome)
+                ServerMessage::hotkey_captured(outcome)
             }
             _ => panic!("test handler received an unexpected command"),
         }
@@ -207,19 +195,25 @@ fn a_waiting_shortcut_capture_does_not_block_other_sessions() {
     });
 
     let (mut capturing, _) = IpcClient::connect(&runtime_directory).unwrap();
-    let capture = thread::spawn(move || capturing.send(ClientCommand::capture_hotkey(5)).unwrap());
+    let capture = thread::spawn(move || {
+        capturing
+            .send(ClientCommandKind::CaptureHotkey.into())
+            .unwrap()
+    });
     capture_waiting.recv().unwrap();
     let (mut other, _) = IpcClient::connect(&runtime_directory).unwrap();
     assert!(matches!(
-        other.send(ClientCommand::get_snapshot(6)).unwrap().kind,
-        ServerMessageKind::Snapshot { request_id: 6, .. }
+        other
+            .send(ClientCommand::new(ClientCommandKind::GetSnapshot))
+            .unwrap()
+            .kind,
+        ServerMessageKind::Snapshot { .. }
     ));
 
     send_outcome.send(HotkeyCaptureOutcome::TimedOut).unwrap();
     assert!(matches!(
         capture.join().unwrap().kind,
         ServerMessageKind::HotkeyCaptured {
-            request_id: 5,
             outcome: HotkeyCaptureOutcome::TimedOut,
         }
     ));
@@ -303,16 +297,20 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
     let server_thread = thread::spawn(move || server.serve_next(&handler).unwrap());
     let (mut client, _) = IpcClient::connect(&runtime_directory).unwrap();
 
-    let first = client.send(ClientCommand::get_snapshot(91)).unwrap();
-    let second = client.send(ClientCommand::start_recording(92)).unwrap();
+    let first = client
+        .send(ClientCommand::new(ClientCommandKind::GetSnapshot))
+        .unwrap();
+    let second = client.send(ClientCommand::start_recording()).unwrap();
 
     assert!(matches!(
         first.kind,
-        ServerMessageKind::Snapshot { request_id: 91, .. }
+        ServerMessageKind::Snapshot { snapshot, .. }
+            if snapshot.workflow.phase == WorkflowPhase::Ready
     ));
     assert!(matches!(
         second.kind,
-        ServerMessageKind::Snapshot { request_id: 92, .. }
+        ServerMessageKind::Snapshot { snapshot, .. }
+            if matches!(snapshot.workflow.phase, WorkflowPhase::Starting { .. })
     ));
     drop(client);
     server_thread.join().unwrap();
@@ -342,5 +340,9 @@ fn idle_session_is_closed_after_the_read_timeout() {
     let session = accepts.join().unwrap();
 
     session.join().unwrap().unwrap();
-    assert!(silent.send(ClientCommand::get_snapshot(1)).is_err());
+    assert!(
+        silent
+            .send(ClientCommand::new(ClientCommandKind::GetSnapshot))
+            .is_err()
+    );
 }

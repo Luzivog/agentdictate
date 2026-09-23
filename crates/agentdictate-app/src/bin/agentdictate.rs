@@ -6,7 +6,7 @@ use agentdictate_app::{
     run_overlay_helper,
 };
 use agentdictate_core::{
-    ClientCommand, HotkeyCaptureOutcome, ServerMessageKind, WorkspaceSnapshot,
+    ClientCommand, ClientCommandKind, HotkeyCaptureOutcome, ServerMessageKind, WorkspaceSnapshot,
 };
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
@@ -36,11 +36,11 @@ fn main() -> anyhow::Result<()> {
     }
     if !args.is_empty() {
         let command = match args.as_slice() {
-            [command] if command == "stop" => ClientCommand::stop_recording(1),
-            [command] if command == "cancel" => ClientCommand::cancel(1),
-            [command] if command == "start" => ClientCommand::start_recording(1),
+            [command] if command == "stop" => ClientCommandKind::StopRecording.into(),
+            [command] if command == "cancel" => ClientCommandKind::Cancel.into(),
+            [command] if command == "start" => ClientCommand::start_recording(),
             [command, flag, mode] if command == "start" && flag == "--mode" => {
-                ClientCommand::start_recording_in_mode(1, mode.parse().map_err(anyhow::Error::msg)?)
+                ClientCommand::start_recording_in_mode(mode.parse().map_err(anyhow::Error::msg)?)
             }
             _ => anyhow::bail!(
                 "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel | setup-access]"
@@ -117,9 +117,11 @@ fn main() -> anyhow::Result<()> {
         let send = send.clone();
         Arc::new(move |request| -> Result<_, UiActionError> {
             let command = match request {
-                SettingsRequest::Change(change) => ClientCommand::change_setting(1, change),
-                SettingsRequest::SetApiKey(api_key) => ClientCommand::set_api_key(1, api_key),
-                SettingsRequest::CancelHotkeyCapture => ClientCommand::cancel_hotkey_capture(1),
+                SettingsRequest::Change(change) => ClientCommand::change_setting(change),
+                SettingsRequest::SetApiKey(api_key) => ClientCommand::set_api_key(api_key),
+                SettingsRequest::CancelHotkeyCapture => {
+                    ClientCommandKind::CancelHotkeyCapture.into()
+                }
             };
             match send(command)? {
                 ServerMessageKind::Snapshot { settings, .. } => Ok(*settings),
@@ -128,7 +130,7 @@ fn main() -> anyhow::Result<()> {
         })
     };
     let hotkey_capture = Arc::new(move || -> Result<HotkeyCaptureOutcome, UiActionError> {
-        match send(ClientCommand::capture_hotkey(1))? {
+        match send(ClientCommandKind::CaptureHotkey.into())? {
             ServerMessageKind::HotkeyCaptured { outcome, .. } => Ok(outcome),
             _ => Err("the daemon did not answer the shortcut capture".into()),
         }

@@ -7,7 +7,6 @@ use std::{
         unix::ffi::OsStrExt,
     },
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     sync::{
         Arc, Mutex,
         mpsc::{Receiver, channel},
@@ -15,9 +14,9 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE, HistoryPageCursor,
-    HistoryPageSnapshot, JobId, ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot,
-    WorkspaceSnapshot, format_duration_clock,
+    ClientCommand, ClientCommandKind, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE,
+    HistoryPageCursor, HistoryPageSnapshot, JobId, ServerMessageKind, UsageSnapshot,
+    UsageTotalsSnapshot, WorkspaceSnapshot, format_duration_clock,
 };
 use agentdictate_runtime::IpcClient;
 use thiserror::Error;
@@ -55,7 +54,6 @@ pub enum WorkspaceError {
 
 pub struct WorkspaceClient {
     runtime_directory: PathBuf,
-    next_request_id: AtomicU64,
     request_gate: Mutex<()>,
     state: Mutex<WorkspaceClientState>,
 }
@@ -85,7 +83,6 @@ impl WorkspaceClient {
     pub fn new(runtime_directory: PathBuf, snapshot: WorkspaceSnapshot) -> Self {
         Self {
             runtime_directory,
-            next_request_id: AtomicU64::new(10_000),
             request_gate: Mutex::new(()),
             state: Mutex::new(WorkspaceClientState {
                 snapshot,
@@ -130,11 +127,10 @@ impl WorkspaceClient {
             return Ok(state.view_model());
         }
 
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         // A searched or extended History page is this client's own copy, so
         // what a delete removed must also leave it.
         if let WorkspaceAction::DeleteTranscript { id } = action {
-            self.send_workspace_command(ClientCommand::delete_history(request_id, id))?;
+            self.send_workspace_command(ClientCommandKind::DeleteHistory { id }.into())?;
             let mut state = self.lock_state()?;
             if let Some(page) = state.history.as_mut() {
                 let shown = page.rows.len();
@@ -146,7 +142,7 @@ impl WorkspaceClient {
             return Ok(state.view_model());
         }
         if matches!(action, WorkspaceAction::ClearHistory) {
-            self.send_workspace_command(ClientCommand::clear_history(request_id))?;
+            self.send_workspace_command(ClientCommandKind::ClearHistory.into())?;
             let mut state = self.lock_state()?;
             state.history = None;
             return Ok(state.view_model());
@@ -158,20 +154,18 @@ impl WorkspaceClient {
                     .map_err(|_| WorkspaceError::InvalidRecoveryId { id })?;
                 match stage {
                     RecoveryStage::Transcription => {
-                        ClientCommand::retry_transcription(request_id, job_id)
+                        ClientCommandKind::RetryTranscription { job_id }
                     }
-                    RecoveryStage::Delivery => ClientCommand::retry_delivery(request_id, job_id),
+                    RecoveryStage::Delivery => ClientCommandKind::RetryDelivery { job_id },
                 }
             }
             WorkspaceAction::DeleteRecovery { id } => {
                 let job_id = id
                     .parse::<JobId>()
                     .map_err(|_| WorkspaceError::InvalidRecoveryId { id })?;
-                ClientCommand::delete_recovery(request_id, job_id)
+                ClientCommandKind::DeleteRecovery { job_id }
             }
-            WorkspaceAction::CopyTranscript { id } => {
-                ClientCommand::copy_transcript(request_id, id)
-            }
+            WorkspaceAction::CopyTranscript { id } => ClientCommandKind::CopyTranscript { id },
             WorkspaceAction::SearchHistory { .. }
             | WorkspaceAction::LoadMoreHistory
             | WorkspaceAction::DeleteTranscript { .. }
@@ -181,7 +175,7 @@ impl WorkspaceClient {
             WorkspaceAction::SelectUsagePeriod(_) => unreachable!("handled above"),
         };
 
-        self.send_workspace_command(command)
+        self.send_workspace_command(command.into())
     }
 
     /// Re-queries the daemon and atomically replaces the cached workspace.
@@ -189,8 +183,7 @@ impl WorkspaceClient {
     /// older response cannot overwrite a newer local snapshot. A searched or
     /// extended History tab reloads its search's first page.
     pub fn refresh(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        let workspace = self.send_workspace_command(ClientCommand::get_workspace(request_id))?;
+        let workspace = self.send_workspace_command(ClientCommandKind::GetWorkspace.into())?;
         let search = {
             let state = self.lock_state()?;
             state.history.is_some().then(|| state.search.clone())
@@ -211,7 +204,6 @@ impl WorkspaceClient {
         after: Option<HistoryPageCursor>,
     ) -> Result<WorkspaceViewModel, WorkspaceError> {
         let continuation = after.is_some();
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let response = {
             let _request = self
                 .request_gate
@@ -219,7 +211,6 @@ impl WorkspaceClient {
                 .map_err(|_| WorkspaceError::RequestStateUnavailable)?;
             let (mut client, _) = IpcClient::connect(&self.runtime_directory)?;
             client.send(ClientCommand::get_history_page(
-                request_id,
                 search,
                 if continuation {
                     HISTORY_CONTINUATION_PAGE_SIZE
@@ -725,26 +716,25 @@ mod tests {
     }
 
     impl IpcHandler for WorkspaceResponseHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
-            lifecycle_snapshot_message(request_id)
+        fn snapshot(&self) -> ServerMessage {
+            lifecycle_snapshot_message()
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::GetWorkspace { request_id } = command.kind else {
+            let ClientCommandKind::GetWorkspace = command.kind else {
                 panic!("workspace client sent an unexpected command")
             };
             match &self.response {
                 WorkspaceResponse::Rejected(message) => {
-                    ServerMessage::command_rejected(request_id, message.clone())
+                    ServerMessage::command_rejected(message.clone())
                 }
-                WorkspaceResponse::LifecycleSnapshot => lifecycle_snapshot_message(request_id),
+                WorkspaceResponse::LifecycleSnapshot => lifecycle_snapshot_message(),
             }
         }
     }
 
-    fn lifecycle_snapshot_message(request_id: u64) -> ServerMessage {
+    fn lifecycle_snapshot_message() -> ServerMessage {
         ServerMessage::snapshot(
-            request_id,
             AppSnapshot {
                 workflow: agentdictate_core::Workflow::new().snapshot(),
                 hotkey: agentdictate_core::HotkeyReadiness::Ready,
@@ -805,9 +795,8 @@ mod tests {
     struct HistoryHandler;
 
     impl IpcHandler for HistoryHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
+        fn snapshot(&self) -> ServerMessage {
             ServerMessage::snapshot(
-                request_id,
                 AppSnapshot {
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
@@ -819,33 +808,26 @@ mod tests {
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::GetHistoryPage {
-                request_id,
-                request,
-            } = command.kind
-            else {
+            let ClientCommandKind::GetHistoryPage { request } = command.kind else {
                 panic!("history client sent an unexpected command")
             };
             assert_eq!(request.search, "needle");
             assert_eq!(request.page_size, DEFAULT_HISTORY_PAGE_SIZE);
             assert!(request.after.is_none());
-            ServerMessage::history_page(
-                request_id,
-                HistoryPageSnapshot {
-                    search: request.search,
-                    total_matches: 3,
-                    cursor_restarted: false,
-                    next_cursor: None,
-                    rows: vec![HistorySnapshot {
-                        id: 99,
-                        created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
-                        preview_text: "needle transcript".into(),
-                        text: "needle transcript".into(),
-                        word_count: 2,
-                        duration_seconds: 3.0,
-                    }],
-                },
-            )
+            ServerMessage::history_page(HistoryPageSnapshot {
+                search: request.search,
+                total_matches: 3,
+                cursor_restarted: false,
+                next_cursor: None,
+                rows: vec![HistorySnapshot {
+                    id: 99,
+                    created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
+                    preview_text: "needle transcript".into(),
+                    text: "needle transcript".into(),
+                    word_count: 2,
+                    duration_seconds: 3.0,
+                }],
+            })
         }
     }
 
@@ -893,9 +875,8 @@ mod tests {
     struct LoadMoreHistoryHandler;
 
     impl IpcHandler for LoadMoreHistoryHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
+        fn snapshot(&self) -> ServerMessage {
             ServerMessage::snapshot(
-                request_id,
                 AppSnapshot {
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
@@ -907,11 +888,7 @@ mod tests {
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::GetHistoryPage {
-                request_id,
-                request,
-            } = command.kind
-            else {
+            let ClientCommandKind::GetHistoryPage { request } = command.kind else {
                 panic!("history client sent an unexpected command")
             };
             assert!(request.search.is_empty());
@@ -920,23 +897,20 @@ mod tests {
                 request.after.as_ref().map(HistoryPageCursor::as_str),
                 Some("page-one")
             );
-            ServerMessage::history_page(
-                request_id,
-                HistoryPageSnapshot {
-                    search: request.search,
-                    total_matches: 88,
-                    cursor_restarted: false,
-                    next_cursor: Some(HistoryPageCursor::new("page-two")),
-                    rows: vec![HistorySnapshot {
-                        id: 88,
-                        created_at: Utc.with_ymd_and_hms(2026, 8, 17, 13, 0, 0).unwrap(),
-                        preview_text: "older transcript page".into(),
-                        text: "older transcript page".into(),
-                        word_count: 3,
-                        duration_seconds: 4.0,
-                    }],
-                },
-            )
+            ServerMessage::history_page(HistoryPageSnapshot {
+                search: request.search,
+                total_matches: 88,
+                cursor_restarted: false,
+                next_cursor: Some(HistoryPageCursor::new("page-two")),
+                rows: vec![HistorySnapshot {
+                    id: 88,
+                    created_at: Utc.with_ymd_and_hms(2026, 8, 17, 13, 0, 0).unwrap(),
+                    preview_text: "older transcript page".into(),
+                    text: "older transcript page".into(),
+                    word_count: 3,
+                    duration_seconds: 4.0,
+                }],
+            })
         }
     }
 
@@ -986,16 +960,12 @@ mod tests {
     struct RestartedHistoryCursorHandler;
 
     impl IpcHandler for RestartedHistoryCursorHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
-            HistoryHandler.snapshot(request_id)
+        fn snapshot(&self) -> ServerMessage {
+            HistoryHandler.snapshot()
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::GetHistoryPage {
-                request_id,
-                request,
-            } = command.kind
-            else {
+            let ClientCommandKind::GetHistoryPage { request } = command.kind else {
                 panic!("history client sent an unexpected command")
             };
             assert_eq!(
@@ -1003,23 +973,20 @@ mod tests {
                 Some("expired-cursor")
             );
             assert_eq!(request.page_size, 50);
-            ServerMessage::history_page(
-                request_id,
-                HistoryPageSnapshot {
-                    search: request.search,
-                    total_matches: 1,
-                    cursor_restarted: true,
-                    next_cursor: None,
-                    rows: vec![HistorySnapshot {
-                        id: 100,
-                        created_at: Utc.with_ymd_and_hms(2026, 8, 19, 13, 0, 0).unwrap(),
-                        preview_text: "fresh first page".into(),
-                        text: "fresh first page".into(),
-                        word_count: 3,
-                        duration_seconds: 4.0,
-                    }],
-                },
-            )
+            ServerMessage::history_page(HistoryPageSnapshot {
+                search: request.search,
+                total_matches: 1,
+                cursor_restarted: true,
+                next_cursor: None,
+                rows: vec![HistorySnapshot {
+                    id: 100,
+                    created_at: Utc.with_ymd_and_hms(2026, 8, 19, 13, 0, 0).unwrap(),
+                    preview_text: "fresh first page".into(),
+                    text: "fresh first page".into(),
+                    word_count: 3,
+                    duration_seconds: 4.0,
+                }],
+            })
         }
     }
 
@@ -1064,18 +1031,14 @@ mod tests {
     struct DeleteFromSearchHandler;
 
     impl IpcHandler for DeleteFromSearchHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
-            HistoryHandler.snapshot(request_id)
+        fn snapshot(&self) -> ServerMessage {
+            HistoryHandler.snapshot()
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
             match command.kind {
-                ClientCommandKind::GetHistoryPage {
-                    request_id,
-                    request,
-                } => ServerMessage::history_page(
-                    request_id,
-                    HistoryPageSnapshot {
+                ClientCommandKind::GetHistoryPage { request } => {
+                    ServerMessage::history_page(HistoryPageSnapshot {
                         search: request.search,
                         total_matches: 2,
                         cursor_restarted: false,
@@ -1091,11 +1054,11 @@ mod tests {
                                 duration_seconds: 1.0,
                             })
                             .collect(),
-                    },
-                ),
-                ClientCommandKind::DeleteHistory { request_id, id } => {
+                    })
+                }
+                ClientCommandKind::DeleteHistory { id } => {
                     assert_eq!(id, 12);
-                    ServerMessage::workspace(request_id, WorkspaceSnapshot::default())
+                    ServerMessage::workspace(WorkspaceSnapshot::default())
                 }
                 _ => panic!("history client sent an unexpected command"),
             }
@@ -1138,9 +1101,8 @@ mod tests {
     }
 
     impl IpcHandler for WorkspaceHandler {
-        fn snapshot(&self, request_id: u64) -> ServerMessage {
+        fn snapshot(&self) -> ServerMessage {
             ServerMessage::snapshot(
-                request_id,
                 AppSnapshot {
                     workflow: agentdictate_core::Workflow::new().snapshot(),
                     hotkey: agentdictate_core::HotkeyReadiness::Ready,
@@ -1152,10 +1114,10 @@ mod tests {
         }
 
         fn handle(&self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::GetWorkspace { request_id } = command.kind else {
+            let ClientCommandKind::GetWorkspace = command.kind else {
                 panic!("workspace watcher sent an unexpected command")
             };
-            ServerMessage::workspace(request_id, self.snapshot.lock().unwrap().clone())
+            ServerMessage::workspace(self.snapshot.lock().unwrap().clone())
         }
     }
 
