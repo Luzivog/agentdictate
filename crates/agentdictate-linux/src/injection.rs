@@ -460,12 +460,18 @@ mod tests {
             );
             return;
         };
-        let node = keyboard
+        let Some(node) = keyboard
             .enumerate_dev_nodes_blocking()
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+            .ok()
+            .and_then(|mut nodes| nodes.next())
+            .and_then(Result::ok)
+        else {
+            let _ = writeln!(
+                io::stderr(),
+                "SKIPPED waiting_for_modifiers_lasts_until_a_held_one_is_released: no device node"
+            );
+            return;
+        };
         // Grabbed, so the held Ctrl never reaches the desktop; the kernel
         // still reports it as held.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -478,10 +484,23 @@ mod tests {
                 {
                     thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => panic!("open {} failed: {error}", node.display()),
+                Err(_) => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "SKIPPED waiting_for_modifiers_lasts_until_a_held_one_is_released: device node not readable"
+                    );
+                    return;
+                }
             }
         };
-        reader.grab().unwrap();
+        // Never press Ctrl without the grab: it would reach the desktop.
+        if reader.grab().is_err() {
+            let _ = writeln!(
+                io::stderr(),
+                "SKIPPED waiting_for_modifiers_lasts_until_a_held_one_is_released: not grabbable"
+            );
+            return;
+        }
         emit_key(&mut keyboard, KeyCode::KEY_LEFTCTRL, 1).unwrap();
         let releaser = thread::spawn(move || {
             thread::sleep(Duration::from_millis(150));

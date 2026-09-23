@@ -42,10 +42,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      # Runners have no /dev/uinput or keyboards; the tests that need them
-      # skip themselves.
+      # Runners can create uinput devices but expose no grabbable event nodes
+      # and have no keyboards; the tests that need them skip themselves.
+      # --no-fail-fast reports every failing target in one run.
       - name: Test
-        run: cargo test --locked --workspace --all-features
+        run: cargo test --locked --workspace --all-features --no-fail-fast
 
       - name: Build Debian package
         run: ./packaging/build-deb.sh

@@ -719,10 +719,10 @@ mod tests {
     /// chords are consumed by the test instead of reaching the live desktop.
     /// Targeting the injector's node keeps this unambiguous even while a real
     /// agentdictated daemon (with an identically named device) is running.
-    fn grab_injection_device(injector: &mut PasteInjector) -> EvdevReader {
-        let node = injector
-            .device_node()
-            .expect("injector exposes a device node");
+    /// `None` when this environment creates the device but exposes no
+    /// grabbable node for it (e.g. CI containers without udev); callers skip.
+    fn grab_injection_device(injector: &mut PasteInjector) -> Option<EvdevReader> {
+        let node = injector.device_node()?;
         // udev applies the session ACL to a fresh uinput node asynchronously;
         // retry the open briefly instead of failing on the race.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -735,20 +735,21 @@ mod tests {
                 {
                     thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => panic!("open {} failed: {error}", node.display()),
+                Err(_) => return None,
             }
         };
-        reader.grab().expect("injection device is grabbable");
-        reader
-            .set_nonblocking(true)
-            .expect("reader supports nonblocking");
-        reader
+        reader.grab().ok()?;
+        reader.set_nonblocking(true).ok()?;
+        Some(reader)
     }
 
     /// Written straight to stderr because libtest hides `eprintln!` output of
     /// passing tests.
     fn skip(test: &str) {
-        let _ = writeln!(std::io::stderr(), "SKIPPED {test}: /dev/uinput is missing");
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED {test}: no grabbable uinput paste keyboard"
+        );
     }
 
     fn injected_key_events(reader: &mut EvdevReader, expected: usize) -> Vec<(EvdevKeyCode, i32)> {
@@ -826,7 +827,10 @@ mod tests {
             return;
         }
         let mut injector = PasteInjector::new();
-        let mut reader = grab_injection_device(&mut injector);
+        let Some(mut reader) = grab_injection_device(&mut injector) else {
+            skip("successful_paste_command_is_reported_as_submitted");
+            return;
+        };
         let directory = tempdir().unwrap();
         let selections = FakeSelections::default();
         let mut deliverer = SystemDeliverer {
@@ -878,7 +882,12 @@ mod tests {
             return;
         }
         let mut injector = PasteInjector::new();
-        let mut reader = grab_injection_device(&mut injector);
+        let Some(mut reader) = grab_injection_device(&mut injector) else {
+            skip(
+                "automatic_delivery_to_a_terminal_publishes_both_selections_before_one_universal_paste",
+            );
+            return;
+        };
         let directory = tempdir().unwrap();
         let selections = FakeSelections::default();
         let mut deliverer = SystemDeliverer {
