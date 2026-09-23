@@ -60,21 +60,27 @@ pub(super) fn sidebar_view(
                 .mx_2()
                 .my(px(2.))
                 .px_3()
-                .gap_3()
                 .rounded_lg()
-                .justify_start()
                 .cursor_pointer()
                 .text_sm()
                 .tooltip(route.accessibility_label())
+                // The button centers its content row; one full-width child
+                // keeps the dot and label left-aligned inside it.
                 .child(
-                    gpui::div()
-                        .debug_selector(move || dot_selector)
-                        .size_2()
-                        .rounded_full()
-                        .flex_shrink_0()
-                        .bg(gpui_color(route_accent(route, theme))),
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_3()
+                        .child(
+                            gpui::div()
+                                .debug_selector(move || dot_selector)
+                                .size_2()
+                                .rounded_full()
+                                .flex_shrink_0()
+                                .bg(gpui_color(route_accent(route, theme))),
+                        )
+                        .child(item.label),
                 )
-                .child(item.label)
                 .on_click(cx.listener(move |shell, _, _, cx| {
                     shell.select_route(route, cx);
                 }))

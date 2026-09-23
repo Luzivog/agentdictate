@@ -1845,3 +1845,17 @@ fn text_arriving_in_try_it_completes_the_last_step(cx: &mut TestAppContext) {
     assert!(harness.has("setup-try-it-works"));
     assert!(harness.has("setup-step-try-it-done"));
 }
+
+#[gpui::test]
+fn navigation_labels_are_left_aligned(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    // Centered labels of different lengths would start at different x.
+    let lefts = [
+        "nav-dot-home",
+        "nav-dot-history",
+        "nav-dot-words",
+        "nav-dot-settings",
+    ]
+    .map(|selector| harness.bounds(selector).origin.x);
+    assert!(lefts.iter().all(|left| *left == lefts[0]), "{lefts:?}");
+}
