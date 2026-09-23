@@ -49,7 +49,11 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
         workflow: workflow.snapshot(),
-        hotkey: HotkeyReadiness::Ready,
+        readiness: agentdictate_core::Readiness {
+            shortcut: HotkeyReadiness::Ready,
+            transcription_key: true,
+            desktop: agentdictate_core::DesktopReadiness::default(),
+        },
         recoverable_count: 2,
         overlay_unavailable: false,
         history_set_aside: None,
@@ -118,7 +122,11 @@ fn silent_client_does_not_block_a_second_command_session() {
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
         workflow: workflow.snapshot(),
-        hotkey: HotkeyReadiness::Ready,
+        readiness: agentdictate_core::Readiness {
+            shortcut: HotkeyReadiness::Ready,
+            transcription_key: true,
+            desktop: agentdictate_core::DesktopReadiness::default(),
+        },
         recoverable_count: 0,
         overlay_unavailable: false,
         history_set_aside: None,
@@ -159,7 +167,11 @@ impl IpcHandler for CapturingHandler {
     fn snapshot(&self) -> ServerMessage {
         let snapshot = AppSnapshot {
             workflow: Workflow::new().snapshot(),
-            hotkey: HotkeyReadiness::Ready,
+            readiness: agentdictate_core::Readiness {
+                shortcut: HotkeyReadiness::Ready,
+                transcription_key: true,
+                desktop: agentdictate_core::DesktopReadiness::default(),
+            },
             recoverable_count: 0,
             overlay_unavailable: false,
             history_set_aside: None,
@@ -287,7 +299,11 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
     let workflow = Workflow::new();
     let snapshot = Arc::new(Mutex::new(AppSnapshot {
         workflow: workflow.snapshot(),
-        hotkey: HotkeyReadiness::Ready,
+        readiness: agentdictate_core::Readiness {
+            shortcut: HotkeyReadiness::Ready,
+            transcription_key: true,
+            desktop: agentdictate_core::DesktopReadiness::default(),
+        },
         recoverable_count: 0,
         overlay_unavailable: false,
         history_set_aside: None,
@@ -328,7 +344,11 @@ fn idle_session_is_closed_after_the_read_timeout() {
     let handler = TestHandler {
         snapshot: Arc::new(Mutex::new(AppSnapshot {
             workflow: workflow.snapshot(),
-            hotkey: HotkeyReadiness::Ready,
+            readiness: agentdictate_core::Readiness {
+                shortcut: HotkeyReadiness::Ready,
+                transcription_key: true,
+                desktop: agentdictate_core::DesktopReadiness::default(),
+            },
             recoverable_count: 0,
             overlay_unavailable: false,
             history_set_aside: None,

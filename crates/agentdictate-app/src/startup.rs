@@ -586,7 +586,11 @@ mod tests {
             ServerMessage::snapshot(
                 AppSnapshot {
                     workflow: Workflow::new().snapshot(),
-                    hotkey: HotkeyReadiness::Ready,
+                    readiness: agentdictate_core::Readiness {
+                        shortcut: HotkeyReadiness::Ready,
+                        transcription_key: true,
+                        desktop: agentdictate_core::DesktopReadiness::default(),
+                    },
                     recoverable_count: 0,
                     overlay_unavailable: false,
                     history_set_aside: None,

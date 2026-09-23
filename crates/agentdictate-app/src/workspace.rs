@@ -89,6 +89,9 @@ struct WorkspaceClientState {
     /// window. The database is not read after that; the window asks to be
     /// reopened instead.
     outdated: bool,
+    /// Set while the daemon does not answer; the window keeps showing what
+    /// it last read and says it is reconnecting.
+    unreachable: bool,
 }
 
 impl WorkspaceClientState {
@@ -96,6 +99,7 @@ impl WorkspaceClientState {
         WorkspaceViewModel::from_snapshot(&self.snapshot, self.period, &Local::now())
             .with_status(&self.status)
             .with_window_outdated(self.outdated)
+            .with_daemon_unreachable(self.unreachable)
     }
 
     fn database(&mut self, path: &Path) -> Result<&mut DatabaseObserver, WorkspaceError> {
@@ -151,6 +155,7 @@ impl WorkspaceClient {
                 status,
                 period: UsagePeriod::Last30Days,
                 outdated: false,
+                unreachable: false,
             }),
         }
     }
@@ -185,8 +190,9 @@ impl WorkspaceClient {
         Ok(Some(state.view_model()))
     }
 
-    /// Asks the daemon for its status, whose notices the window shows. A
-    /// daemon on another protocol means this window is outdated.
+    /// Asks the daemon for its status: its readiness and the notices the
+    /// window shows. A daemon on another protocol means this window is
+    /// outdated; one that does not answer, that it is reconnecting.
     fn refresh_status(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
         let status = IpcClient::connect(&self.runtime_directory)
             .map_err(WorkspaceError::from)
@@ -196,8 +202,15 @@ impl WorkspaceClient {
             });
         let mut state = self.lock_state()?;
         match state.note_outdated(status) {
-            Ok(status) => state.status = status,
+            Ok(status) => {
+                state.status = status;
+                state.unreachable = false;
+            }
             Err(WorkspaceError::Outdated) => {}
+            Err(WorkspaceError::Ipc(error)) => {
+                tracing::info!(%error, "the daemon does not answer");
+                state.unreachable = true;
+            }
             Err(error) => return Err(error),
         }
         Ok(state.view_model())
@@ -300,17 +313,24 @@ impl WorkspaceClient {
         }
     }
 
-    /// Watches the database, with its WAL and rollback journal, and the
-    /// overlay health file, and sends a fresh view model after each change:
-    /// a commit re-reads the database, a health change asks the daemon for
-    /// its status. Events are collected for `CHANGE_SETTLE_TIME` first, and
-    /// those that committed nothing are skipped. Once the daemon or its
-    /// database turns out newer than this window, the watcher sends the view
-    /// model that says so and stops.
+    /// Watches the database, with its WAL and rollback journal, the overlay
+    /// health and daemon `status` files, and the daemon's socket, and sends
+    /// a fresh view model after each change: a commit re-reads the database;
+    /// anything else asks the daemon for its status, which also notices a
+    /// daemon that stopped or restarted. Events are collected for
+    /// `CHANGE_SETTLE_TIME` first, and those that committed nothing are
+    /// skipped. Once the daemon or its database turns out newer than this
+    /// window, the watcher sends the view model that says so and stops.
     pub fn watch(self: &Arc<Self>) -> io::Result<Receiver<WorkspaceViewModel>> {
         let mut watcher = FileWatcher::empty()?;
         let database = watcher.add_database(&self.database_file)?;
-        let status = watcher.add_file(&self.runtime_directory.join(crate::OVERLAY_HEALTH_FILE))?;
+        let status = [
+            crate::OVERLAY_HEALTH_FILE,
+            crate::STATUS_FILE,
+            agentdictate_runtime::SOCKET_FILE_NAME,
+        ]
+        .map(|name| watcher.add_file(&self.runtime_directory.join(name)));
+        let status = status.into_iter().collect::<io::Result<Vec<_>>>()?;
         let client = Arc::clone(self);
         let (sender, receiver) = channel();
         std::thread::Builder::new()
@@ -330,7 +350,7 @@ impl WorkspaceClient {
                         }
                     };
                     let mut update = None;
-                    if changed.contains(&status) {
+                    if status.iter().any(|file| changed.contains(file)) {
                         match client.refresh_status() {
                             Ok(model) => update = Some(model),
                             Err(error) => {
@@ -442,7 +462,11 @@ impl FileWatcher {
             .ok_or_else(|| io::Error::other("watch file has no name"))?;
         self.watch_directory(
             parent,
-            libc::IN_MASK_ADD | libc::IN_CLOSE_WRITE | libc::IN_CREATE | libc::IN_MOVED_TO,
+            libc::IN_MASK_ADD
+                | libc::IN_CLOSE_WRITE
+                | libc::IN_CREATE
+                | libc::IN_MOVED_TO
+                | libc::IN_DELETE,
         )?;
         let addition = self.next_addition();
         self.watched_names
@@ -474,9 +498,9 @@ impl FileWatcher {
         Ok(())
     }
 
-    /// Blocks until watched files are written, created or moved into place,
-    /// and returns the numbers of the `add_*` calls whose files changed: all
-    /// of them when the kernel dropped events.
+    /// Blocks until watched files are written, created, moved into place or
+    /// deleted, and returns the numbers of the `add_*` calls whose files
+    /// changed: all of them when the kernel dropped events.
     pub(crate) fn wait_for_change(&mut self) -> io::Result<Vec<usize>> {
         let mut changed = Vec::new();
         while changed.is_empty() {
@@ -574,7 +598,7 @@ mod tests {
     fn status() -> AppSnapshot {
         AppSnapshot {
             workflow: Workflow::new().snapshot(),
-            hotkey: agentdictate_core::HotkeyReadiness::Ready,
+            readiness: agentdictate_core::Readiness::default(),
             recoverable_count: 0,
             overlay_unavailable: false,
             history_set_aside: None,
@@ -833,6 +857,59 @@ mod tests {
                 .overlay_unavailable
         );
         server_thread.join().unwrap();
+    }
+
+    /// Answers every session with a status whose readiness lacks an API key.
+    struct KeylessDaemon;
+
+    impl IpcHandler for KeylessDaemon {
+        fn snapshot(&self) -> ServerMessage {
+            ServerMessage::snapshot(
+                AppSnapshot {
+                    readiness: agentdictate_core::Readiness {
+                        transcription_key: false,
+                        ..agentdictate_core::Readiness::default()
+                    },
+                    ..status()
+                },
+                &Settings::default(),
+            )
+        }
+
+        fn handle(&self, _command: ClientCommand) -> ServerMessage {
+            panic!("a status refresh sends no command")
+        }
+    }
+
+    /// The window follows the daemon's readiness when its `status` file
+    /// changes, says it is reconnecting once the daemon's socket goes, and
+    /// keeps what it showed meanwhile.
+    #[test]
+    fn a_status_change_rereads_readiness_and_a_stopped_daemon_shows_reconnecting() {
+        let instance = Instance::with_transcripts(&["kept".to_owned()]);
+        let server = IpcServer::bind(&instance.runtime).unwrap();
+        let client = Arc::new(instance.client());
+        client.refresh().unwrap();
+        let updates = client.watch().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            server.serve_next(&KeylessDaemon).unwrap();
+            server
+        });
+
+        std::fs::write(instance.runtime.join(crate::STATUS_FILE), []).unwrap();
+        let update = updates.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!update.readiness.transcription_key);
+        assert_eq!(update.daemon_banner(), None);
+
+        // Stopping the daemon removes its socket.
+        drop(server_thread.join().unwrap());
+        let update = updates.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            update.daemon_banner(),
+            Some("Reconnecting to AgentDictate…")
+        );
+        assert!(!update.readiness.transcription_key);
+        assert_eq!(update.recent_transcripts[0].text, "kept");
     }
 
     /// A daemon from a later release restarts in place of the one the

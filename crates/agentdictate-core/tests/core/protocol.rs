@@ -64,7 +64,11 @@ fn snapshot_messages_round_trip_without_secret_settings() {
     let message = ServerMessage::snapshot(
         AppSnapshot {
             workflow: Workflow::new().snapshot(),
-            hotkey: HotkeyReadiness::Ready,
+            readiness: agentdictate_core::Readiness {
+                shortcut: HotkeyReadiness::Ready,
+                transcription_key: true,
+                desktop: agentdictate_core::DesktopReadiness::default(),
+            },
             recoverable_count: 3,
             overlay_unavailable: true,
             history_set_aside: Some("/tmp/agentdictate.sqlite.corrupt-1".into()),

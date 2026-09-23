@@ -1,116 +1,6 @@
-use agentdictate_core::{
-    AppSnapshot, HotkeyReadiness, ProcessingStage, WorkflowPhase, WorkflowSnapshot,
-};
+use agentdictate_core::{AppSnapshot, DesktopReadiness, HotkeyReadiness, MissingTool, Readiness};
 
 use crate::{HistoryViewModel, Route, WorkspaceViewModel};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StatusTone {
-    Neutral,
-    Starting,
-    Recording,
-    Processing,
-    Success,
-    Danger,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StatusViewModel {
-    pub label: &'static str,
-    pub detail: &'static str,
-    pub tone: StatusTone,
-    pub is_busy: bool,
-}
-
-impl From<WorkflowSnapshot> for StatusViewModel {
-    fn from(snapshot: WorkflowSnapshot) -> Self {
-        match snapshot.phase {
-            WorkflowPhase::Ready => Self {
-                label: "Ready",
-                detail: "Press Ctrl + Space to start dictating",
-                tone: StatusTone::Neutral,
-                is_busy: false,
-            },
-            WorkflowPhase::Starting { .. } => Self {
-                label: "Starting",
-                detail: "Preparing your microphone",
-                tone: StatusTone::Starting,
-                is_busy: true,
-            },
-            WorkflowPhase::Recording { .. } => Self {
-                label: "Recording",
-                detail: "Listening to your microphone",
-                tone: StatusTone::Recording,
-                is_busy: true,
-            },
-            WorkflowPhase::Stopping { .. } => Self {
-                label: "Finishing",
-                detail: "Securing your recording",
-                tone: StatusTone::Processing,
-                is_busy: true,
-            },
-            WorkflowPhase::Processing { stage, .. } => match stage {
-                ProcessingStage::Transcribing => Self {
-                    label: "Transcribing",
-                    detail: "Turning speech into text",
-                    tone: StatusTone::Processing,
-                    is_busy: true,
-                },
-                ProcessingStage::ReadyToDeliver => Self {
-                    label: "Ready to paste",
-                    detail: "Your transcript is safe",
-                    tone: StatusTone::Success,
-                    is_busy: true,
-                },
-                ProcessingStage::Delivering => Self {
-                    label: "Pasting",
-                    detail: "Sending text to your active app",
-                    tone: StatusTone::Success,
-                    is_busy: true,
-                },
-            },
-            WorkflowPhase::NeedsAttention { .. } => Self {
-                label: "Needs attention",
-                detail: "Your recording is safe and can be recovered",
-                tone: StatusTone::Danger,
-                is_busy: false,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HotkeyViewModel {
-    pub label: &'static str,
-    pub detail: String,
-    pub tone: StatusTone,
-    pub is_ready: bool,
-}
-
-impl From<HotkeyReadiness> for HotkeyViewModel {
-    fn from(readiness: HotkeyReadiness) -> Self {
-        match readiness {
-            HotkeyReadiness::Starting => Self {
-                label: "Checking shortcut",
-                detail: "Waiting for the global shortcut listener".to_owned(),
-                tone: StatusTone::Starting,
-                is_ready: false,
-            },
-            HotkeyReadiness::Ready => Self {
-                label: "Shortcut ready",
-                detail: "Ctrl + Space is available".to_owned(),
-                tone: StatusTone::Success,
-                is_ready: true,
-            },
-            HotkeyReadiness::Unavailable { message } => Self {
-                label: "Shortcut unavailable",
-                detail: message,
-                tone: StatusTone::Danger,
-                is_ready: false,
-            },
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavigationItemViewModel {
@@ -119,17 +9,123 @@ pub struct NavigationItemViewModel {
     pub is_active: bool,
 }
 
+/// Home's first line: that dictation is ready, or the one thing to fix
+/// first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HomeStatus {
+    /// "Ready — press Ctrl+Space anywhere to dictate".
+    Ready {
+        shortcut: String,
+    },
+    /// The shortcut listener is still starting.
+    Starting,
+    Fix(ReadinessFix),
+}
+
+/// Something that stops or weakens dictation, and how to fix it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadinessFix {
+    pub title: &'static str,
+    pub detail: String,
+    /// The fix is made in Settings, which the card opens.
+    pub opens_settings: bool,
+}
+
+impl ReadinessFix {
+    fn new(title: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            title,
+            detail: detail.into(),
+            opens_settings: false,
+        }
+    }
+}
+
+const SETUP_ACCESS: &str = "Run agentdictate setup-access in a terminal, then log out and back in.";
+
+impl HomeStatus {
+    /// What Home says about `readiness`, with `shortcut` the configured
+    /// shortcut's label. What stops dictation comes first, then what puts
+    /// your keyboard at risk, then what only makes it worse.
+    #[must_use]
+    pub fn new(readiness: &Readiness, shortcut: &str) -> Self {
+        let Readiness {
+            shortcut: listener,
+            transcription_key,
+            desktop:
+                DesktopReadiness {
+                    paste_access,
+                    exposed_input,
+                    missing_tools,
+                },
+        } = readiness;
+        let missing = |tool| missing_tools.contains(&tool);
+        let fix = if let HotkeyReadiness::Unavailable { .. } = listener {
+            ReadinessFix::new(
+                "The shortcut isn't working",
+                format!("AgentDictate can't read your keyboard. {SETUP_ACCESS}"),
+            )
+        } else if !transcription_key {
+            ReadinessFix {
+                opens_settings: true,
+                ..ReadinessFix::new(
+                    "Add your OpenAI API key",
+                    "AgentDictate turns your speech into text with OpenAI. Add your key in Settings.",
+                )
+            }
+        } else if missing(MissingTool::PwRecord) {
+            ReadinessFix::new(
+                "AgentDictate can't record",
+                "pw-record isn't installed. Install PipeWire's tools (pipewire-bin), then restart AgentDictate.",
+            )
+        } else if !paste_access {
+            ReadinessFix::new(
+                "AgentDictate can't paste",
+                format!("Your text will only be copied. {SETUP_ACCESS}"),
+            )
+        } else if let Some(exposed) = exposed_input {
+            ReadinessFix::new(
+                "Other apps can read your keyboard",
+                match &exposed.rule {
+                    Some(rule) => format!(
+                        "Run agentdictate setup-access or remove the rule from {}.",
+                        rule.display()
+                    ),
+                    None => "Run agentdictate setup-access to make your keyboard private again."
+                        .to_owned(),
+                },
+            )
+        } else if missing(MissingTool::Ffmpeg) {
+            ReadinessFix::new(
+                "Install ffmpeg for faster results",
+                "Without ffmpeg, recordings upload uncompressed, which takes longer.",
+            )
+        } else if missing(MissingTool::Pactl) {
+            ReadinessFix::new(
+                "Other sounds can't be lowered",
+                "pactl isn't installed. Install pulseaudio-utils, or turn off Lower other sounds.",
+            )
+        } else if *listener == HotkeyReadiness::Starting {
+            return Self::Starting;
+        } else {
+            return Self::Ready {
+                shortcut: shortcut.to_owned(),
+            };
+        };
+        Self::Fix(fix)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellViewModel {
     pub active_route: Route,
     pub navigation: [NavigationItemViewModel; Route::ALL.len()],
-    pub status: StatusViewModel,
-    pub hotkey: HotkeyViewModel,
     pub workspace: WorkspaceViewModel,
 }
 
 impl ShellViewModel {
-    pub fn from_snapshot(active_route: Route, snapshot: WorkflowSnapshot) -> Self {
+    /// A shell before the daemon's first snapshot.
+    pub fn new(active_route: Route) -> Self {
         Self {
             active_route,
             navigation: Route::ALL.map(|route| NavigationItemViewModel {
@@ -137,16 +133,13 @@ impl ShellViewModel {
                 label: route.title(),
                 is_active: route == active_route,
             }),
-            status: snapshot.into(),
-            hotkey: HotkeyReadiness::Starting.into(),
             workspace: WorkspaceViewModel::default(),
         }
     }
 
     pub fn from_app_snapshot(active_route: Route, snapshot: AppSnapshot) -> Self {
-        let mut model = Self::from_snapshot(active_route, snapshot.workflow);
+        let mut model = Self::new(active_route);
         model.workspace = WorkspaceViewModel::default().with_status(&snapshot);
-        model.hotkey = snapshot.hotkey.into();
         model.workspace.history = HistoryViewModel::new(
             0,
             u64::try_from(snapshot.recoverable_count).unwrap_or(u64::MAX),

@@ -1,15 +1,12 @@
 use gpui::{Context, IntoElement, Render, ScrollHandle, Window, prelude::*, px};
 use gpui_component::{scroll::Scrollbar, v_flex};
 
-use crate::{
-    HistoryViewModel, NavigationItemViewModel, Route, ThemeTokens, TranscriptViewModel,
-    UsageViewModel, word_rows,
-};
+use crate::{HomeStatus, NavigationItemViewModel, Route, ThemeTokens, word_rows};
 
 use super::{
     ROUTE_SCROLLBAR_WIDTH, SettingsShell, gpui_color,
     history_page::{self, HistoryPageModel},
-    overview,
+    overview::{self, HomePageModel},
     settings_page::{self, SettingsPageModel},
     settings_shell::{Confirmed, route_index},
     shell_chrome::{shell_title_bar, sidebar_view},
@@ -27,18 +24,13 @@ struct RouteViewportModel {
     feedback: Option<String>,
     overlay_unavailable: bool,
     history_set_aside: Option<String>,
-    window_outdated: bool,
+    /// Why the window cannot follow the daemon, shown on every page.
+    daemon_banner: Option<&'static str>,
     scroll: ScrollHandle,
 }
 
 enum RoutePageModel {
-    Home {
-        usage: UsageViewModel,
-        history: HistoryViewModel,
-        recent_transcripts: Vec<TranscriptViewModel>,
-        recent_expanded: bool,
-        copied_transcript: Option<i64>,
-    },
+    Home(HomePageModel),
     History(HistoryPageModel),
     Words(WordsPageModel),
     Settings(Box<SettingsPageModel>),
@@ -48,13 +40,17 @@ impl RoutePageModel {
     fn from_shell(shell: &SettingsShell, cx: &Context<SettingsShell>) -> Self {
         let workspace = &shell.model.workspace;
         match shell.model.active_route {
-            Route::Home => Self::Home {
+            Route::Home => Self::Home(HomePageModel {
+                status: HomeStatus::new(
+                    &workspace.readiness,
+                    shell.settings.shown().hotkey.label(),
+                ),
                 usage: workspace.usage.clone(),
                 history: workspace.history.clone(),
                 recent_transcripts: workspace.recent_transcripts.clone(),
                 recent_expanded: shell.routes.overview_recent_expanded,
                 copied_transcript: shell.copied_transcript(),
-            },
+            }),
             Route::History => Self::History(HistoryPageModel {
                 history: workspace.history.clone(),
                 search_input: shell.routes.history_search_input.clone(),
@@ -112,7 +108,7 @@ impl RoutePageModel {
 
     const fn route(&self) -> Route {
         match self {
-            Self::Home { .. } => Route::Home,
+            Self::Home(_) => Route::Home,
             Self::History(_) => Route::History,
             Self::Words(_) => Route::Words,
             Self::Settings(_) => Route::Settings,
@@ -122,27 +118,13 @@ impl RoutePageModel {
     fn embeds_feedback(&self) -> bool {
         match self {
             Self::Settings(_) | Self::History(_) | Self::Words(_) => true,
-            Self::Home { .. } => false,
+            Self::Home(_) => false,
         }
     }
 
     fn surface(self, theme: ThemeTokens, cx: &mut Context<SettingsShell>) -> gpui::Div {
         match self {
-            Self::Home {
-                usage,
-                history,
-                recent_transcripts,
-                recent_expanded,
-                copied_transcript,
-            } => overview::surface(
-                usage,
-                history,
-                recent_transcripts,
-                recent_expanded,
-                copied_transcript,
-                theme,
-                cx,
-            ),
+            Self::Home(home) => overview::surface(home, theme, cx),
             Self::History(history) => history_page::surface(history, theme, cx),
             Self::Words(words) => words_page::surface(words, theme, cx),
             Self::Settings(settings) => settings_page::surface(*settings, theme, cx),
@@ -162,7 +144,7 @@ impl Render for SettingsShell {
             feedback: self.routes.entry(route).feedback.clone(),
             overlay_unavailable: self.model.workspace.overlay_unavailable,
             history_set_aside: self.model.workspace.history_set_aside.clone(),
-            window_outdated: self.model.workspace.window_outdated,
+            daemon_banner: self.model.workspace.daemon_banner(),
             scroll: self.routes.entry(route).scroll.clone(),
         };
 
@@ -209,7 +191,7 @@ fn route_viewport(
         feedback,
         overlay_unavailable,
         history_set_aside,
-        window_outdated,
+        daemon_banner,
         scroll,
     } = viewport;
     let route = page.route();
@@ -230,8 +212,8 @@ fn route_viewport(
                 .size_full()
                 .p_6()
                 .gap_5()
-                .when(window_outdated, |content| {
-                    content.child(window_outdated_notice(theme))
+                .when_some(daemon_banner, |content, banner| {
+                    content.child(daemon_banner_notice(banner, theme))
                 })
                 .when(overlay_unavailable, |content| {
                     content.child(gpui::div()
@@ -268,18 +250,18 @@ fn route_viewport(
         )
 }
 
-/// Shown when the daemon or its database is from a newer AgentDictate than
-/// this window, which then stops refreshing.
-fn window_outdated_notice(theme: ThemeTokens) -> gpui::Div {
+/// Says why the window cannot follow the daemon: the daemon or its database
+/// is from a newer AgentDictate, or the daemon does not answer.
+fn daemon_banner_notice(banner: &'static str, theme: ThemeTokens) -> gpui::Div {
     gpui::div()
-        .debug_selector(|| "window-outdated-notice".to_owned())
+        .debug_selector(|| "daemon-banner".to_owned())
         .rounded_lg()
         .border_1()
         .border_color(gpui_color(theme.accent))
         .p_3()
         .text_sm()
         .font_weight(gpui::FontWeight::MEDIUM)
-        .child("AgentDictate was updated — reopen this window")
+        .child(banner)
 }
 
 /// The notice that reports a workspace action's outcome on its route.

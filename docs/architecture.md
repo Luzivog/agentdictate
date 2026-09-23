@@ -72,8 +72,9 @@ shutdown, announce nothing.
 
 **Tray.** The tray runs inside the daemon as a StatusNotifier item when
 `show_tray_icon` is on. That is a `config.json` setting and it defaults to on. The
-menu has **Open AgentDictate**, **Toggle dictation**, **Start literal dictation**,
-**Paste last dictation**, **Cancel dictation**, and **Quit AgentDictate**. Opening settings launches the
+menu has **Open AgentDictate**, **Start dictation** (**Stop dictation** while
+recording), **Start literal dictation**, **Paste last dictation**, **Cancel
+dictation**, and **Quit AgentDictate**. Opening settings launches the
 sibling `agentdictate`. Only one settings window runs at a time: it holds
 `window.lock` in the runtime directory, and a later launch writes `window.raise`,
 which that window watches to come to the front, and exits.
@@ -276,15 +277,23 @@ command. On connect the daemon sends its status snapshot first, so a reconnect n
 depends on replayed events. IPC carries commands and that snapshot only. The
 settings window reads History, usage, and Recovery straight from the database, with
 a read-only connection, so a dictation in progress never delays them. It watches
-the database and `overlay-health` with inotify and collects events for 30 ms after
-the first. Then a commit, detected with `PRAGMA data_version`, re-reads the
-database, and an `overlay-health` change asks the daemon for its status. A daemon on
-another protocol version, or a database with a newer schema, makes the window say
-"AgentDictate was updated — reopen this window" and stop reading. Its changes, such
-as Delete or Transcribe again, are commands, after which it reads the database
-again. Settings changes are per setting: each control sends one `change_setting`
-command, and the daemon applies it to the settings it holds, so two clients never
-overwrite each other's changes. `agentdictate stop` returns once the
+the database, `overlay-health`, a `status` file, and the socket with inotify and
+collects events for 30 ms after the first. Then a commit, detected with `PRAGMA
+data_version`, re-reads the database. Any other change asks the daemon for its
+status: the daemon writes `status` when it starts and whenever its readiness,
+recording state, or settings change. The status carries the daemon's `Readiness`:
+the shortcut listener, the API key, whether `/dev/uinput` is writable,
+world-accessible input devices and the udev rule behind them, and a missing
+`pw-record`, `ffmpeg` or `pactl`. Home shows one line when everything is in place,
+such as "Ready — press Ctrl+Space anywhere to dictate", or one card with the most
+important fix. A daemon that does not answer makes the window say "Reconnecting to
+AgentDictate…" until it answers again. A daemon on another protocol version, or a
+database with a newer schema, makes the window say "AgentDictate was updated —
+reopen this window" and stop reading. Its changes, such as Delete or Transcribe
+again, are commands, after which it reads the database again. Settings changes are
+per setting: each control sends one `change_setting` command, and the daemon
+applies it to the settings it holds, so two clients never overwrite each other's
+changes. `agentdictate stop` returns once the
 recording is stopped; the paste follows. A Recovery retry's reply waits for the
 copied text, and a shortcut capture's reply for the key press, both without holding
 the daemon lock.
@@ -306,7 +315,7 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |
 | `~/.local/state/agentdictate/ducking.json` | Present only while ducking has lowered an output, so a crash can be undone at the next start |
 | `~/.cache/agentdictate/` | Created at startup; currently unused |
-| `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health`, settings window lock and raise file |
+| `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health`, `status`, settings window lock and raise file |
 
 Logs default to `info`, with the overlay's GPU crates at `warn`. A valid `RUST_LOG`
 replaces those defaults. Logs can contain transcript text.

@@ -91,7 +91,7 @@ impl AgentProcess {
         let (recorder, recorder_events) =
             SystemRecordingController::for_system(&settings, &paths.ducking_state_file);
         let deliverer = SystemDeliverer::for_environment(settings.paste_shortcut);
-        let daemon = Daemon::new(
+        let mut daemon = Daemon::new(
             runtime,
             settings,
             paths.clone(),
@@ -99,6 +99,7 @@ impl AgentProcess {
             transcriber,
             deliverer,
         );
+        daemon.set_desktop_check(agentdictate_linux::readiness::check_desktop);
         let process = Self {
             history_set_aside,
             ..Self::from_parts(daemon, &paths)

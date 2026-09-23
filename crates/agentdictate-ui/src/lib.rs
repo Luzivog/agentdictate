@@ -45,9 +45,7 @@ pub use route::Route;
 pub use settings::SettingsRequest;
 pub use theme::{Color, ThemeTokens};
 pub use usage::{UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel};
-pub use view_model::{
-    HotkeyViewModel, NavigationItemViewModel, ShellViewModel, StatusTone, StatusViewModel,
-};
+pub use view_model::{HomeStatus, NavigationItemViewModel, ReadinessFix, ShellViewModel};
 #[cfg(feature = "desktop")]
 pub use window_frame::AgentDictateWindowFrame;
 pub use words::{WordRowViewModel, WordsEdit, WordsError, word_rows};

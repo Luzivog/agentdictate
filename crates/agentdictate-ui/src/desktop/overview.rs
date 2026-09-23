@@ -7,8 +7,8 @@ use gpui_component::{
 use crate::action::action_button;
 use crate::usage::format_usd;
 use crate::{
-    HistoryViewModel, Route, ThemeTokens, TranscriptViewModel, UsageDayViewModel, UsagePeriod,
-    UsageViewModel, WorkspaceAction,
+    HistoryViewModel, HomeStatus, Route, ThemeTokens, TranscriptViewModel, UsageDayViewModel,
+    UsagePeriod, UsageViewModel, WorkspaceAction,
 };
 
 use super::{SettingsShell, gpui_color, row_actions::copy_button, single_line::single_line_clip};
@@ -20,15 +20,29 @@ const RECENT_HISTORY_COLLAPSED_LIMIT: usize = 10;
 const RECENT_HISTORY_EXPANDED_LIMIT: usize = 30;
 const RECENT_HISTORY_EXPANSION_SIZE: usize = 20;
 
+/// What Home shows.
+pub(super) struct HomePageModel {
+    pub(super) status: HomeStatus,
+    pub(super) usage: UsageViewModel,
+    pub(super) history: HistoryViewModel,
+    pub(super) recent_transcripts: Vec<TranscriptViewModel>,
+    pub(super) recent_expanded: bool,
+    pub(super) copied_transcript: Option<i64>,
+}
+
 pub(super) fn surface(
-    usage: UsageViewModel,
-    history: HistoryViewModel,
-    recent_transcripts: Vec<TranscriptViewModel>,
-    recent_history_expanded: bool,
-    copied_transcript: Option<i64>,
+    model: HomePageModel,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
+    let HomePageModel {
+        status,
+        usage,
+        history,
+        recent_transcripts,
+        recent_expanded: recent_history_expanded,
+        copied_transcript,
+    } = model;
     let activity = usage.activity.clone();
     let activity_empty = activity.is_empty();
     let peak_audio_seconds = usage.peak_audio_seconds();
@@ -40,6 +54,7 @@ pub(super) fn surface(
 
     v_flex()
         .gap_5()
+        .child(readiness(status, theme, cx))
         .child(
             v_flex()
                 .debug_selector(|| "overview-activity-card".to_owned())
@@ -96,6 +111,64 @@ pub(super) fn surface(
             theme,
             cx,
         ))
+}
+
+/// Home's first line: that dictation is ready, or one card with the most
+/// important thing to fix.
+fn readiness(status: HomeStatus, theme: ThemeTokens, cx: &mut Context<SettingsShell>) -> gpui::Div {
+    let line = |selector: &'static str, color, text: String| {
+        h_flex()
+            .debug_selector(move || selector.to_owned())
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .child(gpui::div().size_2().rounded_full().bg(gpui_color(color)))
+            .child(text)
+    };
+    match status {
+        HomeStatus::Ready { shortcut } => line(
+            "home-ready",
+            theme.success,
+            format!("Ready — press {shortcut} anywhere to dictate"),
+        ),
+        HomeStatus::Starting => line(
+            "home-starting",
+            theme.text_muted,
+            "Starting the shortcut…".to_owned(),
+        ),
+        HomeStatus::Fix(fix) => h_flex()
+            .debug_selector(|| "home-fix-card".to_owned())
+            .justify_between()
+            .gap_4()
+            .border_l_2()
+            .border_color(gpui_color(theme.danger))
+            .bg(gpui_color(theme.surface))
+            .px_4()
+            .py_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .child(gpui::div().text_sm().font_semibold().child(fix.title))
+                    .child(
+                        gpui::div()
+                            .text_xs()
+                            .text_color(gpui_color(theme.text_muted))
+                            .child(fix.detail),
+                    ),
+            )
+            .when(fix.opens_settings, |card| {
+                card.child(
+                    action_button("home-fix-open-settings")
+                        .debug_selector(|| "home-fix-open-settings".to_owned())
+                        .small()
+                        .label("Open Settings")
+                        .on_click(cx.listener(|shell, _, _, cx| {
+                            shell.select_route(Route::Settings, cx);
+                        })),
+                )
+            }),
+    }
 }
 
 fn activity_header(

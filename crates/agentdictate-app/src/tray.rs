@@ -7,7 +7,7 @@ use std::{
 
 use ksni::blocking::TrayMethods;
 
-use crate::{DaemonHandle, Trigger, TriggerOutcome, startup::running_app_image};
+use crate::{DaemonHandle, DaemonStatus, Trigger, TriggerOutcome, startup::running_app_image};
 
 /// User intent emitted by the desktop tray. Menu callbacks only enqueue these
 /// values; daemon and process work happens away from the status-notifier
@@ -15,6 +15,8 @@ use crate::{DaemonHandle, Trigger, TriggerOutcome, startup::running_app_image};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
     OpenSettings,
+    /// Starts a dictation, or stops the one recording; the menu item says
+    /// which.
     ToggleDictation,
     StartLiteral,
     /// Pastes the last dictation again into the focused app.
@@ -28,6 +30,8 @@ pub enum TrayAction {
 #[derive(Debug)]
 struct AgentDictateTray {
     actions: Sender<TrayAction>,
+    /// Read each time the menu is rebuilt, which happens on every change.
+    status: std::sync::Arc<DaemonStatus>,
 }
 
 impl ksni::Tray for AgentDictateTray {
@@ -63,7 +67,12 @@ impl ksni::Tray for AgentDictateTray {
             }
             .into(),
             StandardItem {
-                label: "Toggle dictation".to_owned(),
+                label: if self.status.is_recording() {
+                    "Stop dictation"
+                } else {
+                    "Start dictation"
+                }
+                .to_owned(),
                 activate: Box::new(move |_| {
                     let _ = toggle_actions.send(TrayAction::ToggleDictation);
                 }),
@@ -112,6 +121,7 @@ impl ksni::Tray for AgentDictateTray {
 pub struct SystemTrayHandle {
     _tray: ksni::blocking::Handle<AgentDictateTray>,
     _worker: JoinHandle<()>,
+    _refresher: JoinHandle<()>,
 }
 
 /// Starts the native status-notifier item. Missing desktop tray support is
@@ -122,6 +132,7 @@ pub fn start_system_tray(
     settings_executable: PathBuf,
 ) -> anyhow::Result<SystemTrayHandle> {
     let (actions, incoming) = mpsc::channel();
+    let status = handle.status();
     let worker = std::thread::Builder::new()
         .name("agentdictate-tray-actions".to_owned())
         .spawn(move || {
@@ -131,12 +142,30 @@ pub fn start_system_tray(
                 }
             }
         })?;
-    let tray = AgentDictateTray { actions }
-        .assume_sni_available(true)
-        .spawn()?;
+    let tray = AgentDictateTray {
+        actions,
+        status: std::sync::Arc::clone(&status),
+    }
+    .assume_sni_available(true)
+    .spawn()?;
+    let menu = tray.clone();
+    // Rebuilds the menu after each status change, so its first item says
+    // whether it starts or stops a dictation.
+    let refresher = std::thread::Builder::new()
+        .name("agentdictate-tray-refresh".to_owned())
+        .spawn(move || {
+            let mut seen = 0;
+            loop {
+                seen = status.wait_for_change(seen);
+                if menu.update(|_| {}).is_none() {
+                    return;
+                }
+            }
+        })?;
     Ok(SystemTrayHandle {
         _tray: tray,
         _worker: worker,
+        _refresher: refresher,
     })
 }
 

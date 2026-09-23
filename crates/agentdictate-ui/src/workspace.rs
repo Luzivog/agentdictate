@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use agentdictate_core::{AppSnapshot, WorkspaceSnapshot};
+use agentdictate_core::{AppSnapshot, Readiness, WorkspaceSnapshot};
 use chrono::{DateTime, TimeZone};
 
 use crate::{HistoryViewModel, RecoveryStage, TranscriptViewModel, UsagePeriod, UsageViewModel};
@@ -59,6 +59,10 @@ pub struct WorkspaceViewModel {
     /// The daemon or its database is from a newer AgentDictate than this
     /// window, which asks to be reopened instead of misreading either.
     pub window_outdated: bool,
+    /// The daemon stopped answering; the window keeps what it last read.
+    pub daemon_unreachable: bool,
+    /// Whether dictation can work, as of the daemon's last status.
+    pub readiness: Readiness,
     pub history: HistoryViewModel,
     pub recent_transcripts: Vec<TranscriptViewModel>,
     pub usage: UsageViewModel,
@@ -81,6 +85,8 @@ impl WorkspaceViewModel {
             overlay_unavailable: false,
             history_set_aside: None,
             window_outdated: false,
+            daemon_unreachable: false,
+            readiness: Readiness::default(),
             history,
             recent_transcripts,
             usage,
@@ -109,9 +115,10 @@ impl WorkspaceViewModel {
         )
     }
 
-    /// Adds the notices of the daemon's status snapshot.
+    /// Adds the daemon's status snapshot: its readiness and notices.
     #[must_use]
-    pub fn with_status(self, status: &AppSnapshot) -> Self {
+    pub fn with_status(mut self, status: &AppSnapshot) -> Self {
+        self.readiness = status.readiness.clone();
         self.with_overlay_unavailable(status.overlay_unavailable)
             .with_history_set_aside(
                 status
@@ -119,6 +126,26 @@ impl WorkspaceViewModel {
                     .as_ref()
                     .map(|path| path.display().to_string()),
             )
+    }
+
+    /// The banner across every page when the window cannot follow the
+    /// daemon, if any. An outdated window can only be reopened, so that
+    /// outranks a daemon that is merely away.
+    #[must_use]
+    pub const fn daemon_banner(&self) -> Option<&'static str> {
+        if self.window_outdated {
+            Some("AgentDictate was updated — reopen this window")
+        } else if self.daemon_unreachable {
+            Some("Reconnecting to AgentDictate…")
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn with_daemon_unreachable(mut self, unreachable: bool) -> Self {
+        self.daemon_unreachable = unreachable;
+        self
     }
 
     #[must_use]

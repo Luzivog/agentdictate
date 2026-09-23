@@ -132,7 +132,7 @@ pub enum HotkeyCaptureOutcome {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub workflow: WorkflowSnapshot,
-    pub hotkey: HotkeyReadiness,
+    pub readiness: crate::Readiness,
     pub recoverable_count: usize,
     /// The recording overlay could not be shown; dictation still works.
     pub overlay_unavailable: bool,

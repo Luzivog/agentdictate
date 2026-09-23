@@ -15,6 +15,7 @@ mod overlay_process;
 mod process;
 mod processing;
 mod startup;
+mod status_signal;
 mod system;
 mod tray;
 mod window_instance;
@@ -50,6 +51,7 @@ pub use processing::{ProcessingTicket, Transcriber, TranscriptionCompletion};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
 };
+pub use status_signal::{STATUS_FILE, signal_status_changes};
 pub use system::{SystemDeliverer, SystemRecordingController};
 pub use tray::{
     SystemTrayHandle, TrayAction, settings_executable_for_current_process, start_system_tray,

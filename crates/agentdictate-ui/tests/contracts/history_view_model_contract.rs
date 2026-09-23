@@ -1,6 +1,5 @@
 //! History presentation contracts.
 
-use agentdictate_core::{WorkflowPhase, WorkflowSnapshot};
 use agentdictate_ui::{
     HistoryViewModel, RecoveryViewModel, Route, ShellViewModel, TranscriptViewModel,
 };
@@ -21,13 +20,7 @@ fn history_keeps_recoverable_recordings_as_a_first_class_section() {
     );
     assert!(history.recovery.has_items());
 
-    let shell = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_history(history);
+    let shell = ShellViewModel::new(Route::History).with_history(history);
     assert_eq!(shell.workspace.history.recovery.item_count, 2);
 }
 

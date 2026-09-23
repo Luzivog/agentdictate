@@ -15,8 +15,8 @@ use agentdictate_app::{
     start_overlay_presenter,
 };
 use agentdictate_core::{
-    FailureKind, HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage,
-    RecoverySnapshot, Settings, WorkflowPhase, parse_vocabulary,
+    DesktopReadiness, FailureKind, HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage,
+    MissingTool, ProcessingStage, RecoverySnapshot, Settings, WorkflowPhase, parse_vocabulary,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob, Runtime,
@@ -262,7 +262,10 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     assert!(!delivered.audio_path.exists());
     assert_eq!(daemon.deliverer().attempts, 1);
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
-    assert_eq!(daemon.snapshot().hotkey, HotkeyReadiness::Starting);
+    assert_eq!(
+        daemon.snapshot().readiness.shortcut,
+        HotkeyReadiness::Starting
+    );
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
     let history = history_rows(&observer);
     assert_eq!(history.len(), 1);
@@ -1149,6 +1152,41 @@ fn the_last_dictation_is_pasted_again_with_one_chord_but_never_during_a_dictatio
     daemon.start_recording().unwrap();
     assert!(matches!(daemon.paste_last(), Err(DaemonError::Busy { .. })));
     assert_eq!(daemon.deliverer().attempts, 2);
+}
+
+#[test]
+fn readiness_reports_a_missing_key_and_pactl_only_while_ducking_is_on() {
+    fn without_tools() -> DesktopReadiness {
+        DesktopReadiness {
+            missing_tools: vec![MissingTool::Ffmpeg, MissingTool::Pactl],
+            ..DesktopReadiness::default()
+        }
+    }
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let settings = Settings {
+        openai_api_key: String::new(),
+        audio_ducking_enabled: false,
+        ..Settings::default()
+    };
+    let mut daemon = daemon_with(&paths, settings.clone(), FixedTranscriber);
+    daemon.set_desktop_check(without_tools);
+
+    let readiness = daemon.snapshot().readiness;
+    assert!(!readiness.transcription_key);
+    assert_eq!(readiness.desktop.missing_tools, [MissingTool::Ffmpeg]);
+
+    daemon.update_settings(Settings {
+        openai_api_key: "sk-test".into(),
+        audio_ducking_enabled: true,
+        ..settings
+    });
+    let readiness = daemon.snapshot().readiness;
+    assert!(readiness.transcription_key);
+    assert_eq!(
+        readiness.desktop.missing_tools,
+        [MissingTool::Ffmpeg, MissingTool::Pactl]
+    );
 }
 
 #[test]

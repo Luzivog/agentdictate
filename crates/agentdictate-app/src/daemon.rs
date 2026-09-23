@@ -1,13 +1,14 @@
 use std::fs;
 use std::sync::{
-    Arc, Mutex, PoisonError,
+    Arc, Condvar, Mutex, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
-    AppSnapshot, DictationNotice, FailureKind, HotkeyReadiness, JobId, JobStage, RecordingMode,
-    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
+    AppSnapshot, DesktopReadiness, DictationNotice, FailureKind, HotkeyReadiness, JobId, JobStage,
+    MissingTool, Readiness, RecordingMode, Settings, Workflow, WorkflowError, WorkflowPhase,
+    WorkflowSignal, WorkflowSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
@@ -177,6 +178,10 @@ pub struct DaemonStatus {
     recording: AtomicBool,
     recording_mode: Mutex<RecordingMode>,
     hotkey: Mutex<HotkeyReadiness>,
+    /// Counts the changes the tray and the settings window show: whether a
+    /// recording runs, the shortcut's readiness, and the settings.
+    changes: Mutex<u64>,
+    changed: Condvar,
 }
 
 impl DaemonStatus {
@@ -185,7 +190,26 @@ impl DaemonStatus {
             recording: AtomicBool::new(false),
             recording_mode: Mutex::new(recording_mode),
             hotkey: Mutex::new(HotkeyReadiness::Starting),
+            changes: Mutex::new(0),
+            changed: Condvar::new(),
         }
+    }
+
+    /// Records that something shown changed, waking every watcher.
+    pub fn notify_changed(&self) {
+        *self.changes.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        self.changed.notify_all();
+    }
+
+    /// Blocks until something shown changed after the change count `seen`,
+    /// and returns the new count. Start from 0.
+    #[must_use]
+    pub fn wait_for_change(&self, seen: u64) -> u64 {
+        let changes = self.changes.lock().unwrap_or_else(PoisonError::into_inner);
+        *self
+            .changed
+            .wait_while(changes, |changes| *changes == seen)
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[must_use]
@@ -210,7 +234,12 @@ impl DaemonStatus {
     }
 
     pub fn set_hotkey_readiness(&self, readiness: HotkeyReadiness) {
-        *self.hotkey.lock().unwrap_or_else(PoisonError::into_inner) = readiness;
+        let mut hotkey = self.hotkey.lock().unwrap_or_else(PoisonError::into_inner);
+        if *hotkey != readiness {
+            *hotkey = readiness;
+            drop(hotkey);
+            self.notify_changed();
+        }
     }
 
     fn set_recording_mode(&self, mode: RecordingMode) {
@@ -334,6 +363,9 @@ pub struct Daemon<R, T, D> {
     notifier: Option<Notifier>,
     /// Set while shutting down, when a dictation ending is not announced.
     quiet: bool,
+    /// Checks what the desktop provides; tests keep the default, which
+    /// reports everything in place.
+    check_desktop: fn() -> DesktopReadiness,
     status: Arc<DaemonStatus>,
 }
 
@@ -368,6 +400,7 @@ where
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
             notifier: None,
             quiet: false,
+            check_desktop: DesktopReadiness::default,
             status,
         }
     }
@@ -1000,7 +1033,7 @@ where
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
             workflow: self.workflow.snapshot(),
-            hotkey: self.status.hotkey_readiness(),
+            readiness: self.readiness(),
             recoverable_count: self.recoverable_count,
             overlay_unavailable: matches!(
                 &self.overlay,
@@ -1008,6 +1041,26 @@ where
             ),
             history_set_aside: None,
         }
+    }
+
+    /// Whether dictation can work now. The desktop is checked each time,
+    /// so a fix such as installing ffmpeg shows without a restart.
+    fn readiness(&self) -> Readiness {
+        let mut desktop = (self.check_desktop)();
+        // Without audio ducking, lowering other sounds is never needed.
+        desktop
+            .missing_tools
+            .retain(|tool| *tool != MissingTool::Pactl || self.settings.audio_ducking_enabled);
+        Readiness {
+            shortcut: self.status.hotkey_readiness(),
+            transcription_key: !self.settings.openai_api_key.trim().is_empty(),
+            desktop,
+        }
+    }
+
+    /// Checks the real desktop for the readiness the snapshot reports.
+    pub fn set_desktop_check(&mut self, check: fn() -> DesktopReadiness) {
+        self.check_desktop = check;
     }
 
     pub fn set_hotkey_readiness(&self, readiness: HotkeyReadiness) {
@@ -1049,6 +1102,7 @@ where
         self.status.set_recording_mode(settings.recording_mode);
         self.settings = settings;
         self.publish_overlay_update();
+        self.status.notify_changed();
     }
 
     pub const fn transcriber_mut(&mut self) -> &mut T {
@@ -1076,7 +1130,9 @@ where
             self.workflow.snapshot().phase,
             WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
         );
-        self.status.recording.store(recording, Ordering::Release);
+        if self.status.recording.swap(recording, Ordering::AcqRel) != recording {
+            self.status.notify_changed();
+        }
         if let OverlayDeliveryGate::Live(overlay) = &self.overlay {
             overlay.update(OverlayUpdate {
                 notice: announcement.map(|(notice, _)| notice),

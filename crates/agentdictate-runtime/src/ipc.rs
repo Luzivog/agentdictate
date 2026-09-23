@@ -12,7 +12,8 @@ use std::time::Duration;
 use agentdictate_core::{ClientCommand, PROTOCOL_VERSION, ServerMessage};
 use thiserror::Error;
 
-const SOCKET_FILE_NAME: &str = "agentdictate.sock";
+/// The daemon's socket in the runtime directory.
+pub const SOCKET_FILE_NAME: &str = "agentdictate.sock";
 const LOCK_FILE_NAME: &str = "agentdictate.lock";
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// A session that sends nothing for this long is closed, so a client that

@@ -6,8 +6,8 @@ use std::sync::{
 use agentdictate_app::{
     AgentProcess, AppPaths, DaemonHandle, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
     connect_or_start_daemon, follow_notification_actions, init_file_logging,
-    settings_executable_for_current_process, start_hotkey_listener, start_overlay_presenter,
-    start_session_notifier, start_system_tray,
+    settings_executable_for_current_process, signal_status_changes, start_hotkey_listener,
+    start_overlay_presenter, start_session_notifier, start_system_tray,
 };
 use agentdictate_runtime::{IpcClient, IpcServer, load_settings};
 
@@ -69,6 +69,9 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         })
         .ok();
     let handle = DaemonHandle::new(process, runtime.clone());
+    if let Err(error) = signal_status_changes(handle.status(), &runtime) {
+        tracing::warn!(%error, "open windows will not follow the daemon's status");
+    }
     handle.forward_recorder_events(recorder_events)?;
     start_hotkey_listener(&handle)?;
     let _maintenance_thread =

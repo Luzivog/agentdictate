@@ -12,8 +12,9 @@ use std::{
 };
 
 use agentdictate_core::{
-    DictationMode, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, KeepTranscripts, SettingChange,
-    Settings, SettingsSnapshot, VocabularyEntry, WorkflowPhase, WorkflowSnapshot, parse_vocabulary,
+    DesktopReadiness, DictationMode, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, HotkeyReadiness,
+    KeepTranscripts, Readiness, SettingChange, Settings, SettingsSnapshot, VocabularyEntry,
+    parse_vocabulary,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, HistoryViewModel, HotkeyCaptureSink, RecoveryItemViewModel,
@@ -58,6 +59,45 @@ fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn home_shows_one_ready_line_or_one_fix_card(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    assert!(harness.has("home-starting"));
+    let ready = Readiness {
+        shortcut: HotkeyReadiness::Ready,
+        transcription_key: true,
+        desktop: DesktopReadiness::default(),
+    };
+    harness.update_workspace(|workspace| workspace.readiness = ready.clone());
+    assert!(harness.has("home-ready"));
+    assert!(!harness.has("home-fix-card"));
+
+    harness.update_workspace(|workspace| workspace.readiness.transcription_key = false);
+    assert!(!harness.has("home-ready"));
+    harness.click("home-fix-open-settings");
+    assert_eq!(harness.active_route(), Route::Settings);
+}
+
+/// One banner area says why the window cannot follow the daemon, on every
+/// page; an outdated window can only be reopened, so that wins.
+#[gpui::test]
+fn a_daemon_that_is_away_or_updated_shows_one_banner(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    assert!(!harness.has("daemon-banner"));
+    harness.update_workspace(|workspace| workspace.daemon_unreachable = true);
+    assert!(harness.has("daemon-banner"));
+    harness.update_workspace(|workspace| workspace.window_outdated = true);
+    assert_eq!(
+        harness.read_workspace(|workspace| workspace.daemon_banner()),
+        Some("AgentDictate was updated — reopen this window")
+    );
+    harness.update_workspace(|workspace| {
+        workspace.window_outdated = false;
+        workspace.daemon_unreachable = false;
+    });
+    assert!(!harness.has("daemon-banner"));
+}
+
+#[gpui::test]
 fn history_set_aside_notice_follows_the_workspace(cx: &mut TestAppContext) {
     let mut harness = Harness::open(cx);
     assert!(!harness.has("history-set-aside-notice"));
@@ -74,22 +114,6 @@ fn history_set_aside_notice_follows_the_workspace(cx: &mut TestAppContext) {
         harness.cx.run_until_parked();
         assert_eq!(harness.has("history-set-aside-notice"), shown);
     }
-}
-
-#[gpui::test]
-fn an_outdated_window_asks_to_be_reopened(cx: &mut TestAppContext) {
-    let mut harness = Harness::open(cx);
-    assert!(!harness.has("window-outdated-notice"));
-    harness.shell.update(harness.cx, |shell, cx| {
-        let workspace = shell
-            .view_model()
-            .workspace
-            .clone()
-            .with_window_outdated(true);
-        shell.apply_workspace_update(workspace, cx);
-    });
-    harness.cx.run_until_parked();
-    assert!(harness.has("window-outdated-notice"));
 }
 
 /// Root, tooltips and popovers paint from gpui-component's resolved token
@@ -130,13 +154,7 @@ impl Harness {
     }
 
     fn open_with_size(cx: &mut TestAppContext, viewport: Size<Pixels>) -> Self {
-        let model = ShellViewModel::from_snapshot(
-            Route::Home,
-            WorkflowSnapshot {
-                phase: WorkflowPhase::Ready,
-            },
-        )
-        .with_history(HistoryViewModel::new(18, 2));
+        let model = ShellViewModel::new(Route::Home).with_history(HistoryViewModel::new(18, 2));
         let refreshed = model.workspace.clone();
         Self::open_model_with_actions(
             cx,
@@ -158,11 +176,7 @@ impl Harness {
 
     /// Opens Settings on a fake daemon.
     fn open_connected(cx: &mut TestAppContext, daemon: &FakeDaemon) -> Self {
-        Self::open_connected_with(
-            cx,
-            ShellViewModel::from_snapshot(Route::Settings, ready()),
-            daemon,
-        )
+        Self::open_connected_with(cx, ShellViewModel::new(Route::Settings), daemon)
     }
 
     fn open_connected_with(
@@ -277,6 +291,21 @@ impl Harness {
         self.cx.run_until_parked();
     }
 
+    /// Applies a workspace update like the window's watcher does.
+    fn update_workspace(&mut self, change: impl FnOnce(&mut WorkspaceViewModel)) {
+        self.shell.update(self.cx, |shell, cx| {
+            let mut workspace = shell.view_model().workspace.clone();
+            change(&mut workspace);
+            shell.apply_workspace_update(workspace, cx);
+        });
+        self.cx.run_until_parked();
+    }
+
+    fn read_workspace<T>(&mut self, read: impl FnOnce(&WorkspaceViewModel) -> T) -> T {
+        self.shell
+            .read_with(self.cx, |shell, _| read(&shell.view_model().workspace))
+    }
+
     fn active_route(&mut self) -> Route {
         self.shell
             .read_with(self.cx, |shell, _| shell.active_route())
@@ -286,12 +315,6 @@ impl Harness {
         self.shell.read_with(self.cx, |shell, _| {
             shell.view_model().workspace.usage.period
         })
-    }
-}
-
-fn ready() -> WorkflowSnapshot {
-    WorkflowSnapshot {
-        phase: WorkflowPhase::Ready,
     }
 }
 
@@ -376,13 +399,7 @@ fn history(
 fn recovery_rows_emit_typed_retry_actions(cx: &mut TestAppContext) {
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured_actions = Arc::clone(&actions);
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
@@ -434,13 +451,7 @@ fn recovery_rows_emit_typed_retry_actions(cx: &mut TestAppContext) {
 fn deleting_recoverable_audio_requires_an_explicit_second_click(cx: &mut TestAppContext) {
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured_actions = Arc::clone(&actions);
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
@@ -479,13 +490,7 @@ fn deleting_recoverable_audio_requires_an_explicit_second_click(cx: &mut TestApp
 
 #[gpui::test]
 fn leaving_a_route_clears_its_destructive_confirmation_guidance(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
@@ -520,13 +525,7 @@ fn leaving_a_route_clears_its_destructive_confirmation_guidance(cx: &mut TestApp
 fn overview_charts_activity_switches_periods_and_links_to_history(cx: &mut TestAppContext) {
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured_actions = Arc::clone(&actions);
-    let model = ShellViewModel::from_snapshot(
-        Route::Home,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::Home).with_workspace(WorkspaceViewModel {
         history: history(
             Vec::new(),
             vec![TranscriptViewModel::new(
@@ -617,13 +616,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
             )
         })
         .collect();
-    let model = ShellViewModel::from_snapshot(
-        Route::Home,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::Home).with_workspace(WorkspaceViewModel {
         history: HistoryViewModel::from_page(
             Vec::new(),
             vec![TranscriptViewModel::new(
@@ -690,12 +683,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
 fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_open(
     cx: &mut TestAppContext,
 ) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Home,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    );
+    let model = ShellViewModel::new(Route::Home);
     let refreshed = model.workspace.clone();
     let mut harness = Harness::open_model_with_actions(
         cx,
@@ -748,13 +736,7 @@ fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_ope
 
 #[gpui::test]
 fn failed_workspace_refresh_preserves_the_previous_usage_snapshot(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::Home,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::Home).with_workspace(WorkspaceViewModel {
         usage: UsageViewModel::new(
             UsagePeriod::Last30Days,
             UsageTotals {
@@ -833,13 +815,7 @@ fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestA
             )
         })
         .collect();
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(recoveries, transcripts),
         ..WorkspaceViewModel::default()
     });
@@ -887,13 +863,7 @@ fn history_loads_more_without_rendering_the_archive(cx: &mut TestAppContext) {
             )
         })
         .collect();
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: HistoryViewModel::from_page(Vec::new(), transcripts, 2_553, String::new(), true),
         ..WorkspaceViewModel::default()
     });
@@ -937,13 +907,7 @@ fn open_history_recording_actions(
     cx: &mut TestAppContext,
     transcripts: Vec<TranscriptViewModel>,
 ) -> (Harness, Arc<Mutex<Vec<WorkspaceAction>>>) {
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(Vec::new(), transcripts),
         ..WorkspaceViewModel::default()
     });
@@ -1081,12 +1045,7 @@ fn deleting_all_history_from_settings_asks_to_confirm_delete_first(cx: &mut Test
     let mut harness = Harness::open_model_with_actions(
         cx,
         size(px(1_100.), px(780.)),
-        ShellViewModel::from_snapshot(
-            Route::Settings,
-            WorkflowSnapshot {
-                phase: WorkflowPhase::Ready,
-            },
-        ),
+        ShellViewModel::new(Route::Settings),
         Arc::new(move |action| {
             captured.lock().expect("action lock").push(action);
             Ok(WorkspaceViewModel::default())
@@ -1112,12 +1071,7 @@ fn deleting_all_history_from_settings_asks_to_confirm_delete_first(cx: &mut Test
 
 #[gpui::test]
 fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    );
+    let model = ShellViewModel::new(Route::History);
     let refreshed = model.workspace.clone();
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&actions);
@@ -1154,13 +1108,7 @@ fn navigating_from_deep_history_opens_settings_at_its_own_top(cx: &mut TestAppCo
             )
         })
         .collect();
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
         history: history(Vec::new(), transcripts),
         ..WorkspaceViewModel::default()
     });
@@ -1446,11 +1394,7 @@ fn open_with_vocabulary(
 }
 
 fn open_words(cx: &mut TestAppContext, vocabulary: &str) -> (Harness, FakeDaemon) {
-    open_with_vocabulary(
-        cx,
-        ShellViewModel::from_snapshot(Route::Words, ready()),
-        vocabulary,
-    )
+    open_with_vocabulary(cx, ShellViewModel::new(Route::Words), vocabulary)
 }
 
 #[gpui::test]
@@ -1530,20 +1474,19 @@ fn a_duplicate_spelling_is_refused_inline_without_saving(cx: &mut TestAppContext
 
 #[gpui::test]
 fn fix_a_word_in_an_expanded_transcript_adds_what_was_heard_to_words(cx: &mut TestAppContext) {
-    let model =
-        ShellViewModel::from_snapshot(Route::History, ready()).with_workspace(WorkspaceViewModel {
-            history: history(
-                Vec::new(),
-                vec![TranscriptViewModel::new(
-                    41,
-                    "Today 14:18",
-                    "I met shiv on today.",
-                    5,
-                    "0:04",
-                )],
-            ),
-            ..WorkspaceViewModel::default()
-        });
+    let model = ShellViewModel::new(Route::History).with_workspace(WorkspaceViewModel {
+        history: history(
+            Vec::new(),
+            vec![TranscriptViewModel::new(
+                41,
+                "Today 14:18",
+                "I met shiv on today.",
+                5,
+                "0:04",
+            )],
+        ),
+        ..WorkspaceViewModel::default()
+    });
     let (mut harness, daemon) = open_with_vocabulary(cx, model, "Siobhan\nKubernetes");
     assert!(!harness.has("history-fix-word-41"));
 
