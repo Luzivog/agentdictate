@@ -130,9 +130,11 @@ enum RecorderOwnerCommand {
     Shutdown,
 }
 
-/// Owns every `pw-record` child from one daemon-lifetime thread. Linux ties
-/// `PR_SET_PDEATHSIG` to the thread that forks, so spawning from per-client IPC
-/// threads would make a successful request kill its own recorder on return.
+/// Owns every dictation's `pw-record` child from one daemon-lifetime thread.
+/// Linux ties `PR_SET_PDEATHSIG` to the thread that forks, so spawning from
+/// per-client IPC threads would make a successful request kill its own
+/// recorder on return. Only the Setup screen's microphone test spawns
+/// `pw-record` on an IPC thread, because it also stops it before replying.
 /// The thread also starts each recording's `OpusEncoder`, supervises the
 /// active recording, and reports its exit, stall, or maximum length as a
 /// `RecorderEvent`. It never waits for the daemon: the daemon holds its lock

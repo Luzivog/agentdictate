@@ -229,6 +229,7 @@ fn key_step(
             .when(model.has_api_key, |control| {
                 control.child(
                     action_button("setup-key-cancel")
+                        .debug_selector(|| "setup-key-cancel".to_owned())
                         .ghost()
                         .small()
                         .label("Cancel")
@@ -481,7 +482,7 @@ fn try_it_step(model: &SetupPageModel, theme: ThemeTokens) -> gpui::Div {
             step.child(outcome(
                 "setup-try-it-works",
                 theme.success,
-                "It works ✓ You can dictate like this in any app.",
+                "Text arrived ✓ If it's what you said, you can dictate like this in any app.",
             ))
         })
 }

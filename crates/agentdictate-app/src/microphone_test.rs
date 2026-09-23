@@ -4,8 +4,8 @@
 
 use std::{
     fs::{self, File},
-    io::Read,
-    path::PathBuf,
+    io::{self, Read},
+    path::{Path, PathBuf},
     sync::{Mutex, PoisonError},
     time::{Duration, Instant},
 };
@@ -36,8 +36,9 @@ const HEARD_READINGS: usize = 3;
 
 /// The microphone through `pw-record`, as a dictation records it. Its audio
 /// goes to a file in the runtime directory whose name is removed as soon as
-/// recording starts, so nothing it hears outlasts the test, even if the
-/// daemon dies during it.
+/// recording starts, so nothing it hears outlasts the test. A test that
+/// fails also removes it, and a daemon that died during one removes it at
+/// its next start.
 pub(crate) struct Microphone {
     recorder: PwRecordRecorder,
     file: PathBuf,
@@ -52,6 +53,15 @@ impl Microphone {
             recorder: PwRecordRecorder::new(SystemCommandRunner, program),
             file,
             busy: Mutex::new(()),
+        }
+    }
+
+    /// Deletes the file of a test that a daemon which died left behind.
+    pub(crate) fn remove_leftover(&self) {
+        match fs::remove_file(&self.file) {
+            Ok(()) => tracing::info!("removed an unfinished microphone test's audio"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%error, "could not remove a microphone test's audio"),
         }
     }
 
@@ -97,6 +107,7 @@ impl Microphone {
         mut samples: impl FnMut(&[i16]) -> bool,
     ) -> anyhow::Result<()> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        let _removed = RemovedOnReturn(&self.file);
         let mut recording = self
             .recorder
             .start(&self.file, Instant::now() + START_TIMEOUT)?;
@@ -132,6 +143,16 @@ impl Microphone {
             }
         }
         Ok(())
+    }
+}
+
+/// Removes a microphone test's file however the test ends, such as when
+/// the recorder wrote it but never started.
+struct RemovedOnReturn<'a>(&'a Path);
+
+impl Drop for RemovedOnReturn<'_> {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(self.0);
     }
 }
 

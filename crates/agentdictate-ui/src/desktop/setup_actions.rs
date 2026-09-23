@@ -19,6 +19,9 @@ pub(super) struct SetupState {
     /// The saved key's Replace was clicked, so the key field shows.
     pub(super) replacing_key: bool,
     pub(super) key: KeyCheck,
+    /// Counts key checks, and Replace and Cancel, so that only the answer to
+    /// the latest check shows: an earlier key's answer must not be saved.
+    key_checks: u64,
     pub(super) access: AccessGrant,
     pub(super) microphone: MicrophoneTest,
     /// The level meter, from 0 to 100: how loud the microphone is while the
@@ -93,6 +96,7 @@ impl SetupState {
             api_key,
             replacing_key: false,
             key: KeyCheck::Idle,
+            key_checks: 0,
             access: AccessGrant::Idle,
             microphone: MicrophoneTest::Idle,
             meter: 0,
@@ -121,13 +125,17 @@ impl SettingsShell {
             }
             Some(key)
         };
+        self.setup.key_checks += 1;
+        let check = self.setup.key_checks;
         let sink = Arc::clone(&self.setup.sink);
         let checked = pasted.clone();
         let answer = cx.background_spawn(async move { sink.check_api_key(checked) });
         cx.spawn_in(window, async move |shell, cx| {
             let answer = answer.await;
             let _ = shell.update_in(cx, |shell, window, cx| {
-                shell.finish_key_check(pasted, answer, window, cx);
+                if shell.setup.key_checks == check {
+                    shell.finish_key_check(pasted, answer, window, cx);
+                }
             });
         })
         .detach();
@@ -156,7 +164,8 @@ impl SettingsShell {
                 "OpenAI didn't accept your saved key. Replace it with a new one.".to_owned(),
             ),
             Ok(ApiKeyCheck::Unreachable) => KeyCheck::Problem(
-                "Couldn't reach OpenAI. Check your internet connection and try again.".to_owned(),
+                "Couldn't check the key with OpenAI. Check your internet connection and try again."
+                    .to_owned(),
             ),
             Err(error) => KeyCheck::Problem(format!("Couldn't check the key: {error}")),
         };
@@ -193,6 +202,8 @@ impl SettingsShell {
     ) {
         self.setup.replacing_key = replacing;
         self.setup.key = KeyCheck::Idle;
+        // A check still on its way answers for the key that was shown.
+        self.setup.key_checks += 1;
         self.setup.api_key.update(cx, |input, cx| {
             input.set_value(String::new(), window, cx);
             if replacing {
@@ -205,6 +216,9 @@ impl SettingsShell {
     /// Asks before Grant access, which prompts for the user's password;
     /// `false` takes the question back.
     pub(super) fn confirm_grant(&mut self, asking: bool, cx: &mut Context<Self>) {
+        if self.setup.access == AccessGrant::Granting {
+            return;
+        }
         self.setup.access = if asking {
             AccessGrant::Confirming
         } else {
@@ -214,7 +228,11 @@ impl SettingsShell {
     }
 
     /// Grants keyboard and paste access, then shows the readiness it left.
+    /// A grant already waiting for the password is not started again.
     pub(super) fn grant_access(&mut self, cx: &mut Context<Self>) {
+        if self.setup.access == AccessGrant::Granting {
+            return;
+        }
         let sink = Arc::clone(&self.setup.sink);
         let answer = cx.background_spawn(async move { sink.grant_access() });
         cx.spawn(async move |shell, cx| {

@@ -190,10 +190,15 @@ impl WorkspaceClient {
         Ok(Some(state.view_model()))
     }
 
+    /// The daemon's runtime directory, where its socket is.
+    pub(crate) fn runtime_directory(&self) -> &Path {
+        &self.runtime_directory
+    }
+
     /// Asks the daemon for its status: its readiness and the notices the
     /// window shows. A daemon on another protocol means this window is
     /// outdated; one that does not answer, that it is reconnecting.
-    fn refresh_status(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
+    pub(crate) fn refresh_status(&self) -> Result<WorkspaceViewModel, WorkspaceError> {
         let status = IpcClient::connect(&self.runtime_directory)
             .map_err(WorkspaceError::from)
             .and_then(|(_, message)| match message.kind {

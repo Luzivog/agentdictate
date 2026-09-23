@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
             hotkey_capture,
             actions: workspace_action_sink,
             setup: Arc::new(SetupClient::new(
-                paths.runtime.clone(),
+                Arc::clone(&workspace_client),
                 paths.native_access.clone(),
             )),
         },

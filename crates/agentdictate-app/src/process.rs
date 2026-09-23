@@ -119,6 +119,7 @@ impl AgentProcess {
             history_set_aside,
             ..Self::from_parts(daemon, &paths)
         };
+        process.microphone.remove_leftover();
         Ok((process, recorder_events))
     }
 }
@@ -803,14 +804,9 @@ mod tests {
         assert_eq!(std::fs::read(set_aside).unwrap(), b"garbage");
     }
 
-    /// A daemon whose microphone is a fake pw-record: it writes a WAV header
-    /// and one second of `sample` bytes, then keeps its file open for
-    /// `then_wait` seconds.
-    fn daemon_with_microphone(
-        root: &Path,
-        sample: &str,
-        then_wait: f32,
-    ) -> (crate::DaemonHandle, AppPaths) {
+    /// A daemon whose microphone is a fake pw-record that writes a WAV
+    /// header, then runs `then` (shell) with its file as `$output`.
+    fn daemon_with_microphone(root: &Path, then: &str) -> (crate::DaemonHandle, AppPaths) {
         use std::os::unix::fs::PermissionsExt;
 
         let recorder = root.join("fake-pw-record");
@@ -821,8 +817,7 @@ mod tests {
                  for output do :; done\n\
                  trap 'exit 0' INT TERM\n\
                  printf 'RIFF\\000\\000\\000\\000WAVEfmt \\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\000\\175\\000\\000\\002\\000\\020\\000data\\000\\000\\000\\000' > \"$output\"\n\
-                 head -c 32000 /dev/zero | tr '\\000' '{sample}' >> \"$output\"\n\
-                 sleep {then_wait}\n"
+                 {then}\n"
             ),
         )
         .unwrap();
@@ -839,6 +834,11 @@ mod tests {
         (handle, paths)
     }
 
+    /// One second of `sample` bytes, then `wait` seconds with the file open.
+    fn one_second_of(sample: &str, wait: f32) -> String {
+        format!("head -c 32000 /dev/zero | tr '\\000' '{sample}' >> \"$output\"; sleep {wait}")
+    }
+
     /// The window's Setup screen tests the microphone over IPC.
     #[test]
     fn a_microphone_test_reports_levels_and_keeps_nothing_it_heard() {
@@ -849,14 +849,19 @@ mod tests {
             ("\\000", MicrophoneCheck::Silent),
         ] {
             let directory = tempdir().unwrap();
-            let (handle, paths) = daemon_with_microphone(directory.path(), sample, 0.2);
+            let (handle, paths) =
+                daemon_with_microphone(directory.path(), &one_second_of(sample, 0.2));
             let server = agentdictate_runtime::IpcServer::bind(&paths.runtime).unwrap();
             let serving = {
                 let handle = handle.clone();
                 std::thread::spawn(move || server.serve_next(&handle).unwrap())
             };
-            let window =
-                crate::SetupClient::new(paths.runtime.clone(), paths.native_access.clone());
+            let workspace = crate::WorkspaceClient::new(
+                paths.runtime.clone(),
+                paths.database_file.clone(),
+                handle.with_process(|process| process.snapshot()),
+            );
+            let window = crate::SetupClient::new(Arc::new(workspace), paths.native_access.clone());
 
             let mut levels = Vec::new();
             let heard = window
@@ -887,7 +892,7 @@ mod tests {
     #[test]
     fn a_microphone_test_stops_listening_once_its_window_is_gone() {
         let directory = tempdir().unwrap();
-        let (handle, _paths) = daemon_with_microphone(directory.path(), "0", 30.0);
+        let (handle, _paths) = daemon_with_microphone(directory.path(), &one_second_of("0", 30.0));
         let started = std::time::Instant::now();
 
         let mut levels = 0;
@@ -902,6 +907,28 @@ mod tests {
 
         assert_eq!(levels, 3);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_microphone_test_that_fails_or_dies_leaves_no_audio_behind() {
+        let directory = tempdir().unwrap();
+        // The recorder writes its file, then stops before any audio.
+        let (handle, paths) = daemon_with_microphone(directory.path(), "exit 1");
+        let file = paths.runtime.join(MICROPHONE_TEST_FILE);
+
+        let reply = handle.handle(ClientCommandKind::TestMicrophone.into());
+
+        assert!(matches!(
+            reply.kind,
+            ServerMessageKind::CommandRejected { .. }
+        ));
+        assert!(!file.exists());
+
+        // A daemon that died during a test left its file; the next removes it.
+        std::fs::write(&file, b"RIFF").unwrap();
+        drop(handle);
+        let _restarted = AgentProcess::open(paths).unwrap();
+        assert!(!file.exists());
     }
 
     /// Answers each API key check: 200 for `sk-works`, 401 for any other.

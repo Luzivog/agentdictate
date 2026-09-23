@@ -25,9 +25,9 @@ use agentdictate_ui::{
     WorkspaceViewModel, test_support,
 };
 use gpui::{
-    AppContext, Bounds, ClipboardItem, Entity, Modifiers, MouseButton, Pixels, ScrollDelta,
-    ScrollWheelEvent, Size, StyledText, TestAppContext, VisualTestContext, WindowBounds,
-    WindowOptions, point, prelude::*, px, size,
+    AppContext, Bounds, ClipboardItem, Entity, InputEvent, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta, ScrollWheelEvent, Size, StyledText,
+    TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
 use gpui_component::{Root, Theme};
 
@@ -262,6 +262,46 @@ impl Harness {
 
     fn click_direct(&mut self, selector: &'static str) {
         support::click(self.cx, selector);
+    }
+
+    /// Clicks each of `selectors` where it is now, before the window reacts
+    /// to any of the clicks, as quick successive clicks would.
+    fn click_before_it_reacts(&mut self, selectors: &[&'static str]) {
+        let positions: Vec<_> = selectors
+            .iter()
+            .map(|selector| self.bounds(selector).center())
+            .collect();
+        self.cx.update(|window, cx| {
+            for position in positions {
+                let modifiers = Modifiers::none();
+                for event in [
+                    MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers,
+                    }
+                    .to_platform_input(),
+                    MouseDownEvent {
+                        position,
+                        modifiers,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        first_mouse: false,
+                    }
+                    .to_platform_input(),
+                    MouseUpEvent {
+                        position,
+                        modifiers,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                ] {
+                    window.dispatch_event(event, cx);
+                }
+            }
+        });
+        self.cx.run_until_parked();
     }
 
     fn type_text(&mut self, selector: &'static str, text: &str) {
@@ -1659,6 +1699,29 @@ fn setup_saves_a_pasted_key_only_once_openai_accepts_it(cx: &mut TestAppContext)
     assert!(!harness.has("setup-step-key-done"));
 }
 
+/// Cancel takes back a replacement key even while OpenAI is still checking
+/// it: the answer that follows is not saved.
+#[gpui::test]
+fn a_key_check_answered_after_cancel_saves_nothing(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings {
+        openai_api_key: "sk-saved".to_owned(),
+        ..Settings::default()
+    });
+    let mut harness = open_setup(cx, &daemon);
+    harness.click("setup-key-replace");
+    harness.type_text("setup-key-input", "sk-replacement");
+
+    harness.click_before_it_reacts(&["setup-check-key", "setup-key-cancel"]);
+
+    assert_eq!(
+        *daemon.setup.checked_keys.lock().unwrap(),
+        [Some("sk-replacement".to_owned())]
+    );
+    assert!(daemon.requests().is_empty());
+    assert!(!harness.has("setup-key-works"));
+    assert!(harness.has("setup-key-saved"));
+}
+
 #[gpui::test]
 fn granting_access_asks_first_and_says_to_log_out_only_while_access_is_missing(
     cx: &mut TestAppContext,
@@ -1691,8 +1754,9 @@ fn granting_access_asks_first_and_says_to_log_out_only_while_access_is_missing(
     assert!(!harness.has("setup-grant-confirm"));
     assert_eq!(*daemon.setup.grants.lock().unwrap(), 0);
 
+    // A second click while the password prompt is up grants nothing more.
     harness.click("setup-grant-access");
-    harness.click("setup-grant-continue");
+    harness.click_before_it_reacts(&["setup-grant-continue", "setup-grant-continue"]);
     assert_eq!(*daemon.setup.grants.lock().unwrap(), 1);
     assert!(harness.has("setup-log-out"));
 

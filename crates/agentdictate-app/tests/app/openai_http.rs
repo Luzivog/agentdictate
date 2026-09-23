@@ -281,10 +281,12 @@ fn answer_once(status: &'static str) -> (std::net::SocketAddr, thread::JoinHandl
 }
 
 #[test]
-fn an_api_key_check_lists_the_models_with_the_key_and_reads_a_refusal() {
+fn an_api_key_check_asks_to_transcribe_nothing_and_reads_a_refusal() {
     for (status, expected) in [
-        ("200 OK", ApiKeyCheck::Works),
+        // Past the key and its permissions, only the audio is missing.
+        ("400 Bad Request", ApiKeyCheck::Works),
         ("401 Unauthorized", ApiKeyCheck::Rejected),
+        ("403 Forbidden", ApiKeyCheck::Rejected),
         ("503 Service Unavailable", ApiKeyCheck::Unreachable),
     ] {
         let (address, server) = answer_once(status);
@@ -294,18 +296,22 @@ fn an_api_key_check_lists_the_models_with_the_key_and_reads_a_refusal() {
 
         let request = server.join().unwrap();
         assert_eq!(outcome, expected, "{status}");
-        assert!(request.starts_with("GET /v1/models HTTP/1.1"), "{request}");
+        assert!(
+            request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"),
+            "{request}"
+        );
         assert!(request.contains("authorization: Bearer sk-test"));
+        assert!(!request.contains("name=\"file\""));
     }
 
     let unreachable = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap();
-    assert_eq!(
-        OpenAiKeyCheck::with_api_base(format!("http://{unreachable}/v1")).check("sk-test"),
-        ApiKeyCheck::Unreachable
-    );
+    let check = OpenAiKeyCheck::with_api_base(format!("http://{unreachable}/v1"));
+    assert_eq!(check.check("sk-test"), ApiKeyCheck::Unreachable);
+    // A key that can't be sent in a header is refused without asking.
+    assert_eq!(check.check("sk-te\nst"), ApiKeyCheck::Rejected);
 }
 
 fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'_> {

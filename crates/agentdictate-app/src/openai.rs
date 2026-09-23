@@ -480,8 +480,11 @@ impl SpeechTransport for ReqwestOpenAiTransport {
     }
 }
 
-/// Checks OpenAI API keys with the cheapest authenticated request: listing
-/// the models, which costs nothing. The key is never logged.
+/// Checks OpenAI API keys with the permission dictation needs: a
+/// transcription request without audio. OpenAI checks the key before the
+/// request, so a key that may transcribe gets 400 for the missing audio, and
+/// nothing is transcribed or billed. Listing the models would refuse a key
+/// restricted to transcription. The key is never logged.
 #[derive(Clone, Debug)]
 pub struct OpenAiKeyCheck {
     api_base: String,
@@ -504,8 +507,9 @@ impl OpenAiKeyCheck {
     }
 
     /// What OpenAI says about `api_key`. It refuses a key with 401 or 403,
-    /// as for a transcription; any other status, or no answer, means it
-    /// could not say.
+    /// as for a transcription, and a key that cannot be sent at all, such as
+    /// one with a line break inside, is refused too. Any other answer, or
+    /// none, means OpenAI could not say.
     #[must_use]
     pub fn check(&self, api_key: &str) -> ApiKeyCheck {
         let client = reqwest::blocking::Client::builder()
@@ -514,16 +518,24 @@ impl OpenAiKeyCheck {
             .build()
             .expect("the rustls HTTP client must be constructible");
         let response = client
-            .get(format!("{}/models", self.api_base))
+            .post(format!("{}/audio/transcriptions", self.api_base))
             .bearer_auth(api_key.trim())
+            .multipart(
+                reqwest::blocking::multipart::Form::new()
+                    .text("model", agentdictate_core::TRANSCRIPTION_MODEL),
+            )
             .send();
         match response.map(|response| response.status()) {
-            Ok(status) if status.is_success() => ApiKeyCheck::Works,
+            Ok(status) if status.is_success() || status == StatusCode::BAD_REQUEST => {
+                ApiKeyCheck::Works
+            }
             Ok(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => ApiKeyCheck::Rejected,
             Ok(status) => {
                 tracing::warn!(%status, "OpenAI did not say whether the API key works");
                 ApiKeyCheck::Unreachable
             }
+            // The key is not a valid header value.
+            Err(error) if error.is_builder() => ApiKeyCheck::Rejected,
             Err(error) => {
                 tracing::warn!(%error, "could not reach OpenAI to check the API key");
                 ApiKeyCheck::Unreachable
