@@ -1,23 +1,55 @@
-# Develop and verify AgentDictate
+# Develop AgentDictate
 
-## Check the checkout and host
+[AGENTS.md](../AGENTS.md) holds the repository rules: work on `main`, the narrow Cargo
+commands, disk and build coordination, the final `./run-tests.sh` gate, and delivery.
+This guide covers the practical side: setting up a host, running a development
+build, testing, checking the overlay on a real compositor, and debugging.
+[The architecture overview](architecture.md) explains how the pieces fit.
 
-Run `scripts/dev.sh doctor` before starting. It reports build tools, development
-library metadata, optional tools, Git status, worktrees, disk space, and active
-Rust or linker processes. A nonzero exit means a build prerequisite is missing.
-See [installation requirements](INSTALL.md#requirements) for the package list.
-The xkbcommon runtime-library fallback can allow local builds without development
-metadata. A passing build proves that target links, not that packaging prerequisites
-are complete. The doctor does not install packages or check native input access.
+## Set up a host
 
-Work directly on `main`. Do not create branches, worktrees, or PRs. Coordinate
-writers in this checkout and inspect `git diff` before staging. For independent
-audit work, use read-only agents. Build artifacts share `target/`; do not run
-concurrent broad gates, delete artifacts, or change `CARGO_TARGET_DIR`.
+Install the packages from [the install guide](INSTALL.md#requirements) and Rust
+through rustup, then run:
 
-Before release builds, benchmarks, or the full gate, check the doctor's disk and
-process output. Wait for competing builds to finish. Keep Cargo's default job
-parallelism. Use the normal profiles for iterative work.
+```bash
+scripts/dev.sh doctor
+```
+
+It reports build tools, development library metadata, optional tools, Git status,
+worktrees, disk space, and running Cargo or linker processes. A nonzero exit means a
+build prerequisite is missing. It does not install packages or check native input
+access.
+
+### Hosts without the xkbcommon development packages
+
+GPUI links `libxkbcommon.so` and `libxkbcommon-x11.so` by their development names,
+which only `libxkbcommon-dev` and `libxkbcommon-x11-dev` provide.
+`packaging/linker-runtime-fallback.sh` works around a missing package: it points
+symlinks in `target/linker-shims` at the installed runtime libraries and adds that
+directory to `LIBRARY_PATH`. `install.sh`, `run.sh`, `run-tests.sh`, and
+`scripts/dev.sh` source it for you.
+
+Direct Cargo commands that link GPUI need it too. That means anything built with
+the `desktop` or `test-support` features of `agentdictate-ui`, including the
+`agentdictate` binary. Once the shims exist, export the path in the same shell:
+
+```bash
+export LIBRARY_PATH="$PWD/target/linker-shims"
+cargo test --locked -p agentdictate-ui --test desktop --features test-support
+```
+
+Or create the shims and run one command in a subshell:
+
+```bash
+(
+  PROJECT_DIR="$PWD"
+  source packaging/linker-runtime-fallback.sh
+  cargo check --locked -p agentdictate-ui --features desktop
+)
+```
+
+A build that links this way proves that the target links, not that a clean host
+has every packaging prerequisite.
 
 ## Run a development build
 
@@ -40,104 +72,105 @@ shortcut they share triggers both: give the dev instance another shortcut, or
 stop the installed one with `systemctl --user stop agentdictated.service` while
 you test and start it again afterwards.
 
-## Run focused checks with saved feedback
+## Test
 
-The runner accepts a crate suffix, `lib` or an integration harness, and an optional
-test filter. It adds `--locked`, selects one target, and saves the command, Git
-revision and status, compiler version, output, elapsed time, and exit status under
-`$XDG_STATE_HOME/agentdictate/checks`, defaulting to
-`~/.local/state/agentdictate/checks`.
+Each crate has its unit tests beside the code and one or two integration harnesses
+in `tests/`: `core`, `runtime`, `linux`, `app`, and, for the UI, `contracts`
+(view models) and `desktop` (headless GPUI, needs `--features test-support`). The
+desktop tests drive rendered controls in a headless GPUI context; they never open a
+window or move your mouse.
+
+`scripts/dev.sh test` runs one harness and saves a log of it. It takes a crate
+suffix, `lib` or a harness name, and an optional test filter:
 
 ```bash
-scripts/dev.sh test core core replacements
 scripts/dev.sh test core lib textfmt
 scripts/dev.sh test runtime runtime history_usage
 scripts/dev.sh test app app daemon_flow
-scripts/dev.sh test ui contracts
 scripts/dev.sh test ui desktop rendered_interactions
 ```
 
-The desktop harness automatically enables `test-support`. Its GPUI tests drive
-rendered controls in a headless test context without moving your mouse or opening
-the app. An unknown harness, compilation failure, failing test, or filter with
-zero passing tests returns nonzero. The runner does not enable ignored tests.
-To rerun one failure, use its name as the filter and inspect the saved log.
+It adds `--locked`, enables `test-support` for the desktop harness, and writes the
+command, Git revision and status, compiler version, output, elapsed time, and exit
+status under `$XDG_STATE_HOME/agentdictate/checks` (default
+`~/.local/state/agentdictate/checks`). A compile error, a failing test, or a filter
+that matches no passing test exits nonzero.
 
-For compiler or lint checks, use Cargo directly:
+Tests that need `/dev/uinput` create and grab their own virtual keyboard, so their
+key presses never reach your desktop. Without access they print `SKIPPED` and pass,
+so a passing run on a host without access proves less. The one ignored test,
+`codex_subscription_live`, sends audio to ChatGPT; run it only on purpose.
+
+To measure how a transcription change affects output, use `agentdictate-evaluate`
+as described in [dictation output](dictation-output.md#evaluate-a-change).
+
+## Check the overlay and paste on a real compositor
+
+The automated tests cannot prove that the overlay is visible, where it appears, or
+that a paste reaches another app. `packaging/test-overlay-desktop.py` checks those
+on a private, headless GNOME Shell. It runs the production overlay helper with
+synthetic audio and workflow updates, and the production clipboard owner through
+the `selection_probe` example. It uses a private session bus and temporary XDG
+directories, and sends its paste only to the private compositor's own virtual
+keyboard, so your session is untouched.
+
+It needs GNOME Shell 46 or later, XWayland, `gsettings`, `xrandr`, `xprop`,
+`xwininfo`, GTK 3, Tesseract, and Python GI and Pillow, which is why it runs with
+the system `/usr/bin/python3`. Build the desktop binary and the probe, then run it
+for each target:
 
 ```bash
-cargo check --locked -p agentdictate-ui --features desktop
-cargo clippy --locked -p agentdictate-core --lib -- -D warnings
-cargo clippy --locked -p agentdictate-runtime --lib -- -D warnings
+cargo build --locked -p agentdictate-app --features desktop --bin agentdictate
+cargo build --locked -p agentdictate-linux --example selection_probe
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --target x11
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --scale 2 --target wayland
+/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate \
+  --monitor 1920x1080 --scale 1.25 --target x11
 ```
 
-Format only changed files with `rustfmt --edition 2024 <changed-files>`.
-If a direct desktop build cannot find the xkbcommon linker names, use the same
-fallback as the installer in a subshell:
+The script finds the probe in `target/debug/examples` next to the binary, or takes
+`--selection-probe <path>`. `--monitor` can repeat; the default is three monitors of
+different sizes. It prints a JSON report and fails on the first broken check:
 
-```bash
-(
-  PROJECT_DIR="$PWD"
-  source packaging/linker-runtime-fallback.sh
-  cargo test --locked -p agentdictate-ui --test desktop --features test-support
-)
-```
+- composited waveform pixels, the Transcribing label, and transparent corners;
+- placement on the primary monitor, including after monitor and work-area changes;
+- an unmanaged window that never takes focus from a real GTK target or adds an app
+  entry;
+- dismissal through a hidden update and through stdin EOF;
+- both selections published, a paste into the target that the owner sees as
+  acknowledged while Mutter's own clipboard fetch does not count, and CLIPBOARD and
+  PRIMARY retrieval by Wayland and X11 targets.
+
+It does not check a panel extension such as dash-to-panel. Run it after changing the
+overlay, its placement, the clipboard, or the paste path.
 
 ## Measure replacement processing
 
-After checking disk and competing builds, run `scripts/dev.sh bench` before and
-after the implementation change on the same host. Avoid other heavy workloads
-during measurement. The standalone benchmark uses the release profile and has
-no additional dependencies. It covers no rules, disabled rules, a miss, a short
-transcript, and a 30 KB transcript with 2,000 accepted replacements.
+`scripts/dev.sh bench` runs the release-profile benchmark of the legacy replacement
+engine: no rules, disabled rules, a miss, a short transcript, and a 30 KB
+transcript with 2,000 replacements. Each case doubles its iteration count until a
+batch takes at least 30 ms, then reports the minimum, median, and maximum of nine
+batches in nanoseconds per call. Run it before and after a change on the same idle
+host, and compare medians. It measures replacement processing only, not recording
+or network latency.
 
-Each case doubles its iteration count until a batch takes at least 30 ms, then
-reports the minimum, median, and maximum of nine batches in nanoseconds per call.
-The timed section includes output allocation, destruction, and per-rule regex
-compilation. Calibration warms the cached word-character matcher. Rust compilation
-and fixture construction are excluded.
-Compare medians, retain the complete logs, and report absolute savings as well as
-ratios. These numbers measure replacement processing, not recording or network latency.
+## Debug
 
-The benchmark exits without measuring when `cargo test --all-targets` invokes it.
-Run correctness tests separately, including Unicode boundaries and ordered rules.
+Start from a failing test, with `RUST_BACKTRACE=1` if needed. Logs are daily files in
+`~/.local/state/agentdictate/logs`, or `target/dev-home/state/agentdictate/logs` for
+a development instance. `RUST_LOG=debug` raises the level. Read only the lines you
+need, because logs can contain transcript text.
 
-## Debug without changing the active desktop
-
-Start with a failing test and `RUST_BACKTRACE=1 scripts/dev.sh test ...`. The daemon
-writes daily files under `~/.local/state/agentdictate/logs` by default. Read only
-the relevant error or timing lines; logs can contain private transcript data.
-Inspect service state with:
+To see what the installed service runs:
 
 ```bash
 systemctl --user show agentdictated -p ActiveState -p SubState -p MainPID -p ExecStart
+readlink /proc/<MainPID>/exe
 ```
 
-For a native crash, use `coredumpctl info agentdictated` if the host collects
-coredumps. If line tables are insufficient, build only the affected test target
-with `--profile debugging --no-run` and run the printed executable under GDB.
-This creates another artifact variant, so first check disk and competing builds.
-Do not attach to or restart the active daemon just to debug a unit test.
-
-## Complete the change
-
-After focused checks pass, run `./run-tests.sh` exactly once. It checks formatting,
-the developer runner, all Rust targets and features, native-readiness packaging
-fixtures, and `cargo deny` when installed. Preserve its output and inspect skipped
-checks.
-
-The automated layers prove domain behavior, SQLite and IPC contracts, mocked
-provider responses, and headless GPUI interactions. They do not prove compositor
-visibility, real microphone capture, transcription-provider access, or insertion
-into another app. The ignored subscription test sends audio to an external service;
-run it only when that separate check is intended and authorized. Do not describe
-a headless run as a live desktop E2E pass.
-
-Review the diff, commit on `main`, and push to `origin/main`. Check disk and build
-activity again, then run `./install.sh`. It restarts a running
-`agentdictated.service`; start a stopped one with
-`systemctl --user start agentdictated.service`. Verify that the service is active
-and that `/proc/<MainPID>/exe` matches the installed `agentdictated` binary. Even
-though files were copied, installation exit status 2 means native access is
-missing (`./install.sh --setup-native-access` fixes it), and 3 means it works but
-another app's udev rule makes input devices world-accessible.
+After `./install.sh`, the executable should be `~/.local/bin/agentdictated`. For a
+native crash, use `coredumpctl info agentdictated` if the host collects core dumps.
+If line tables are not enough, build only the affected test target with
+`--profile debugging --no-run` and run the printed executable under GDB. That
+profile creates another artifact variant, so check disk space first. Do not attach
+to or restart the installed daemon to debug a unit test.
