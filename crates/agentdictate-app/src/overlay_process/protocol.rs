@@ -9,9 +9,17 @@ pub(super) const OVERLAY_HELPER_ARGUMENT: &str = "--overlay-helper";
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum OverlayHelperStatus {
-    WindowCreated,
+    /// The window exists. `override_redirect` is the X server's answer to
+    /// whether the window is unmanaged, so the window manager can never focus
+    /// it. A helper that omits the field counts as unconfirmed.
+    WindowCreated {
+        #[serde(default)]
+        override_redirect: bool,
+    },
     FrameSubmitted,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// Serializable recording metadata for the private daemon-to-overlay pipe.

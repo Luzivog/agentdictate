@@ -177,6 +177,18 @@ impl DisplayConnection {
             .unwrap_or(monitor))
     }
 
+    /// Whether the X server holds `window` as override-redirect: unmanaged, so
+    /// the window manager can never give it keyboard focus.
+    fn is_override_redirect(&self, window: u32) -> io::Result<bool> {
+        Ok(self
+            .connection
+            .get_window_attributes(window)
+            .map_err(io::Error::other)?
+            .reply()
+            .map_err(io::Error::other)?
+            .override_redirect)
+    }
+
     fn place(&self, window: u32, size: [u32; 3], work_area: ScreenRect) -> io::Result<ScreenRect> {
         let bounds = frame(work_area, size[0], size[1], size[2]);
         if bounds.width == 0 || bounds.height == 0 {
@@ -212,6 +224,7 @@ impl DisplayConnection {
 pub struct OverlayPlacementWatcher {
     stop: UnixStream,
     worker: Option<JoinHandle<()>>,
+    override_redirect: bool,
 }
 
 impl OverlayPlacementWatcher {
@@ -226,6 +239,12 @@ impl OverlayPlacementWatcher {
         }
         let size = logical_size.map(|n| (n as f32 * scale).round() as u32);
         let display = DisplayConnection::open()?;
+        let override_redirect = display
+            .is_override_redirect(window)
+            .unwrap_or_else(|error| {
+                tracing::warn!(window, %error, "could not read the overlay window attributes");
+                false
+            });
         let area = display.work_area()?;
         display.place(window, size, area)?;
         let (stop, stopped) = UnixStream::pair()?;
@@ -239,7 +258,15 @@ impl OverlayPlacementWatcher {
         Ok(Self {
             stop,
             worker: Some(worker),
+            override_redirect,
         })
+    }
+
+    /// Whether the X server confirmed the window as override-redirect when
+    /// placement started. The daemon pastes without waiting for the overlay
+    /// to close only when this holds; a failed read counts as unconfirmed.
+    pub const fn override_redirect(&self) -> bool {
+        self.override_redirect
     }
 }
 

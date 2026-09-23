@@ -72,7 +72,7 @@ fn monitor_overlay_status(
                     })?;
                     pending.drain(..=newline);
                     match &status {
-                        OverlayHelperStatus::WindowCreated if !created && !submitted => {
+                        OverlayHelperStatus::WindowCreated { .. } if !created && !submitted => {
                             created = true
                         }
                         OverlayHelperStatus::FrameSubmitted if !submitted => submitted = true,
@@ -137,6 +137,7 @@ pub(super) struct OverlayChild {
     input: Option<ChildStdin>,
     generation: u64,
     ready: bool,
+    override_redirect: bool,
 }
 
 impl OverlayChild {
@@ -218,6 +219,7 @@ impl OverlayChild {
             input: Some(input),
             generation,
             ready: false,
+            override_redirect: false,
         })
     }
 
@@ -231,6 +233,17 @@ impl OverlayChild {
 
     pub(super) fn is_ready(&self) -> bool {
         self.ready
+    }
+
+    /// Records the helper's own report that its window is override-redirect.
+    pub(super) fn confirm_override_redirect(&mut self) {
+        self.override_redirect = true;
+    }
+
+    /// Whether this helper's window is known to be unmanaged, so it can never
+    /// receive the focus a paste targets.
+    pub(super) fn is_override_redirect(&self) -> bool {
+        self.override_redirect
     }
 
     pub(super) fn send(&mut self, update: &OverlayUpdate) -> io::Result<()> {

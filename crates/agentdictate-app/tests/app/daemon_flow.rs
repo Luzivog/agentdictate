@@ -186,7 +186,7 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
 }
 
 #[test]
-fn daemon_waits_for_overlay_exit_before_delivery() {
+fn daemon_waits_for_an_unconfirmed_overlay_to_exit_before_delivery() {
     let directory = tempdir().unwrap();
     let paths = app_paths(directory.path());
     std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();

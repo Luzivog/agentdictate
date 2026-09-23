@@ -32,7 +32,7 @@ The current combined desktop happens to have the same horizontal center as DP-2.
 | August 24 | [`0f402a4`](https://github.com/Luzivog/agentdictate/commit/0f402a4) splits the overlay process into modules. | Structural cleanup is not evidence of a behavioral regression. |
 | August 26 | Task **Trace Ctrl+Space startup delay** measures 38 starts and explicitly distinguishes window creation from compositor display. A persistent helper is proposed, without implementation authorization in that task. [Timing report](/home/luzivog/.codex/sessions/2026/08/26/rollout-2026-08-26T23-19-28-01a03ff1-3817-7100-9cf6-7695c4837f7b.jsonl:385). | Actual visibility and latency were still unproven. A permanent helper would be a separate design change. |
 | August 31 | [`a62b77a`](https://github.com/Luzivog/agentdictate/commit/a62b77a) publishes Cleaning while synchronous processing blocks the normal daemon path. | Keep the live cleanup transition and animated processing feedback. |
-| August 31 | [`a3ea6ac`](https://github.com/Luzivog/agentdictate/commit/a3ea6ac) adds 100 ms fade-in, 120 ms fade-out, and 150 ms dismissal hold. | Preserve smooth dismissal and exit-before-paste while testing actual frames. |
+| August 31 | [`a3ea6ac`](https://github.com/Luzivog/agentdictate/commit/a3ea6ac) adds 100 ms fade-in, 120 ms fade-out, and 150 ms dismissal hold. | Preserve smooth dismissal while testing actual frames. The paste no longer waits for the fade (see the delivery invariant below). |
 | August 31 | [`327ac7e`](https://github.com/Luzivog/agentdictate/commit/327ac7e) identifies transient wl-clipboard toplevels as a cause of dash-to-panel movement and uses xsel for both selections. | Preserve clipboard ownership and avoid reintroducing temporary clipboard windows. |
 | September 1 | [`8a76841`](https://github.com/Luzivog/agentdictate/commit/8a76841) compresses uploads and logs processing stages. | Keep durable WAV recovery and transcription behavior outside the overlay repair. |
 
@@ -92,7 +92,7 @@ Carry bounded failure diagnostics with helper generation, phase, selected backen
 
 After repeated presentation failure, expose overlay health through the existing application status surface and preserve durable recording. Do not silently cancel or discard capture because the renderer failed. Keep the daemon usable if presentation is unavailable.
 
-Preserve artistic fade durations, but do not use a longer sleep as evidence that a frame was shown or focus returned. If dismissal completion changes, acknowledge actual helper exit before paste and retain the bounded teardown deadline. A stalled renderer must neither hang delivery indefinitely nor cause paste into an uncertain target.
+Preserve artistic fade durations, but do not use a longer sleep as evidence that a frame was shown or focus returned. Delivery invariant (decision D7 in `docs/upgrade-plan.md`, replacing the earlier exit-before-paste rule): once per launch, each helper reads its window's `override_redirect` attribute from the X server and reports it with `window_created`. When the current helper confirmed it, dismissal starts the fade and the paste proceeds at once, because an override-redirect window is never managed and cannot take keyboard focus. Without that confirmation (false, missing, or no helper report yet), the paste waits for confirmed helper exit, as before. Either way the bounded teardown deadline stays: a helper that has not exited two seconds after dismissal is killed. A stalled renderer must neither hang delivery indefinitely nor cause paste into an uncertain target.
 
 Exit criterion: the original failure now passes; a helper that creates a window but stalls cannot be reported as fully healthy; failures remain bounded and cannot lose audio or bypass delivery protection.
 
@@ -107,7 +107,7 @@ Extend existing harnesses rather than creating one executable per small scenario
 | Processing | The real pipeline observer publishes Transcribing → Cleaning while work is in progress; the helper renders and animates both. |
 | Fades | Exercise `begin_dismissal` in the real view. Check start, intermediate, and terminal opacity; a dismissal during fade-in never brightens. Cover both hidden-update and stdin-EOF paths. |
 | Focus and taskbar | In an isolated matching desktop, active typing target stays unchanged, the popup never becomes a normal application entry, and clipboard operations do not move panel icons. Test native Wayland and X11 targets. |
-| Delivery | Trace fade/dismissal → confirmed helper exit → one paste submission. On teardown failure, retain retryable text and submit no paste. |
+| Delivery | A helper that confirmed override-redirect: dismissal → one paste submission while it fades, and a helper that never exits is still killed at the teardown deadline. Without that confirmation: fade/dismissal → confirmed helper exit → one paste submission; on teardown failure, retain retryable text and submit no paste. |
 | Recovery | Crash before readiness, stall after creation, exit while visible, stale-generation events, and rapid cancel/restart remain bounded. Recording and saved audio survive renderer failure. |
 | Session ownership | Recheck the previous session-replacement and singleton-owner cases without reviving a stale daemon or losing Start-on-login preferences. |
 | Cancellation | Escape on an empty recording stays a normal cancellation, without false recovery/attention records. |
@@ -135,7 +135,7 @@ Complete the same visibility, placement, focus, stage-transition, and paste-orde
 
 ## Preserve, change, avoid, and risk
 
-- Preserve durable recording, the headless daemon, bounded helper supervision, focus-neutral X11 popup semantics, primary-monitor placement, waveform/timer design, live Cleaning feedback, smooth fades, xsel selection ownership, and exit-before-paste. Keep unrelated accuracy, ducking, and upload-compression work intact.
+- Preserve durable recording, the headless daemon, bounded helper supervision, focus-neutral X11 popup semantics, primary-monitor placement, waveform/timer design, live Cleaning feedback, smooth fades, xsel selection ownership, and the override-redirect delivery invariant (exit-before-paste when it is unconfirmed). Keep unrelated accuracy, ducking, and upload-compression work intact.
 - Change stale/incorrect geometry discovery, inadequate health evidence, and tests that do not exercise their claimed behavior. Select any additional rendering correction from a confirmed reproduction.
 - Avoid broad historical reverts, ordinary Wayland toplevel fallback, always-on helper redesign as part of this repair, arbitrary synchronization delays, and retries that duplicate paste. The August 26 persistent-helper proposal remains separate latency work.
 - Risk: GNOME-specific compositing, scaling, and panel behavior cannot be proven by generic headless layout tests. First-frame submission is weaker than compositor visibility. Fixing the overlay must not couple GPU health to audio survival.

@@ -10,6 +10,7 @@ use agentdictate_app::{
     start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
 use agentdictate_core::{JobId, Workflow, WorkflowSignal};
+use agentdictate_runtime::DeliveryGate;
 use tempfile::tempdir;
 
 fn update(workflow: &Workflow) -> OverlayUpdate {
@@ -418,23 +419,50 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
     );
 }
 
-#[test]
-fn dismissal_acknowledges_only_after_the_helper_exits() {
-    let directory = tempdir().unwrap();
-    let executable = directory.path().join("overlay-helper");
-    let exited = directory.path().join("exited");
+/// A helper whose first launch fails, so the test can tell when the relaunched
+/// helper's startup reports were processed: health returns to available only
+/// after its submitted frame, which follows its `window_created` report.
+/// After its input closes (dismissal), the helper runs `after_dismissal`.
+fn relaunched_helper(
+    directory: &std::path::Path,
+    window_created: &str,
+    after_dismissal: &str,
+) -> (PathBuf, PathBuf) {
+    let executable = directory.join("overlay-helper");
+    let launches = directory.join("launches");
     fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nIFS= read -r line\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
-            exited.display(),
+            r#"#!/bin/sh
+printf 'launch\n' >> '{launches}'
+IFS= read -r line
+if [ "$(wc -l < '{launches}')" -eq 1 ]; then
+    printf '{{"status":"error","message":"first launch fails"}}\n'
+    while IFS= read -r ignored; do :; done
+    exit 17
+fi
+printf '%s\n' '{window_created}'
+printf '{{"status":"frame_submitted"}}\n'
+while IFS= read -r ignored; do :; done
+{after_dismissal}
+"#,
+            launches = launches.display(),
         ),
     )
     .unwrap();
-    let mut permissions = fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&executable, permissions).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    (executable, launches)
+}
 
+fn wait_until(condition: impl Fn() -> bool, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn recording_update() -> OverlayUpdate {
     let job_id = JobId::new();
     let mut recording = Workflow::new();
     recording
@@ -443,14 +471,67 @@ fn dismissal_acknowledges_only_after_the_helper_exits() {
     recording
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
+    update(&recording)
+}
+
+#[test]
+fn paste_proceeds_while_a_confirmed_override_redirect_helper_fades() {
+    let directory = tempdir().unwrap();
+    let dismissed = directory.path().join("dismissed");
+    // The helper never exits by itself after dismissal.
+    let (executable, launches) = relaunched_helper(
+        directory.path(),
+        r#"{"status":"window_created","override_redirect":true}"#,
+        &format!("printf x > '{}'\nexec sleep 30", dismissed.display()),
+    );
     let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
-    overlay.update(update(&recording));
+    overlay.update(recording_update());
+    wait_until(
+        || fs::read_to_string(&launches).is_ok_and(|l| l.lines().count() == 2),
+        "the helper relaunched",
+    );
+    wait_until(|| !overlay.is_unavailable(), "the helper reported a frame");
 
-    overlay.dismiss_and_wait().unwrap();
+    // Waiting for this helper's exit would time out and fail the paste.
+    overlay.clone().confirm_ready().unwrap();
 
-    assert_eq!(fs::read_to_string(exited).unwrap(), "exited");
+    wait_until(|| dismissed.exists(), "the helper's input closed");
+    // The supervisor still enforces the teardown deadline on its own.
+    wait_until(
+        || overlay.is_unavailable(),
+        "the stalled helper was stopped",
+    );
     drop(overlay);
     presenter.join().unwrap();
+}
+
+#[test]
+fn paste_waits_for_the_helper_exit_without_an_override_redirect_confirmation() {
+    for window_created in [
+        r#"{"status":"window_created","override_redirect":false}"#,
+        r#"{"status":"window_created"}"#,
+    ] {
+        let directory = tempdir().unwrap();
+        let exited = directory.path().join("exited");
+        let (executable, launches) = relaunched_helper(
+            directory.path(),
+            window_created,
+            &format!("sleep 0.2\nprintf x > '{}'", exited.display()),
+        );
+        let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
+        overlay.update(recording_update());
+        wait_until(
+            || fs::read_to_string(&launches).is_ok_and(|l| l.lines().count() == 2),
+            "the helper relaunched",
+        );
+        wait_until(|| !overlay.is_unavailable(), "the helper reported a frame");
+
+        overlay.clone().confirm_ready().unwrap();
+
+        assert!(exited.exists(), "{window_created}: paste did not wait");
+        drop(overlay);
+        presenter.join().unwrap();
+    }
 }
 
 #[test]

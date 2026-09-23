@@ -83,9 +83,12 @@ pub fn run_overlay_helper() -> anyhow::Result<()> {
                     },
                 )
                 .expect("recording overlay placement should initialize");
+                let override_redirect = watcher.override_redirect();
                 *placement_owner.borrow_mut() = Some(watcher);
-                write_overlay_helper_status(&OverlayHelperStatus::WindowCreated)
-                    .expect("overlay window creation should be reportable");
+                write_overlay_helper_status(&OverlayHelperStatus::WindowCreated {
+                    override_redirect,
+                })
+                .expect("overlay window creation should be reportable");
             },
             || {
                 write_overlay_helper_status(&OverlayHelperStatus::FrameSubmitted)

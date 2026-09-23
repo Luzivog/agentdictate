@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use agentdictate_runtime::{DeliveryGate, DeliveryGateError};
@@ -24,10 +24,12 @@ pub const OVERLAY_HEALTH_FILE: &str = "overlay-health";
 
 const AUTOMATIC_RESTART_LIMIT_PER_UPDATE: u8 = 1;
 const OVERLAY_READY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Upper bound the daemon waits for the helper to exit after dismissal. The
-/// dismissal ack now includes the helper's fade-out, so this must comfortably
-/// exceed the UI crate's `OVERLAY_FADE_HOLD` plus process teardown; the
-/// relation is asserted by the overlay lifecycle tests.
+/// Upper bound for a dismissed helper to fade out and exit. The daemon waits
+/// this long before pasting when the helper never confirmed that its window
+/// is override-redirect; otherwise the supervisor kills a helper that is
+/// still alive at this deadline. It must comfortably exceed the UI crate's
+/// `OVERLAY_FADE_HOLD` plus process teardown; the relation is asserted by the
+/// overlay lifecycle tests.
 #[doc(hidden)]
 pub const OVERLAY_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -97,6 +99,10 @@ impl OverlayController {
         let _ = self.commands.send(OverlayCommand::Update(update));
     }
 
+    /// Closes the overlay before a paste. Returns as soon as the paste is safe:
+    /// at once when the current helper confirmed that its window is
+    /// override-redirect, which can never take keyboard focus, so the fade-out
+    /// overlaps the paste; otherwise only after the helper has exited.
     pub fn dismiss_and_wait(&self) -> Result<(), OverlayTeardownError> {
         let (reply, acknowledgment) = sync_channel(1);
         self.commands
@@ -120,11 +126,11 @@ impl DeliveryGate for OverlayController {
     }
 }
 
+type DismissalReply = SyncSender<Result<(), OverlayTeardownError>>;
+
 pub(super) enum OverlayCommand {
     Update(OverlayUpdate),
-    Dismiss {
-        reply: SyncSender<Result<(), OverlayTeardownError>>,
-    },
+    Dismiss { reply: DismissalReply },
     ForceDismiss,
 }
 
@@ -210,7 +216,23 @@ fn overlay_presenter_loop(
     };
 
     let mut supervisor = OverlaySupervisor::new(executable, ready_timeout, events.clone(), health);
-    while let Ok(event) = event_receiver.recv() {
+    loop {
+        let event = match supervisor.teardown_deadline() {
+            None => event_receiver
+                .recv()
+                .map_err(|_| RecvTimeoutError::Disconnected),
+            Some(deadline) => {
+                event_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            }
+        };
+        let event = match event {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => {
+                supervisor.teardown_timed_out();
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match event {
             PresenterEvent::Command(command) => supervisor.handle_command(command),
             PresenterEvent::HelperStatus { generation, status } => {
@@ -254,9 +276,16 @@ struct OverlaySupervisor<'a> {
     pending_dismissal: Option<PendingDismissal>,
 }
 
+/// A dismissed helper that is fading out. It leaves `helper` at dismissal, so
+/// a new dictation can launch the next helper while this one finishes.
 struct PendingDismissal {
-    generation: u64,
-    reply: SyncSender<Result<(), OverlayTeardownError>>,
+    child: OverlayChild,
+    /// The daemon's paste waits on this until the helper exits. `None` when
+    /// the paste already went ahead; the supervisor then enforces
+    /// `deadline` itself.
+    reply: Option<DismissalReply>,
+    dismissed_at: Instant,
+    deadline: Instant,
 }
 
 impl<'a> OverlaySupervisor<'a> {
@@ -283,33 +312,72 @@ impl<'a> OverlaySupervisor<'a> {
     fn handle_command(&mut self, command: OverlayCommand) {
         match command {
             OverlayCommand::Update(update) => self.handle_update(update),
-            OverlayCommand::Dismiss { reply } => self.dismiss_and_wait(reply),
+            OverlayCommand::Dismiss { reply } => self.dismiss(reply),
             OverlayCommand::ForceDismiss => self.force_dismissal(),
         }
     }
 
-    fn dismiss_and_wait(&mut self, reply: SyncSender<Result<(), OverlayTeardownError>>) {
+    fn dismiss(&mut self, reply: DismissalReply) {
         self.last_visible_update = None;
         self.remaining_restarts = 0;
         self.lifecycle.mark_stopped();
-        let Some(child) = self.helper.as_mut() else {
+        let Some(mut child) = self.helper.take() else {
             let _ = reply.send(Ok(()));
             return;
         };
-        let generation = child.generation();
         child.finish();
-        self.pending_dismissal = Some(PendingDismissal { generation, reply });
+        let reply = if child.is_override_redirect() {
+            // Checked once per launch: an override-redirect window is never
+            // managed, so it cannot take the focus the paste targets.
+            let _ = reply.send(Ok(()));
+            None
+        } else {
+            tracing::info!(
+                generation = child.generation(),
+                "recording overlay is not confirmed override-redirect; paste waits for its exit"
+            );
+            Some(reply)
+        };
+        let dismissed_at = Instant::now();
+        self.pending_dismissal = Some(PendingDismissal {
+            child,
+            reply,
+            dismissed_at,
+            deadline: dismissed_at + OVERLAY_TEARDOWN_TIMEOUT,
+        });
     }
 
     fn force_dismissal(&mut self) {
-        let Some(pending) = self.pending_dismissal.as_ref() else {
+        if let Some(pending) = self.pending_dismissal.as_mut() {
+            pending.child.terminate();
+        }
+    }
+
+    /// When the supervisor must kill a dismissed helper that no paste waits
+    /// on. A waiting paste enforces the same deadline through `ForceDismiss`.
+    fn teardown_deadline(&self) -> Option<Instant> {
+        self.pending_dismissal
+            .as_ref()
+            .filter(|pending| pending.reply.is_none())
+            .map(|pending| pending.deadline)
+    }
+
+    fn teardown_timed_out(&mut self) {
+        let Some(mut pending) = self.pending_dismissal.take() else {
             return;
         };
-        if let Some(child) = self.helper.as_mut()
-            && child.generation() == pending.generation
-        {
-            child.terminate();
-        }
+        tracing::warn!(
+            generation = pending.child.generation(),
+            "recording overlay helper did not exit after dismissal; stopping it"
+        );
+        pending.child.terminate();
+        self.health.set_unavailable(true);
+    }
+
+    fn is_dismissed(&self, generation: u64) -> bool {
+        self.pending_dismissal
+            .as_ref()
+            .is_some_and(|pending| pending.child.generation() == generation)
     }
 
     fn handle_update(&mut self, update: OverlayUpdate) {
@@ -359,11 +427,7 @@ impl<'a> OverlaySupervisor<'a> {
         generation: u64,
         status: Result<OverlayHelperStatus, String>,
     ) {
-        if self
-            .pending_dismissal
-            .as_ref()
-            .is_some_and(|pending| pending.generation == generation)
-        {
+        if self.is_dismissed(generation) {
             return;
         }
         let Some(child) = self
@@ -374,9 +438,13 @@ impl<'a> OverlaySupervisor<'a> {
             return;
         };
         match status {
-            Ok(OverlayHelperStatus::WindowCreated) => {
+            Ok(OverlayHelperStatus::WindowCreated { override_redirect }) => {
+                if override_redirect {
+                    child.confirm_override_redirect();
+                }
                 tracing::info!(
                     generation,
+                    override_redirect,
                     "recording overlay window created; awaiting a submitted frame"
                 );
             }
@@ -399,23 +467,28 @@ impl<'a> OverlaySupervisor<'a> {
     }
 
     fn handle_helper_exit(&mut self, generation: u64, result: io::Result<ExitStatus>) {
-        if self
-            .pending_dismissal
-            .as_ref()
-            .is_some_and(|pending| pending.generation == generation)
-        {
+        if self.is_dismissed(generation) {
             let pending = self
                 .pending_dismissal
                 .take()
                 .expect("matching pending dismissal must exist");
-            if self.helper.as_ref().map(OverlayChild::generation) == Some(generation) {
-                self.helper.take();
-                self.lifecycle.mark_stopped();
+            let teardown_ms = pending.dismissed_at.elapsed().as_millis() as u64;
+            match &result {
+                Ok(_) => {
+                    tracing::info!(generation, teardown_ms, "recording overlay helper exited")
+                }
+                Err(error) => tracing::warn!(
+                    generation,
+                    %error,
+                    "recording overlay helper exit could not be observed after dismissal"
+                ),
             }
-            let acknowledgment = result
-                .map(|_| ())
-                .map_err(OverlayTeardownError::ExitObservation);
-            let _ = pending.reply.send(acknowledgment);
+            if let Some(reply) = pending.reply {
+                let acknowledgment = result
+                    .map(|_| ())
+                    .map_err(OverlayTeardownError::ExitObservation);
+                let _ = reply.send(acknowledgment);
+            }
             return;
         }
         if self.helper.as_ref().map(OverlayChild::generation) != Some(generation) {
@@ -478,10 +551,12 @@ impl<'a> OverlaySupervisor<'a> {
         if let Some(mut child) = self.helper.take() {
             child.finish();
         }
-        if let Some(pending) = self.pending_dismissal.take() {
-            let _ = pending
-                .reply
-                .send(Err(OverlayTeardownError::PresenterUnavailable));
+        if let Some(reply) = self
+            .pending_dismissal
+            .take()
+            .and_then(|pending| pending.reply)
+        {
+            let _ = reply.send(Err(OverlayTeardownError::PresenterUnavailable));
         }
     }
 }
