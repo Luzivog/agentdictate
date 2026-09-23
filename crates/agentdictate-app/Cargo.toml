@@ -22,7 +22,6 @@ ksni = { version = "0.3.6", features = ["blocking"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls-native-roots"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10.9"
 signal-hook = "0.3.18"
 thiserror.workspace = true
 tracing.workspace = true
