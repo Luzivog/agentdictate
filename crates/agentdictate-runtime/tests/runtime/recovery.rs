@@ -5,6 +5,8 @@ use chrono::Utc;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
+use crate::support::{ReadyRecorder, request};
+
 fn insert_job(connection: &Connection, audio_path: &str, state: &str, stage: &str) {
     let now = Utc::now().to_rfc3339();
     let runtime_id = agentdictate_core::JobId::new().to_string();
@@ -75,4 +77,20 @@ fn recovery_projection_lists_recoverable_stages_with_audio_evidence() {
         .find(|entry| entry.stage == JobStage::ReadyToDeliver)
         .unwrap();
     assert!(!missing_audio.audio_present);
+}
+
+#[test]
+fn active_recording_is_not_presented_as_a_recovery() {
+    let directory = TempDir::new().unwrap();
+    let audio_path = directory.path().join("recordings/active.wav");
+    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
+    let mut recorder = ReadyRecorder;
+
+    let job = runtime
+        .start_recording(request(&audio_path, "gpt-transcribe"), &mut recorder)
+        .unwrap();
+
+    assert_eq!(job.stage, JobStage::Recording);
+    assert!(runtime.recoveries().unwrap().is_empty());
+    assert_eq!(runtime.recoverable_jobs().unwrap(), vec![job]);
 }

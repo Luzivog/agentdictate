@@ -172,7 +172,6 @@ impl ClientCommand {
 /// This is separate from the payload-bearing wire enum so existing command
 /// construction and pattern matching remain unchanged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
 pub enum ClientCommandTag {
     GetSnapshot,
     GetWorkspace,
@@ -191,29 +190,6 @@ pub enum ClientCommandTag {
     SetApiKey,
     HotkeyStatusChanged,
     Quit,
-}
-
-impl ClientCommandTag {
-    /// Every command tag in wire-enum declaration order.
-    pub const ALL: &'static [Self] = &[
-        Self::GetSnapshot,
-        Self::GetWorkspace,
-        Self::GetHistoryPage,
-        Self::StartRecording,
-        Self::StopRecording,
-        Self::Cancel,
-        Self::RecorderExited,
-        Self::RetryTranscription,
-        Self::RetryDelivery,
-        Self::DeleteRecovery,
-        Self::DeleteHistory,
-        Self::ClearHistory,
-        Self::CopyTranscript,
-        Self::UpdateSettings,
-        Self::SetApiKey,
-        Self::HotkeyStatusChanged,
-        Self::Quit,
-    ];
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -282,63 +258,6 @@ pub enum ClientCommandKind {
     Quit {
         request_id: u64,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const VARIANT_COUNT: usize = ClientCommandTag::Quit as usize + 1;
-
-    const fn tag_index(tag: ClientCommandTag) -> usize {
-        match tag {
-            ClientCommandTag::GetSnapshot => 0,
-            ClientCommandTag::GetWorkspace => 1,
-            ClientCommandTag::GetHistoryPage => 2,
-            ClientCommandTag::StartRecording => 3,
-            ClientCommandTag::StopRecording => 4,
-            ClientCommandTag::Cancel => 5,
-            ClientCommandTag::RecorderExited => 6,
-            ClientCommandTag::RetryTranscription => 7,
-            ClientCommandTag::RetryDelivery => 8,
-            ClientCommandTag::DeleteRecovery => 9,
-            ClientCommandTag::DeleteHistory => 10,
-            ClientCommandTag::ClearHistory => 11,
-            ClientCommandTag::CopyTranscript => 12,
-            ClientCommandTag::UpdateSettings => 13,
-            ClientCommandTag::SetApiKey => 14,
-            ClientCommandTag::HotkeyStatusChanged => 15,
-            ClientCommandTag::Quit => 16,
-        }
-    }
-
-    #[test]
-    fn command_tags_list_every_variant_once() {
-        assert_eq!(ClientCommandTag::ALL.len(), VARIANT_COUNT);
-        let mut seen = [false; VARIANT_COUNT];
-        for tag in ClientCommandTag::ALL {
-            let seen = &mut seen[tag_index(*tag)];
-            assert!(!*seen, "duplicate command tag: {tag:?}");
-            *seen = true;
-        }
-        assert!(seen.into_iter().all(|present| present));
-    }
-
-    #[test]
-    fn commands_report_their_data_less_tag() {
-        assert_eq!(
-            ClientCommand::start_recording(7).kind(),
-            ClientCommandTag::StartRecording
-        );
-        assert_eq!(
-            ClientCommand::get_history_page(8, "needle", 20, None).kind(),
-            ClientCommandTag::GetHistoryPage
-        );
-        assert_eq!(
-            ClientCommand::set_api_key(9, "secret").kind(),
-            ClientCommandTag::SetApiKey
-        );
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

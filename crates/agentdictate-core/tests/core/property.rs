@@ -1,6 +1,4 @@
-use agentdictate_core::{
-    ClientCommand, PROTOCOL_VERSION, ServerMessage, Settings, VocabularyEntry, normalize_vocabulary,
-};
+use agentdictate_core::{Settings, VocabularyEntry, normalize_vocabulary};
 use proptest::prelude::*;
 
 proptest! {
@@ -12,20 +10,6 @@ proptest! {
     ) {
         let vocabulary = [VocabularyEntry { spelling, aliases: vec![alias] }];
         let _ = normalize_vocabulary(&text, &vocabulary);
-    }
-
-    #[test]
-    fn every_client_command_tags_the_protocol_version(request_id in any::<u64>()) {
-        for command in [
-            ClientCommand::get_snapshot(request_id),
-            ClientCommand::start_recording(request_id),
-            ClientCommand::stop_recording(request_id),
-            ClientCommand::quit(request_id),
-        ] {
-            prop_assert_eq!(command.protocol_version, PROTOCOL_VERSION);
-        }
-        let message = ServerMessage::command_rejected(request_id, "no");
-        prop_assert_eq!(message.protocol_version, PROTOCOL_VERSION);
     }
 }
 

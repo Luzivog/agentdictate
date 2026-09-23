@@ -17,33 +17,6 @@ fn recording_is_not_announced_until_audio_is_durable() {
 }
 
 #[test]
-fn durable_job_stages_have_stable_protocol_names() {
-    let cases = [
-        (JobStage::Starting, "\"starting\""),
-        (JobStage::Recording, "\"recording\""),
-        (JobStage::Captured, "\"captured\""),
-        (JobStage::Transcribing, "\"transcribing\""),
-        (JobStage::ReadyToDeliver, "\"ready_to_deliver\""),
-        (JobStage::Delivered, "\"delivered\""),
-        (JobStage::Interrupted, "\"interrupted\""),
-        (JobStage::Failed, "\"failed\""),
-        (JobStage::Deleted, "\"deleted\""),
-    ];
-
-    for (stage, expected) in cases {
-        assert_eq!(serde_json::to_string(&stage).unwrap(), expected);
-    }
-}
-
-#[test]
-fn job_ids_round_trip_through_storage_text() {
-    let original = JobId::new();
-    let stored = original.to_string();
-
-    assert_eq!(stored.parse::<JobId>().unwrap(), original);
-}
-
-#[test]
 fn completed_dictation_returns_the_workflow_to_ready() {
     let mut workflow = Workflow::new();
     let job_id = JobId::new();

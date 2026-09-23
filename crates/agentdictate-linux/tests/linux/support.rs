@@ -36,7 +36,6 @@ impl TestDirectory {
         }
     }
 
-    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

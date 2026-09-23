@@ -28,6 +28,7 @@ fn sysfs_key_capabilities_must_include_every_hotkey_group() {
 
     assert!(complete.supports(&hotkey));
     assert!(!missing_control.supports(&hotkey));
+    assert!(KeyCapabilities::parse("not-hex").is_err());
 }
 
 #[test]
@@ -57,9 +58,4 @@ fn agentdictate_own_virtual_keyboards_are_excluded_by_identity() {
     });
 
     assert!(devices.is_empty());
-}
-
-#[test]
-fn malformed_sysfs_key_capabilities_are_rejected() {
-    assert!(KeyCapabilities::parse("not-hex").is_err());
 }

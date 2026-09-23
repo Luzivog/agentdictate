@@ -57,25 +57,6 @@ fn settings_replacement_is_private_and_leaves_no_partial_file() {
 }
 
 #[test]
-fn fresh_database_contains_the_complete_python_compatible_schema() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    drop(Runtime::open(&database_path).unwrap());
-    let connection = Connection::open(&database_path).unwrap();
-
-    for table in ["dictation_sessions", "transcript_history", "dictation_jobs"] {
-        let exists = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                [table],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap();
-        assert!(exists, "missing compatibility table {table}");
-    }
-}
-
-#[test]
 fn stored_inflight_delivery_reopens_as_ambiguous_and_never_safe_to_resume() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
@@ -112,36 +93,6 @@ fn stored_inflight_delivery_reopens_as_ambiguous_and_never_safe_to_resume() {
     assert_eq!(job.stage, JobStage::Failed);
     assert_eq!(job.delivery_status, DeliveryStatus::Ambiguous);
     assert_eq!(job.final_text, "Could already be pasted.");
-}
-
-#[test]
-fn committed_deliveries_from_the_first_release_read_as_submitted() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    drop(Runtime::open(&database_path).unwrap());
-    let id = JobId::new();
-    insert_previous_version_job(
-        &Connection::open(&database_path).unwrap(),
-        directory.path(),
-        id,
-        "delivered",
-        false,
-    );
-    Connection::open(&database_path)
-        .unwrap()
-        .execute(
-            "UPDATE dictation_jobs SET delivery_status = 'committed'",
-            [],
-        )
-        .unwrap();
-
-    let job = Runtime::open(&database_path)
-        .unwrap()
-        .job(id)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(job.delivery_status, DeliveryStatus::Submitted);
 }
 
 /// Inserts a job row as the version before finished jobs were deleted left

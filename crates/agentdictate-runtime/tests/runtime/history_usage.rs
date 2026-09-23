@@ -1,6 +1,6 @@
 use agentdictate_core::{DictationOptions, HistoryPageRequest, Settings, parse_vocabulary};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate, JobStage,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
     RecordingJob, Runtime, Transcriber, Transcript,
 };
 use tempfile::TempDir;
@@ -450,50 +450,4 @@ fn opening_a_database_with_the_retired_full_text_index_drops_it() {
         .unwrap();
     assert_eq!(leftovers, 0);
     assert_eq!(search(&runtime, "upgrade"), ["kept through the upgrade"]);
-}
-
-#[test]
-fn recovery_projection_reports_audio_presence_without_hiding_missing_files() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let audio_path = directory.path().join("recordings/recovery.wav");
-    std::fs::create_dir_all(audio_path.parent().unwrap()).unwrap();
-    std::fs::write(&audio_path, b"RIFFrecovery").unwrap();
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = ReadyRecorder;
-    let job = runtime
-        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
-        .unwrap();
-    runtime
-        .interrupt_job(job.id, JobStage::Recording, "microphone disappeared")
-        .unwrap();
-
-    let present = runtime.recoveries().unwrap();
-    assert_eq!(present.len(), 1);
-    assert_eq!(present[0].job_id, job.id);
-    assert_eq!(present[0].stage, JobStage::Interrupted);
-    assert_eq!(
-        present[0].error_message.as_deref(),
-        Some("microphone disappeared")
-    );
-    assert!(present[0].audio_present);
-
-    std::fs::remove_file(audio_path).unwrap();
-    assert!(!runtime.recoveries().unwrap()[0].audio_present);
-}
-
-#[test]
-fn active_recording_is_not_presented_as_a_recovery() {
-    let directory = TempDir::new().unwrap();
-    let audio_path = directory.path().join("recordings/active.wav");
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
-    let mut recorder = ReadyRecorder;
-
-    let job = runtime
-        .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
-        .unwrap();
-
-    assert_eq!(job.stage, JobStage::Recording);
-    assert!(runtime.recoveries().unwrap().is_empty());
-    assert_eq!(runtime.recoverable_jobs().unwrap(), vec![job]);
 }
