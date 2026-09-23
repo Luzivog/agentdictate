@@ -5,13 +5,7 @@ use tempfile::tempdir;
 
 #[test]
 fn app_paths_preserve_the_existing_xdg_layout() {
-    let paths = AppPaths::from_roots(
-        "/tmp/config",
-        "/tmp/data",
-        "/tmp/state",
-        "/tmp/cache",
-        "/tmp/runtime",
-    );
+    let paths = AppPaths::from_roots("/tmp/config", "/tmp/data", "/tmp/state", "/tmp/runtime");
 
     assert_eq!(
         paths.config_file,
@@ -30,7 +24,6 @@ fn app_paths_preserve_the_existing_xdg_layout() {
         paths.ducking_state_file,
         PathBuf::from("/tmp/state/agentdictate/ducking.json")
     );
-    assert_eq!(paths.cache, PathBuf::from("/tmp/cache/agentdictate"));
     assert_eq!(paths.runtime, PathBuf::from("/tmp/runtime/agentdictate"));
     assert_eq!(
         paths.daemon_supervision,
@@ -52,7 +45,6 @@ fn an_isolated_instance_keeps_every_root_under_its_home_and_leaves_systemd_alone
         &paths.native_access,
         &paths.logs,
         &paths.ducking_state_file,
-        &paths.cache,
         &paths.runtime,
     ] {
         assert!(path.starts_with("/tmp/dev-home"), "{}", path.display());
@@ -67,7 +59,6 @@ fn ensuring_paths_prepares_every_runtime_parent_without_touching_files() {
         directory.path().join("config"),
         directory.path().join("data"),
         directory.path().join("state"),
-        directory.path().join("cache"),
         directory.path().join("runtime"),
     );
 
@@ -78,7 +69,6 @@ fn ensuring_paths_prepares_every_runtime_parent_without_touching_files() {
         paths.database_file.parent().unwrap(),
         &paths.recordings,
         &paths.logs,
-        &paths.cache,
         &paths.runtime,
     ] {
         assert!(expected.is_dir(), "{} was not created", expected.display());

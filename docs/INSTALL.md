@@ -137,13 +137,12 @@ language. A request that fails before OpenAI answers is sent once more.
 - Logs can contain transcript text. The newest 14 daily files are kept.
 
 The database, recordings, and logs are not encrypted; Unix permissions protect them.
-They live in these directories, which `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
-`XDG_STATE_HOME`, and `XDG_CACHE_HOME` can move:
+They live in these directories, which `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
+`XDG_STATE_HOME` can move:
 
 - `~/.config/agentdictate/`
 - `~/.local/share/agentdictate/`
 - `~/.local/state/agentdictate/`
-- `~/.cache/agentdictate/`
 
 [The architecture overview](architecture.md#data-locations) lists every file.
 
@@ -197,6 +196,7 @@ them:
 agentdictate_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 agentdictate_state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+# Older versions also kept a cache.
 agentdictate_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 
 printf '%s\n' \

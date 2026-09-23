@@ -1454,7 +1454,6 @@ fn app_paths(root: &Path) -> AppPaths {
         root.join("config"),
         root.join("data"),
         root.join("state"),
-        root.join("cache"),
         root.join("runtime"),
     )
 }

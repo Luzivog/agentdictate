@@ -63,8 +63,8 @@ pub use tray::{
 pub use window_instance::{WindowInstance, WindowLock, raise_open_window};
 pub use workspace::{WorkspaceClient, WorkspaceError};
 
-/// Set by `./run.sh`: roots an isolated instance (config, data, state, cache
-/// and IPC socket) in this directory, with a daemon that systemd never manages.
+/// Set by `./run.sh`: roots an isolated instance (config, data, state and
+/// IPC socket) in this directory, with a daemon that systemd never manages.
 const AGENTDICTATE_HOME_ENVIRONMENT: &str = "AGENTDICTATE_HOME";
 
 /// Who starts and supervises the daemon.
@@ -92,7 +92,6 @@ pub struct AppPaths {
     pub logs: PathBuf,
     /// Record of an output volume reduced by audio ducking; see `PlaybackDucker`.
     pub ducking_state_file: PathBuf,
-    pub cache: PathBuf,
     pub runtime: PathBuf,
 }
 
@@ -120,7 +119,6 @@ impl AppPaths {
             xdg("XDG_CONFIG_HOME", home.join(".config")),
             xdg("XDG_DATA_HOME", home.join(".local/share")),
             xdg("XDG_STATE_HOME", home.join(".local/state")),
-            xdg("XDG_CACHE_HOME", home.join(".cache")),
             runtime,
         ))
     }
@@ -131,7 +129,6 @@ impl AppPaths {
             self.database_file.parent(),
             Some(self.recordings.as_path()),
             Some(self.logs.as_path()),
-            Some(self.cache.as_path()),
             Some(self.runtime.as_path()),
         ]
         .into_iter()
@@ -148,7 +145,6 @@ impl AppPaths {
         config_root: impl Into<PathBuf>,
         data_root: impl Into<PathBuf>,
         state_root: impl Into<PathBuf>,
-        cache_root: impl Into<PathBuf>,
         runtime_root: impl Into<PathBuf>,
     ) -> Self {
         let config_root = config_root.into();
@@ -156,7 +152,6 @@ impl AppPaths {
         let data_root = data_root.into();
         let data = data_root.join("agentdictate");
         let state = state_root.into().join("agentdictate");
-        let cache = cache_root.into().join("agentdictate");
         let runtime = runtime_root.into().join("agentdictate");
         Self {
             config_file: config.join("config.json"),
@@ -170,7 +165,6 @@ impl AppPaths {
             native_access: data.join("native-access"),
             logs: state.join("logs"),
             ducking_state_file: state.join("ducking.json"),
-            cache,
             runtime,
         }
     }
@@ -186,7 +180,6 @@ impl AppPaths {
                 home.join("config"),
                 home.join("data"),
                 home.join("state"),
-                home.join("cache"),
                 home.join("runtime"),
             )
         }

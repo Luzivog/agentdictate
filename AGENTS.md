@@ -137,8 +137,7 @@ source validation.
 Do not commit real OpenAI API keys, local configuration, SQLite history, logs,
 temporary or retained audio, IPC sockets, diagnostics, or generated package
 contents. Runtime data belongs under `~/.config/agentdictate/`,
-`~/.local/share/agentdictate/`, `~/.local/state/agentdictate/`, and
-`~/.cache/agentdictate/`.
+`~/.local/share/agentdictate/`, and `~/.local/state/agentdictate/`.
 
 ## UI Placement Requirement
 

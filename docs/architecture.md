@@ -325,8 +325,8 @@ it hears is kept, uploaded, or added to Recovery.
 ## Data locations
 
 AgentDictate creates its own directories with mode 0700. `XDG_CONFIG_HOME`,
-`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, and `XDG_RUNTIME_DIR` move them,
-and `AGENTDICTATE_HOME` moves all of them under one directory.
+`XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_RUNTIME_DIR` move them, and
+`AGENTDICTATE_HOME` moves all of them under one directory.
 
 | Path | Contents |
 | --- | --- |
@@ -338,7 +338,6 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | `~/.local/share/agentdictate/native-access/` | The input-access rule and guide from `install.sh`, and the helper `setup-access` writes |
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |
 | `~/.local/state/agentdictate/ducking.json` | Present only while ducking has lowered an output, so a crash can be undone at the next start |
-| `~/.cache/agentdictate/` | Created at startup; currently unused |
 | `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health`, `status`, settings window lock and raise file |
 
 Logs default to `info`, with the overlay's GPU crates at `warn`. A valid `RUST_LOG`

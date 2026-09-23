@@ -725,7 +725,6 @@ mod tests {
             root.join("config"),
             root.join("data"),
             root.join("state"),
-            root.join("cache"),
             root.join("runtime"),
         );
         let DaemonSupervision::SystemdUser { unit_file } = paths.daemon_supervision.clone() else {
