@@ -107,6 +107,12 @@ pub enum DaemonError {
     NotCopied { reason: String },
 }
 
+/// A dictation from its first audio frame until it settles.
+struct ActiveDictation {
+    job_id: JobId,
+    recording: ActiveRecordingUpdate,
+}
+
 pub struct Daemon<R, T, D> {
     runtime: Runtime,
     settings: Settings,
@@ -115,8 +121,8 @@ pub struct Daemon<R, T, D> {
     transcriber: T,
     deliverer: D,
     workflow: Workflow,
-    active_job: Option<JobId>,
-    active_recording: Option<ActiveRecordingUpdate>,
+    /// The dictation being recorded or processed; `settle` clears it.
+    active: Option<ActiveDictation>,
     recoverable_count: usize,
     last_transcript: Option<String>,
     hotkey: HotkeyReadiness,
@@ -148,8 +154,7 @@ where
             transcriber,
             deliverer,
             workflow: Workflow::new(),
-            active_job: None,
-            active_recording: None,
+            active: None,
             recoverable_count,
             last_transcript: None,
             hotkey: HotkeyReadiness::Starting,
@@ -167,7 +172,7 @@ where
         mode: Option<agentdictate_core::DictationMode>,
     ) -> Result<RecordingJob, DaemonError> {
         let requested_at = Instant::now();
-        if self.active_job.is_some() {
+        if self.active.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
         fs::create_dir_all(&self.paths.recordings)?;
@@ -210,12 +215,14 @@ where
         self.workflow
             .apply(WorkflowSignal::FirstAudioFrameWritten { job_id: job.id })?;
         self.transcriber.begin_recording(&job);
-        self.active_job = Some(job.id);
-        self.active_recording = Some(ActiveRecordingUpdate {
-            audio_path: job.audio_path.clone(),
-            // Match the previous overlay: elapsed time starts only after the
-            // recorder has produced its first durable audio frame.
-            started_at_unix_millis: Utc::now().timestamp_millis(),
+        self.active = Some(ActiveDictation {
+            job_id: job.id,
+            recording: ActiveRecordingUpdate {
+                audio_path: job.audio_path.clone(),
+                // Match the previous overlay: elapsed time starts only after
+                // the recorder has produced its first durable audio frame.
+                started_at_unix_millis: Utc::now().timestamp_millis(),
+            },
         });
         self.recoverable_count = self.attention_recovery_count()?;
         self.publish_overlay_update();
@@ -253,7 +260,7 @@ where
 
     pub fn stop_recording(&mut self) -> Result<RecordingJob, DaemonError> {
         let stop_started = Instant::now();
-        let id = self.active_job.ok_or(DaemonError::NotRecording)?;
+        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
         tracing::info!(job_id = %id, "recording stop requested");
@@ -299,7 +306,6 @@ where
         }
         self.workflow
             .apply(WorkflowSignal::CaptureFinalized { job_id: id })?;
-        self.active_recording = None;
         self.publish_overlay_update();
         let mut gate = Timed::new(&mut self.overlay);
         let mut deliverer = Timed::new(&mut self.deliverer);
@@ -373,7 +379,7 @@ where
     /// is on. Shutdown and platform failures must use the separate recovery
     /// preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
-        let id = self.active_job.ok_or(DaemonError::NotRecording)?;
+        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
         self.transcriber.cancel_recording(id);
         tracing::info!(job_id = %id, "dictation discard requested");
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
@@ -431,7 +437,7 @@ where
     /// audio was finalized for explicit recovery instead of guessing that the
     /// dictation was complete.
     pub fn recorder_exited(&mut self, id: JobId) -> Result<Option<RecordingJob>, DaemonError> {
-        if self.active_job != Some(id) {
+        if self.active_job() != Some(id) {
             return Ok(None);
         }
         tracing::warn!(job_id = %id, "recorder exited without an explicit stop");
@@ -444,7 +450,7 @@ where
     /// Finalizes active audio without transcribing or deleting it, so process
     /// shutdown can never discard an in-progress dictation.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
-        if let Some(id) = self.active_job {
+        if let Some(id) = self.active_job() {
             self.transcriber.cancel_recording(id);
             self.preserve_active_recording(
                 "AgentDictate shut down before this dictation completed; audio was preserved",
@@ -456,7 +462,7 @@ where
     /// "Transcribe again" from Recovery: transcribes the item again and
     /// copies the result to the clipboard.
     pub fn retry_transcription(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        if self.active_job.is_some() {
+        if self.active.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
         tracing::info!(job_id = %id, "recovery transcription retry requested");
@@ -470,7 +476,7 @@ where
     /// "Paste again" from Recovery: copies the stored transcript to the
     /// clipboard.
     pub fn retry_delivery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        if self.active_job.is_some() {
+        if self.active.is_some() {
             return Err(DaemonError::AlreadyRecording);
         }
         tracing::info!(job_id = %id, "recovery copy retry requested");
@@ -487,7 +493,7 @@ where
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         let result = self.runtime.delete_recovery(id)?;
         tracing::info!(job_id = %id, "recovery item deleted");
-        if self.active_job.is_none() {
+        if self.active.is_none() {
             self.workflow = Workflow::new();
         }
         self.recoverable_count = self.attention_recovery_count()?;
@@ -641,7 +647,7 @@ where
         &mut self,
         reason: &'static str,
     ) -> Result<RecordingJob, DaemonError> {
-        let id = self.active_job.ok_or(DaemonError::NotRecording)?;
+        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
         self.transcriber.cancel_recording(id);
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
@@ -718,13 +724,12 @@ where
 
     /// Ends the active dictation session with its final workflow transition:
     /// `Interrupted` keeps the job in Recovery, any other signal returns to
-    /// Ready. This never fails. It clears the active job and recording
-    /// first, rebuilds the workflow when the transition is out of order, and
+    /// Ready. This never fails. It clears the active dictation first,
+    /// rebuilds the workflow when the transition is out of order, and
     /// recounts Recovery best-effort, so a failed bookkeeping step can never
     /// leave a stale active job that rejects every later command.
     fn settle(&mut self, id: JobId, end: WorkflowSignal) {
-        self.active_job = None;
-        self.active_recording = None;
+        self.active = None;
         let needs_attention = matches!(end, WorkflowSignal::Interrupted { .. });
         if let Err(workflow_error) = self.workflow.apply(end) {
             tracing::warn!(job_id = %id, %workflow_error, ?end, "rebuilding the workflow");
@@ -756,10 +761,24 @@ where
         Ok(self.runtime.recoveries()?.len())
     }
 
+    fn active_job(&self) -> Option<JobId> {
+        self.active.as_ref().map(|active| active.job_id)
+    }
+
+    /// The overlay samples the recording's audio only while it is captured.
     fn overlay_update(&self) -> OverlayUpdate {
+        let workflow = self.workflow.snapshot();
+        let capturing = matches!(
+            workflow.phase,
+            WorkflowPhase::Recording { .. } | WorkflowPhase::Stopping { .. }
+        );
         OverlayUpdate {
-            workflow: self.workflow.snapshot(),
-            active_recording: self.active_recording.clone(),
+            workflow,
+            active_recording: self
+                .active
+                .as_ref()
+                .filter(|_| capturing)
+                .map(|active| active.recording.clone()),
         }
     }
 
