@@ -273,7 +273,11 @@ pub fn run_recording_overlay(
                 cx.background_executor()
                     .timer(crate::OVERLAY_FADE_HOLD)
                     .await;
-                let _ = overlay_window.update(cx, |_, window, _| window.remove_window());
+                // Quit without removing the window first: X11 keeps driving a
+                // removed window's frame timer until a later task unregisters
+                // it, and each tick then logs "window not found" at ERROR.
+                // Quitting stops the event loop, and shutdown then closes the
+                // fully transparent window with the rest of the app.
                 cx.update(|cx| cx.quit())
             })
             .detach();

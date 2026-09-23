@@ -436,6 +436,11 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
         helper.wait(timeout=2)
         assert helper.returncode == 0, helper.stderr.read()
         assert not helper_window(desktop), "helper window survived dismissal"
+        # The helper writes into the daemon's log after every dictation, so
+        # its teardown must not log a closed window as an error.
+        errors = [line for path in (desktop.root / "state").rglob("agentdictated.log*")
+                  for line in path.read_text().splitlines() if "window not found" in line]
+        assert not errors, errors
         assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
         assert desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"]) == clients_before
         adapters = [line[line.index("Selected GPU"):]
