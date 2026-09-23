@@ -1,0 +1,373 @@
+{
+  "protocol_version": 16,
+  "samples": {
+    "commands": [
+      {
+        "command": "get_snapshot"
+      },
+      {
+        "command": "start_recording"
+      },
+      {
+        "command": "start_recording",
+        "mode": "literal"
+      },
+      {
+        "command": "stop_recording"
+      },
+      {
+        "command": "cancel"
+      },
+      {
+        "command": "retry_transcription",
+        "job_id": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "command": "paste_last"
+      },
+      {
+        "command": "retry_delivery",
+        "job_id": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "command": "delete_recovery",
+        "job_id": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "command": "delete_history",
+        "id": 7
+      },
+      {
+        "command": "clear_history"
+      },
+      {
+        "command": "copy_transcript",
+        "id": 7
+      },
+      {
+        "command": "capture_hotkey"
+      },
+      {
+        "command": "cancel_hotkey_capture"
+      },
+      {
+        "api_key": "sk-sample",
+        "command": "set_api_key"
+      },
+      {
+        "command": "check_api_key"
+      },
+      {
+        "api_key": "sk-pasted",
+        "command": "check_api_key"
+      },
+      {
+        "command": "test_microphone"
+      },
+      {
+        "command": "quit"
+      },
+      {
+        "change": {
+          "setting": "language",
+          "value": "fr"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "hotkey",
+          "value": {
+            "key": 32,
+            "label": "Ctrl+Alt+D",
+            "modifiers": [
+              "ctrl",
+              "alt"
+            ]
+          }
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "recording_mode",
+          "value": "hold"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "audio_ducking_enabled",
+          "value": false
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "keep_transcripts",
+          "value": "30_days"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "start_on_login",
+          "value": false
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "transcription_prompt",
+          "value": "Rust and GPUI"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "dictation_mode",
+          "value": "literal"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "paste_shortcut",
+          "value": "terminal"
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "max_recording_seconds",
+          "value": 600
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "audio_ducking_volume_percent",
+          "value": 20
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "preserve_temp_audio",
+          "value": true
+        },
+        "command": "change_setting"
+      },
+      {
+        "change": {
+          "setting": "vocabulary",
+          "value": [
+            {
+              "aliases": [
+                "cube control"
+              ],
+              "spelling": "kubectl"
+            }
+          ]
+        },
+        "command": "change_setting"
+      }
+    ],
+    "envelopes": [
+      {
+        "command": "get_snapshot",
+        "protocol_version": 16
+      },
+      {
+        "error": "microphone unavailable",
+        "message": "command_rejected",
+        "protocol_version": 16
+      }
+    ],
+    "readiness": [
+      {
+        "desktop": {
+          "exposed_input": null,
+          "missing_tools": [],
+          "paste_access": true
+        },
+        "shortcut": {
+          "state": "starting"
+        },
+        "transcription_key": true
+      },
+      {
+        "desktop": {
+          "exposed_input": null,
+          "missing_tools": [],
+          "paste_access": true
+        },
+        "shortcut": {
+          "state": "ready"
+        },
+        "transcription_key": true
+      },
+      {
+        "desktop": {
+          "exposed_input": {
+            "rule": "/etc/udev/rules.d/99-open-input.rules"
+          },
+          "missing_tools": [
+            "pw_record",
+            "ffmpeg",
+            "pactl"
+          ],
+          "paste_access": false
+        },
+        "shortcut": {
+          "message": "no keyboard access",
+          "state": "unavailable"
+        },
+        "transcription_key": false
+      }
+    ],
+    "replies": [
+      {
+        "message": "snapshot",
+        "settings": {
+          "has_api_key": true,
+          "values": {
+            "audio_ducking_enabled": true,
+            "audio_ducking_fade_in_ms": 600,
+            "audio_ducking_fade_out_ms": 600,
+            "audio_ducking_volume_percent": 15,
+            "dictation_mode": "dictate",
+            "hotkey": {
+              "key": 57,
+              "label": "Ctrl+Space",
+              "modifiers": [
+                "ctrl"
+              ]
+            },
+            "keep_transcripts": "forever",
+            "language": "en",
+            "max_recording_seconds": 300,
+            "openai_api_key": "",
+            "paste_shortcut": "automatic",
+            "preserve_temp_audio": false,
+            "recording_mode": "toggle",
+            "show_tray_icon": true,
+            "start_on_login": true,
+            "transcription_model": "gpt-transcribe",
+            "transcription_prompt": "Rust and GPUI",
+            "vocabulary": [
+              {
+                "aliases": [
+                  "cube control"
+                ],
+                "spelling": "kubectl"
+              }
+            ]
+          }
+        },
+        "snapshot": {
+          "history_set_aside": "/data/agentdictate.sqlite.corrupt-1",
+          "overlay_unavailable": true,
+          "readiness": {
+            "desktop": {
+              "exposed_input": null,
+              "missing_tools": [],
+              "paste_access": true
+            },
+            "shortcut": {
+              "state": "starting"
+            },
+            "transcription_key": true
+          },
+          "recoverable_count": 3,
+          "workflow": {
+            "phase": {
+              "phase": "ready"
+            }
+          }
+        }
+      },
+      {
+        "message": "hotkey_captured",
+        "outcome": {
+          "hotkey": {
+            "key": 57,
+            "label": "Ctrl+Space",
+            "modifiers": [
+              "ctrl"
+            ]
+          },
+          "outcome": "captured"
+        }
+      },
+      {
+        "message": "hotkey_captured",
+        "outcome": {
+          "outcome": "cancelled"
+        }
+      },
+      {
+        "message": "hotkey_captured",
+        "outcome": {
+          "outcome": "timed_out"
+        }
+      },
+      {
+        "message": "api_key_checked",
+        "outcome": "works"
+      },
+      {
+        "message": "api_key_checked",
+        "outcome": "rejected"
+      },
+      {
+        "message": "api_key_checked",
+        "outcome": "unreachable"
+      },
+      {
+        "level": 42,
+        "message": "microphone_level"
+      },
+      {
+        "message": "microphone_tested",
+        "outcome": "heard"
+      },
+      {
+        "message": "microphone_tested",
+        "outcome": "silent"
+      },
+      {
+        "error": "microphone unavailable",
+        "message": "command_rejected"
+      }
+    ],
+    "workflow_phases": [
+      {
+        "phase": "ready"
+      },
+      {
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "phase": "starting"
+      },
+      {
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "phase": "recording"
+      },
+      {
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "phase": "stopping"
+      },
+      {
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "phase": "processing",
+        "stage": "transcribing"
+      },
+      {
+        "at": "failed",
+        "failure": "offline",
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "phase": "needs_attention"
+      }
+    ]
+  }
+}

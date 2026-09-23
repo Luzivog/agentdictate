@@ -284,7 +284,9 @@ The desktop app and the CLI talk to the daemon over a Unix socket at
 `$XDG_RUNTIME_DIR/agentdictate/agentdictate.sock` with mode 0600. A lock file next to
 it guarantees one daemon. Messages are newline-delimited JSON, and every message
 carries `protocol_version`, which must equal `PROTOCOL_VERSION` on both sides. Bump it
-whenever the wire format changes. Each reply answers the command just sent on the
+whenever the wire format changes: `crates/agentdictate-core/tests/core/protocol.json`
+holds a sample of every message for the current version, and a change under the same
+version fails that test. Each reply answers the command just sent on the
 same connection. Every session runs on its own thread and ends after 60 s without a
 command. On connect the daemon sends its status snapshot first, so a reconnect never
 depends on replayed events. IPC carries commands and that snapshot only. The
