@@ -9,6 +9,7 @@ mod daemon;
 pub mod diagnostics;
 mod hotkey_dispatch;
 mod live_transcription;
+mod native_access;
 mod openai;
 mod overlay_process;
 mod process;
@@ -23,6 +24,7 @@ pub use diagnostics::init_file_logging;
 pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
+pub use native_access::{NativeAccessError, grant_native_access};
 pub use openai::{
     ReqwestOpenAiTransport, SpeechRouter, SpeechTransport, TranscriptionPipeline,
     TranscriptionRequest,
@@ -69,6 +71,8 @@ pub struct AppPaths {
     pub daemon_supervision: DaemonSupervision,
     pub database_file: PathBuf,
     pub recordings: PathBuf,
+    /// Where `agentdictate setup-access` writes its root helper and udev rule.
+    pub native_access: PathBuf,
     pub logs: PathBuf,
     /// Record of an output volume reduced by audio ducking; see `PlaybackDucker`.
     pub ducking_state_file: PathBuf,
@@ -147,6 +151,7 @@ impl AppPaths {
             },
             database_file: data.join("agentdictate.sqlite"),
             recordings: data.join("recordings"),
+            native_access: data.join("native-access"),
             logs: state.join("logs"),
             ducking_state_file: state.join("ducking.json"),
             cache,

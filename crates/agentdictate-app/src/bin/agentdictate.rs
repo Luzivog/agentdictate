@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use agentdictate_app::{
-    AppPaths, WorkspaceClient, WorkspaceError, connect_or_start_daemon, init_file_logging,
-    is_overlay_helper_argument, run_overlay_helper,
+    AppPaths, WorkspaceClient, WorkspaceError, connect_or_start_daemon, grant_native_access,
+    init_file_logging, is_overlay_helper_argument, run_overlay_helper,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
 use agentdictate_runtime::IpcClient;
@@ -21,6 +21,17 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("transient recording overlay starting");
         return run_overlay_helper();
     }
+    if let [command] = args.as_slice()
+        && command == "setup-access"
+    {
+        // Asks for an administrator password, so it runs only on request.
+        grant_native_access(&paths.native_access)?;
+        println!(
+            "Keyboard and paste access is set up. If AgentDictate still cannot read the \
+             keyboard, log out and back in."
+        );
+        return Ok(());
+    }
     if !args.is_empty() {
         let command = match args.as_slice() {
             [command] if command == "stop" => ClientCommand::stop_recording(1),
@@ -30,7 +41,7 @@ fn main() -> anyhow::Result<()> {
                 ClientCommand::start_recording_in_mode(1, mode.parse().map_err(anyhow::Error::msg)?)
             }
             _ => anyhow::bail!(
-                "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel]"
+                "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel | setup-access]"
             ),
         };
         let (mut client, _) = IpcClient::connect(&paths.runtime)?;

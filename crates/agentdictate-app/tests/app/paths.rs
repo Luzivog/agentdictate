@@ -49,6 +49,7 @@ fn an_isolated_instance_keeps_every_root_under_its_home_and_leaves_systemd_alone
         &paths.legacy_autostart_file,
         &paths.database_file,
         &paths.recordings,
+        &paths.native_access,
         &paths.logs,
         &paths.ducking_state_file,
         &paths.cache,

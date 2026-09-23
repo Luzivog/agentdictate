@@ -14,10 +14,11 @@ permanently to the broad `input` group.
 
 ## Debian package
 
-The Debian package installs the vendor rule in `/usr/lib/udev/rules.d` and the
-user unit in `/usr/lib/systemd/user`. The package manager reloads and retriggers
-the relevant udev devices, but an existing desktop session may still need a
-logout/login before logind applies the new ACL.
+The Debian package installs the vendor rule in `/usr/lib/udev/rules.d`. The
+package manager reloads and retriggers the relevant udev devices, but an existing
+desktop session may still need a logout/login before logind applies the new ACL.
+`agentdictate setup-access` reapplies the rule after an administrator password
+prompt.
 
 ## Repository user install
 
@@ -45,9 +46,11 @@ return to the cloned `agentdictate` directory. Then run:
 
 ## AppImage
 
-An AppImage cannot change host device policy. It includes the rule and this
-guide under `usr/share/doc/agentdictate/native-access`. Extract them with the
-AppImage runtime and install the extracted rule:
+An AppImage cannot change host device policy by itself. Run
+`./AgentDictate-*.AppImage setup-access`: after an administrator password prompt
+(pkexec), it installs the rule and applies it. The AppImage also includes the
+rule and this guide under `usr/share/doc/agentdictate/native-access`. To do it by
+hand, extract them with the AppImage runtime and install the extracted rule:
 
 ```bash
 ./AgentDictate-*.AppImage --appimage-extract \

@@ -189,6 +189,10 @@ assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
   'usr/lib/udev/rules.d'
 assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
   '${PKG_DIR}/postrm'
+assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
+  '"${LIB_DIR}/grant-access"'
+assert_file_contains "${PROJECT_DIR}/crates/agentdictate-app/src/native_access.rs" \
+  '"/usr/lib/agentdictate/grant-access"'
 if grep -Eq 'systemctl[^#]*[[:space:]](enable|start|restart)([[:space:]]|$)' \
   "${PROJECT_DIR}/install.sh" "${PROJECT_DIR}/packaging/build-deb.sh"; then
   fail "installers must never enable or start a user service"

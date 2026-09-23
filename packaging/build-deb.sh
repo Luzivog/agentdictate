@@ -30,11 +30,12 @@ ICON_DIR="${BUILD_DIR}/usr/share/icons/hicolor/scalable/apps"
 METAINFO_DIR="${BUILD_DIR}/usr/share/metainfo"
 DOC_DIR="${BUILD_DIR}/usr/share/doc/agentdictate"
 UDEV_RULES_DIR="${BUILD_DIR}/usr/lib/udev/rules.d"
+LIB_DIR="${BUILD_DIR}/usr/lib/agentdictate"
 agentdictate_build_release_binaries
 
 rm -rf "${BUILD_DIR}"
 mkdir -p "${PKG_DIR}" "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" \
-  "${METAINFO_DIR}" "${DOC_DIR}" "${UDEV_RULES_DIR}"
+  "${METAINFO_DIR}" "${DOC_DIR}" "${UDEV_RULES_DIR}" "${LIB_DIR}"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${BIN_DIR}/agentdictate"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentdictated"
 agentdictate_install_shared_assets "${BUILD_DIR}"
@@ -42,6 +43,9 @@ install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${DOC_DIR}/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${UDEV_RULES_DIR}/70-agentdictate-input.rules"
+# `agentdictate setup-access` runs this root-owned copy through pkexec. With the
+# packaged rule in place it only reapplies the udev rules.
+install -m 0755 "${PROJECT_DIR}/packaging/grant-access.sh" "${LIB_DIR}/grant-access"
 
 # Apply the package-owned udev policy to existing devices. Each user's
 # agentdictated.service unit is written and enabled by the app on first
