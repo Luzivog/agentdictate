@@ -1,7 +1,8 @@
 # AgentDictate end-to-end upgrade plan
 
 Date: 22 September 2026. Baseline: `main` at `aaef150`, the installed build, and the live
-daemon's logs and database. Status: **proposal only. No application code has changed.**
+daemon's logs and database. Thomas accepted every recommendation in §4. The status below
+tracks what has landed on `main`; the rest of the plan is kept as written.
 
 This plan comes from seven parallel audit lanes, an independent correctness bug hunt, and two
 skeptical verification passes. The lanes were latency with real usage data, speech-to-text
@@ -10,6 +11,24 @@ verifiers tried to refute the 30 load-bearing claims against the code: 27 were c
 partly true (corrected below), and none were refuted. Numbers are measured from the logs and
 database unless marked *inferred*. The full lane reports, with every file:line reference, are
 archived at `~/.local/state/agentdictate-audit-20260922/`.
+
+## Status
+
+Updated 23 September 2026, at `7b2b4f5` plus the docs consolidation.
+
+| Phase | State | Still open |
+| --- | --- | --- |
+| 0. Safety and correctness | Landed | D1 host rule (needs sudo) and the in-app world-access warning; COR-8/D19 copy-only for late results |
+| 1. Quick latency wins | Landed | None |
+| 2. Delete dead weight | Mostly landed, including the GPUI-free daemon (BLD-3) and the docs (BLD-2) | Decision-gated deletions D2 to D5; build ceremony (BLD-12/14) |
+| 3. Daemon core | Not started | All |
+| 4. Streaming | Not started | All |
+| 5. Product and UX | History basics (item 3); GPUI migration (item 10); the unit is rewritten only when it changes (part of item 9); `agentdictate setup-access` as the backend for item 7's grant button | Items 1, 2, 4 to 8, and the rest of item 9 |
+| 6. Data and privacy | Not started | All |
+| 7. Linux platform | In-process clipboard (LNX-9), Shift+Insert everywhere (LNX-14), 100 ms ducking steps, `agentdictate setup-access` | Layout-independent hotkey (LNX-13), GlobalShortcuts portal |
+| 8. Release and tooling | Installer (BLD-15), isolated dev instance and smaller `startup.rs` (BLD-16), tested and pinned release workflow, one CA store (BLD-13) | Cut v0.3.0; delete the linker workaround after D16 |
+
+D1 and D16 need sudo on the host and wait for Thomas.
 
 ## 1. The short version
 
