@@ -9,6 +9,7 @@ use crate::{hotkey::AGENTDICTATE_INJECTION_DEVICE_NAME, paste::PasteShortcut};
 
 /// Paced like a physical chord: busy application event loops (Electron in
 /// particular) intermittently drop zero-gap synthetic press/release bursts.
+/// The gap separates events; nothing waits after the final release.
 const KEY_EVENT_GAP: Duration = Duration::from_millis(25);
 
 /// A freshly created uinput keyboard is invisible to the compositor until udev
@@ -111,8 +112,8 @@ impl PasteInjector {
         let (modifiers, key) = chord(shortcut);
         let ready = self.ensure_device()?;
         let start = ready.ready_at.max(Instant::now());
-        let events = 2 * (modifiers.len() as u32 + 1);
-        if start + KEY_EVENT_GAP * events > deadline {
+        let gaps = 2 * (modifiers.len() as u32 + 1) - 1;
+        if start + KEY_EVENT_GAP * gaps > deadline {
             return Err(InjectionError::DeadlineBeforeInjection);
         }
         thread::sleep(start.saturating_duration_since(Instant::now()));
@@ -188,10 +189,13 @@ impl PressedKeys<'_> {
     }
 
     /// Releases in reverse order and empties `pressed` so Drop is a no-op.
+    /// Returns right after the last release: the chord is complete.
     fn release_all(&mut self) -> Result<(), InjectionError> {
         while let Some(key) = self.pressed.pop() {
             emit_key(self.device, key, 0)?;
-            thread::sleep(KEY_EVENT_GAP);
+            if !self.pressed.is_empty() {
+                thread::sleep(KEY_EVENT_GAP);
+            }
         }
         Ok(())
     }
