@@ -1,6 +1,10 @@
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use agentdictate_app::{
@@ -132,6 +136,62 @@ impl Deliverer for ExitInspectingDelivery {
             paste_triggered: true,
         })
     }
+}
+
+/// Records whether the daemon's recording flag was already set while the
+/// recorder started, so an Esc pressed during a start is not dropped.
+#[derive(Default)]
+struct FlagInspectingRecorder {
+    flag: Option<Arc<AtomicBool>>,
+    flag_set_during_start: bool,
+}
+
+impl Recorder for FlagInspectingRecorder {
+    fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
+        self.flag_set_during_start = self
+            .flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire));
+        std::fs::write(&job.audio_path, b"RIFFcaptured audio").unwrap();
+        Ok(())
+    }
+}
+
+impl RecordingController for FlagInspectingRecorder {
+    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+        Ok(CapturedRecording {
+            duration_seconds: 2.0,
+        })
+    }
+}
+
+#[test]
+fn recording_flag_is_set_only_while_a_recording_starts_or_runs() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    let mut daemon = Daemon::new(
+        Runtime::open(&paths.database_file).unwrap(),
+        Settings::default(),
+        paths,
+        FlagInspectingRecorder::default(),
+        FixedTranscriber,
+        SubmittedDelivery::default(),
+    );
+    let recording = daemon.recording_flag();
+    daemon.recorder_mut().flag = Some(Arc::clone(&recording));
+    assert!(!recording.load(Ordering::Acquire));
+
+    daemon.start_recording().unwrap();
+    assert!(daemon.recorder().flag_set_during_start);
+    assert!(recording.load(Ordering::Acquire));
+    daemon.discard_recording().unwrap();
+    assert!(!recording.load(Ordering::Acquire));
+
+    daemon.start_recording().unwrap();
+    assert!(recording.load(Ordering::Acquire));
+    daemon.stop_recording().unwrap();
+    assert!(!recording.load(Ordering::Acquire));
 }
 
 #[test]

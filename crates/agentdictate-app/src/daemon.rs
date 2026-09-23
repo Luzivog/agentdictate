@@ -1,11 +1,15 @@
 use std::fs;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot,
     HotkeyReadiness, JobId, JobStage, RecoverySnapshot, ReplacementRule, Settings,
-    UsageDaySnapshot, UsageSnapshot, UsageTotalsSnapshot, Workflow, WorkflowError, WorkflowSignal,
-    WorkspaceSnapshot,
+    UsageDaySnapshot, UsageSnapshot, UsageTotalsSnapshot, Workflow, WorkflowError, WorkflowPhase,
+    WorkflowSignal, WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
@@ -122,6 +126,7 @@ pub struct Daemon<R, T, D> {
     last_transcript: Option<String>,
     hotkey: HotkeyReadiness,
     overlay: OverlayDeliveryGate,
+    recording: Arc<AtomicBool>,
 }
 
 impl<R, T, D> Daemon<R, T, D>
@@ -157,6 +162,7 @@ where
             last_transcript: None,
             hotkey: HotkeyReadiness::Starting,
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
+            recording: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -653,6 +659,14 @@ where
         self.publish_overlay_update();
     }
 
+    /// True while a recording is starting or running. Other threads read it
+    /// without the daemon lock; the hotkey listener uses it to drop Esc
+    /// presses that could not cancel anything.
+    #[must_use]
+    pub fn recording_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.recording)
+    }
+
     #[must_use]
     pub const fn recorder(&self) -> &R {
         &self.recorder
@@ -690,7 +704,14 @@ where
         &mut self.deliverer
     }
 
+    /// Publishes the workflow to the overlay helper and the recording flag.
+    /// Every workflow change ends with this call.
     fn publish_overlay_update(&self) {
+        let recording = matches!(
+            self.workflow.snapshot().phase,
+            WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
+        );
+        self.recording.store(recording, Ordering::Release);
         if let OverlayDeliveryGate::Live(overlay) = &self.overlay {
             overlay.update(self.overlay_update());
         }

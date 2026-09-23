@@ -140,6 +140,12 @@ impl AgentProcess {
         self.daemon.set_overlay_controller(controller);
     }
 
+    /// See `Daemon::recording_flag`.
+    #[must_use]
+    pub fn recording_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.daemon.recording_flag()
+    }
+
     pub fn set_hotkey_reconfigurer(&mut self, control: Arc<dyn HotkeyReconfigurer>) {
         self.hotkey_control = Some(control);
     }

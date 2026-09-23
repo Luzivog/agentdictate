@@ -126,3 +126,19 @@ fn cancellation_replaces_one_queued_hold_release() {
         .is_none()
     );
 }
+
+#[test]
+fn idle_escape_is_dropped_unless_an_action_may_be_starting_a_recording() {
+    let now = Instant::now();
+    let mut gate = HotkeyDispatchGate::default();
+    assert!(gate.ignores_cancel(false));
+    assert!(!gate.ignores_cancel(true));
+
+    gate.accept("toggle", &hotkey_event(HotkeySignal::Pressed, now))
+        .unwrap();
+    // The in-flight press may be starting a recording that Esc must cancel.
+    assert!(!gate.ignores_cancel(false));
+
+    gate.complete(HotkeyActionOutcome::Other, now);
+    assert!(gate.ignores_cancel(false));
+}

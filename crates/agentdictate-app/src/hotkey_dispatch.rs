@@ -3,7 +3,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -39,6 +39,7 @@ pub fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyh
             }
         })?;
     let recording_mode = Arc::new(RwLock::new(process.recording_mode().to_owned()));
+    let recording = process.recording_flag();
     process.set_recording_mode_control(Arc::clone(&recording_mode));
     process.set_hotkey_reconfigurer(Arc::new(SupervisedHotkeyControl {
         events: events.clone(),
@@ -76,6 +77,7 @@ pub fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyh
             hotkey_dispatch_loop(HotkeyDispatchLoop {
                 runtime,
                 recording_mode,
+                recording,
                 events,
                 incoming,
                 current_spec,
@@ -194,6 +196,7 @@ fn schedule_environment_retry(generation: u64, events: std::sync::mpsc::Sender<D
 struct HotkeyDispatchLoop {
     runtime: std::path::PathBuf,
     recording_mode: Arc<RwLock<String>>,
+    recording: Arc<AtomicBool>,
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
     incoming: std::sync::mpsc::Receiver<DispatchLoopEvent>,
     current_spec: Option<HotkeySpec>,
@@ -206,6 +209,7 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
     let HotkeyDispatchLoop {
         runtime,
         recording_mode,
+        recording,
         events,
         incoming,
         mut current_spec,
@@ -221,6 +225,11 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                 generation: event_generation,
                 event: NativeHotkeyEvent::Signal(event),
             } if event_generation == generation => {
+                if event.signal == HotkeySignal::Cancelled
+                    && gate.ignores_cancel(recording.load(Ordering::Acquire))
+                {
+                    continue;
+                }
                 let mode = recording_mode
                     .read()
                     .map_or_else(|_| "toggle".to_owned(), |mode| mode.clone());
@@ -547,6 +556,14 @@ impl HotkeyDispatchGate {
             return Err(HotkeyIgnoreReason::TerminalQueued);
         }
         Err(HotkeyIgnoreReason::ActionInFlight)
+    }
+
+    /// Whether an Esc press can be dropped before dispatch, without an
+    /// action thread, IPC round trip, or log line. Esc cancels only a
+    /// recording, so it is dropped when none is active, unless an action is
+    /// in flight: that may be a start, and the press then queues to cancel it.
+    pub const fn ignores_cancel(&self, recording_active: bool) -> bool {
+        !recording_active && !self.in_flight
     }
 
     pub fn complete(
