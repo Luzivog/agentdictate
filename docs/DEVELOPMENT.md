@@ -20,37 +20,6 @@ worktrees, disk space, and running Cargo or linker processes. A nonzero exit mea
 build prerequisite is missing. It does not install packages or check native input
 access.
 
-### Hosts without the xkbcommon development packages
-
-GPUI links `libxkbcommon.so` and `libxkbcommon-x11.so` by their development names,
-which only `libxkbcommon-dev` and `libxkbcommon-x11-dev` provide.
-`packaging/linker-runtime-fallback.sh` works around a missing package: it points
-symlinks in `target/linker-shims` at the installed runtime libraries and adds that
-directory to `LIBRARY_PATH`. `install.sh`, `run.sh`, and `run-tests.sh` source
-it for you.
-
-Direct Cargo commands that link GPUI need it too. That means anything built with
-the `desktop` or `test-support` features of `agentdictate-ui`, including the
-`agentdictate` binary. Once the shims exist, export the path in the same shell:
-
-```bash
-export LIBRARY_PATH="$PWD/target/linker-shims"
-cargo test --locked -p agentdictate-ui --test desktop --features test-support
-```
-
-Or create the shims and run one command in a subshell:
-
-```bash
-(
-  PROJECT_DIR="$PWD"
-  source packaging/linker-runtime-fallback.sh
-  cargo check --locked -p agentdictate-ui --features desktop
-)
-```
-
-A build that links this way proves that the target links, not that a clean host
-has every packaging prerequisite.
-
 ## Run a development build
 
 `./run.sh` builds both binaries and runs them as an isolated instance, so it

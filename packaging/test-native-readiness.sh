@@ -128,50 +128,6 @@ capture "${PROJECT_DIR}/install.sh" --check-native-access
 (( status == 0 )) || fail "install.sh readiness mode must not require a build or mutate the fixture"
 assert_contains "${output}" "Native input readiness: ready"
 
-linker_fixture="${fixture_root}/linker"
-mkdir -p "${linker_fixture}/bin"
-cat > "${linker_fixture}/bin/cc" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "${1#-print-file-name=}"
-EOF
-cat > "${linker_fixture}/bin/ldconfig" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' \
-  'libxkbcommon.so.0 (libc6,x86-64) => /usr/lib/libxkbcommon.so.0' \
-  'libxkbcommon-x11.so.0 (libc6,x86-64) => /usr/lib/libxkbcommon-x11.so.0'
-for sequence in $(seq 1 5000); do
-  printf 'libfixture%s.so.0 => /usr/lib/libfixture%s.so.0\n' \
-    "${sequence}" "${sequence}"
-done
-EOF
-chmod 0755 "${linker_fixture}/bin/cc" "${linker_fixture}/bin/ldconfig"
-linker_fallback="${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
-if ! (
-  set -euo pipefail
-  PROJECT_DIR="${linker_fixture}/project"
-  PATH="${linker_fixture}/bin:/usr/bin:/bin"
-  source "${linker_fallback}"
-); then
-  fail "linker runtime discovery must be safe under install.sh strict mode"
-fi
-[[ -L "${linker_fixture}/project/target/linker-shims/libxkbcommon.so" ]] || \
-  fail "xkbcommon runtime shim was not created"
-[[ -L "${linker_fixture}/project/target/linker-shims/libxkbcommon-x11.so" ]] || \
-  fail "xkbcommon-x11 runtime shim was not created"
-
-mkdir -p "${linker_fixture}/no-path-bin"
-cp "${linker_fixture}/bin/cc" "${linker_fixture}/no-path-bin/cc"
-if ! (
-  set -euo pipefail
-  PROJECT_DIR="${linker_fixture}/no-path-project"
-  PATH="${linker_fixture}/no-path-bin:/usr/bin:/bin"
-  source "${linker_fallback}"
-); then
-  fail "linker fallback must find the distro ldconfig outside a user PATH"
-fi
-[[ -L "${linker_fixture}/no-path-project/target/linker-shims/libxkbcommon.so" ]] || \
-  fail "runtime shim was not created when /usr/sbin was absent from PATH"
-
 # Policy guards: the shipped access assets never make input devices
 # world-writable, and installers never enable or start a user service.
 GUIDE="${PROJECT_DIR}/packaging/NATIVE_ACCESS.md"

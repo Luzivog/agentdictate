@@ -35,7 +35,6 @@ case "${1:-}" in
     ;;
 esac
 
-source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
 agentdictate_build_release_binaries
 
 mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${NATIVE_ACCESS_DIR}"

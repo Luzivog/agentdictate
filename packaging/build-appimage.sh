@@ -3,7 +3,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${PROJECT_DIR}/packaging/common.sh"
-source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
 APPDIR="${PROJECT_DIR}/dist/AppDir"
 VERSION="$(agentdictate_workspace_version)"
 RUST_HOST="$(agentdictate_rust_host)"

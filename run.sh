@@ -10,7 +10,6 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
 cd "${PROJECT_DIR}"
 export AGENTDICTATE_HOME="${AGENTDICTATE_HOME:-${PROJECT_DIR}/target/dev-home}"
 BIN_DIR="${PROJECT_DIR}/target/debug"

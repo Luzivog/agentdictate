@@ -40,9 +40,7 @@ The installer builds the release binaries and installs, for your user only:
 - the input-access rule and its guide in `~/.local/share/agentdictate/native-access`.
 
 It does not use `sudo`, and it never enables or starts a service. When you reinstall
-while the daemon is running, it restarts the daemon so the new build takes over. If
-the xkbcommon development packages are missing, it links against the runtime
-libraries through shims under `target/linker-shims`.
+while the daemon is running, it restarts the daemon so the new build takes over.
 
 The installer ends by checking native input access and exits with its status:
 
