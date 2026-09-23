@@ -128,6 +128,9 @@ impl PwRecordRecorder {
 
         let arguments = [
             OsString::from("--media-category=Capture"),
+            // pw-record asks for a 100 ms node latency by default, which delays
+            // the first buffer (readiness) and truncates the tail at stop.
+            OsString::from("--latency=20ms"),
             OsString::from("--rate=16000"),
             OsString::from("--channels=1"),
             OsString::from("--format=s16"),
