@@ -162,6 +162,10 @@ pub enum DaemonError {
     NotCopied { reason: String },
     #[error("dictation {job_id} left transcription before its result arrived")]
     StaleResult { job_id: JobId },
+    #[error("there is no dictation to paste yet")]
+    NothingToPaste,
+    #[error("the last dictation was not pasted: {reason}")]
+    NotPasted { reason: String },
 }
 
 /// Daemon state that other threads read without the daemon lock. The hotkey
@@ -323,7 +327,9 @@ pub struct Daemon<R, T, D> {
     workflow: Workflow,
     activity: Activity,
     recoverable_count: usize,
-    last_transcript: Option<String>,
+    /// The last dictation delivered, or whose delivery failed, for "Paste
+    /// last dictation". It is kept in memory only.
+    last_dictation: Option<RecordingJob>,
     overlay: OverlayDeliveryGate,
     notifier: Option<Notifier>,
     /// Set while shutting down, when a dictation ending is not announced.
@@ -358,7 +364,7 @@ where
             workflow: Workflow::new(),
             activity: Activity::Idle,
             recoverable_count,
-            last_transcript: None,
+            last_dictation: None,
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
             notifier: None,
             quiet: false,
@@ -709,7 +715,7 @@ where
             };
             (end, Some(notice))
         };
-        self.last_transcript = Some(result.final_text.clone());
+        self.last_dictation = Some(result.clone());
         self.settle_with_notice(id, end, notice);
         tracing::info!(
             job_id = %id,
@@ -914,11 +920,44 @@ where
             }
             self.cleanup_completed_audio(&result);
         }
-        self.last_transcript = Some(result.final_text.clone());
+        self.last_dictation = Some(result.clone());
         self.clear_attention_for(id);
         self.recount_recoveries();
         self.publish_overlay_update();
         copied(result)
+    }
+
+    /// "Paste last dictation": pastes the last dictation's text again into
+    /// the focused window, through the same gate and single paste chord as
+    /// a dictation. It is refused while a dictation is in flight, so it can
+    /// never collide with one. A paste no application took is announced
+    /// like a dictation's, and never sent again.
+    pub fn paste_last(&mut self) -> Result<(), DaemonError> {
+        self.require_idle()?;
+        let last = self
+            .last_dictation
+            .clone()
+            .ok_or(DaemonError::NothingToPaste)?;
+        self.overlay
+            .confirm_ready()
+            .map_err(|error| DaemonError::NotPasted {
+                reason: error.to_string(),
+            })?;
+        self.deliverer.wait_for_released_keys();
+        let disposition = self.deliverer.deliver(&last, DeliveryMethod::Paste)?;
+        tracing::info!(job_id = %last.id, ?disposition, "last dictation pasted again");
+        match disposition {
+            DeliveryDisposition::Submitted { consumed, .. } => {
+                if let Some(notice) = delivered_notice(DeliveryMethod::Paste, consumed) {
+                    self.publish(Some((notice, last.id)));
+                }
+                Ok(())
+            }
+            DeliveryDisposition::Ambiguous { .. } => Err(DaemonError::NotPasted {
+                reason: "the paste may not have reached the focused app".to_owned(),
+            }),
+            DeliveryDisposition::NotSent { reason, .. } => Err(DaemonError::NotPasted { reason }),
+        }
     }
 
     /// Deletes one Recovery item. Only a prompt about that item is cleared:
@@ -963,7 +1002,6 @@ where
             workflow: self.workflow.snapshot(),
             hotkey: self.status.hotkey_readiness(),
             recoverable_count: self.recoverable_count,
-            last_transcript: self.last_transcript.clone(),
             overlay_unavailable: matches!(
                 &self.overlay,
                 OverlayDeliveryGate::Live(controller) if controller.is_unavailable()

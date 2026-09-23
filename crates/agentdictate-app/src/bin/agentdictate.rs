@@ -38,12 +38,14 @@ fn main() -> anyhow::Result<()> {
         let command = match args.as_slice() {
             [command] if command == "stop" => ClientCommandKind::StopRecording.into(),
             [command] if command == "cancel" => ClientCommandKind::Cancel.into(),
+            // Bindable to a shortcut in the desktop's keyboard settings.
+            [command] if command == "paste-last" => ClientCommandKind::PasteLast.into(),
             [command] if command == "start" => ClientCommand::start_recording(),
             [command, flag, mode] if command == "start" && flag == "--mode" => {
                 ClientCommand::start_recording_in_mode(mode.parse().map_err(anyhow::Error::msg)?)
             }
             _ => anyhow::bail!(
-                "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel | setup-access]"
+                "Usage: agentdictate [start [--mode dictate|literal] | stop | cancel | paste-last | setup-access]"
             ),
         };
         let (mut client, _) = IpcClient::connect(&paths.runtime)?;

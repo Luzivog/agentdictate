@@ -9,7 +9,7 @@ use agentdictate_linux::{
     clipboard::{ClipboardError, ClipboardSelection, SelectionOwner},
     command::{PlatformExecutable, PlatformTool, SystemCommandRunner},
     focus::{FocusError, observe_x11_focus},
-    injection::PasteInjector,
+    injection::{PasteInjector, wait_for_released_modifiers},
     paste::{
         DeliveryAction, DeliveryFailure, DeliveryObservation, PasteDelivery, ShortcutMode,
         X11FocusObservation, resolve_focus_target,
@@ -29,6 +29,9 @@ const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long reading the focused window may take outside a paste.
 const FOCUS_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long a paste the user asked for waits for them to let go of the
+/// shortcut's modifier keys.
+const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(1_500);
 /// How long after the paste key press a target may take to request the
 /// text and still count as having taken the paste. The chord itself takes
 /// 50–75 ms of this.
@@ -656,6 +659,12 @@ impl DaemonDeliverer for SystemDeliverer {
 }
 
 impl Deliverer for SystemDeliverer {
+    fn wait_for_released_keys(&mut self) {
+        if !wait_for_released_modifiers(MODIFIER_RELEASE_TIMEOUT) {
+            tracing::warn!("a modifier key is still held; pasting anyway");
+        }
+    }
+
     fn observe_focus(&mut self) -> ObservedFocus {
         match self.focus_target(Instant::now() + FOCUS_OBSERVATION_TIMEOUT) {
             Ok(target) => target

@@ -51,7 +51,6 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 2,
-        last_transcript: Some("previous words".to_owned()),
         overlay_unavailable: false,
         history_set_aside: None,
     }));
@@ -121,7 +120,6 @@ fn silent_client_does_not_block_a_second_command_session() {
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
-        last_transcript: None,
         overlay_unavailable: false,
         history_set_aside: None,
     }));
@@ -163,7 +161,6 @@ impl IpcHandler for CapturingHandler {
             workflow: Workflow::new().snapshot(),
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 0,
-            last_transcript: None,
             overlay_unavailable: false,
             history_set_aside: None,
         };
@@ -292,7 +289,6 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
         workflow: workflow.snapshot(),
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
-        last_transcript: None,
         overlay_unavailable: false,
         history_set_aside: None,
     }));
@@ -334,7 +330,6 @@ fn idle_session_is_closed_after_the_read_timeout() {
             workflow: workflow.snapshot(),
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 0,
-            last_transcript: None,
             overlay_unavailable: false,
             history_set_aside: None,
         })),

@@ -126,7 +126,6 @@ pub struct ShellViewModel {
     pub status: StatusViewModel,
     pub hotkey: HotkeyViewModel,
     pub workspace: WorkspaceViewModel,
-    pub last_transcript: Option<String>,
 }
 
 impl ShellViewModel {
@@ -141,7 +140,6 @@ impl ShellViewModel {
             status: snapshot.into(),
             hotkey: HotkeyReadiness::Starting.into(),
             workspace: WorkspaceViewModel::default(),
-            last_transcript: None,
         }
     }
 
@@ -153,7 +151,6 @@ impl ShellViewModel {
             0,
             u64::try_from(snapshot.recoverable_count).unwrap_or(u64::MAX),
         );
-        model.last_transcript = snapshot.last_transcript;
         model
     }
 

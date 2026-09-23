@@ -22,6 +22,8 @@ const DESKTOP_ENTRY: &str = "local.agentdictate.AgentDictate";
 pub enum NotificationAction {
     /// Transcribe a failed dictation again; its text is then copied.
     TryAgain(JobId),
+    /// Paste the last dictation into the focused app.
+    PasteLast,
     /// Open the settings window, where Recovery lists the dictation.
     OpenWindow,
 }
@@ -32,6 +34,7 @@ impl NotificationAction {
     const fn key(self) -> &'static str {
         match self {
             Self::TryAgain(_) => "try-again",
+            Self::PasteLast => "paste-again",
             Self::OpenWindow => "default",
         }
     }
@@ -39,6 +42,7 @@ impl NotificationAction {
     const fn label(self) -> &'static str {
         match self {
             Self::TryAgain(_) => "Try again",
+            Self::PasteLast => "Paste again",
             Self::OpenWindow => "Open AgentDictate",
         }
     }
@@ -61,25 +65,25 @@ impl Notification {
     pub fn for_notice(notice: DictationNotice, job_id: JobId) -> Self {
         let wording = notice_wording(notice);
         let (actions, transient) = match notice {
-            DictationNotice::Copied | DictationNotice::NothingHeard => (Vec::new(), true),
+            DictationNotice::Copied => (vec![NotificationAction::PasteLast], true),
+            DictationNotice::NothingHeard => (Vec::new(), true),
             DictationNotice::Failed { failure } => {
-                let retry = match failure {
+                let fix = match failure {
                     FailureKind::Offline
                     | FailureKind::RateLimited
                     | FailureKind::ProviderError
                     | FailureKind::NoSpeech
                     | FailureKind::MicrophoneStalled
                     | FailureKind::Unexpected => Some(NotificationAction::TryAgain(job_id)),
-                    // The key must be fixed first, nothing was recorded, or
-                    // the text is already transcribed.
+                    // The text is transcribed; only its paste failed.
+                    FailureKind::PasteNotConfirmed => Some(NotificationAction::PasteLast),
+                    // The key must be fixed first, or nothing was recorded.
                     FailureKind::CredentialMissing
                     | FailureKind::CredentialRejected
-                    | FailureKind::MicrophoneUnavailable
-                    | FailureKind::PasteNotConfirmed => None,
+                    | FailureKind::MicrophoneUnavailable => None,
                 };
                 (
-                    retry
-                        .into_iter()
+                    fix.into_iter()
                         .chain([NotificationAction::OpenWindow])
                         .collect(),
                     false,
@@ -286,6 +290,9 @@ pub fn follow_notification_actions(
                     NotificationAction::TryAgain(job_id) => {
                         handle.try_again(job_id).map_err(|error| error.to_string())
                     }
+                    NotificationAction::PasteLast => {
+                        handle.paste_last().map_err(|error| error.to_string())
+                    }
                     NotificationAction::OpenWindow => open_settings_window(&settings_executable)
                         .map_err(|error| error.to_string()),
                 };
@@ -329,7 +336,7 @@ mod tests {
         assert_eq!(no_key.actions, [NotificationAction::OpenWindow]);
 
         let copied = Notification::for_notice(DictationNotice::Copied, job_id);
-        assert!(copied.actions.is_empty());
+        assert_eq!(copied.actions, [NotificationAction::PasteLast]);
         assert!(copied.transient);
     }
 

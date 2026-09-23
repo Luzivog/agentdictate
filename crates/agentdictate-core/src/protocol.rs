@@ -77,6 +77,9 @@ pub enum ClientCommandKind {
     RetryTranscription {
         job_id: JobId,
     },
+    /// Pastes the last dictation again into the focused window. Refused
+    /// while a dictation is in flight.
+    PasteLast,
     RetryDelivery {
         job_id: JobId,
     },
@@ -131,7 +134,6 @@ pub struct AppSnapshot {
     pub workflow: WorkflowSnapshot,
     pub hotkey: HotkeyReadiness,
     pub recoverable_count: usize,
-    pub last_transcript: Option<String>,
     /// The recording overlay could not be shown; dictation still works.
     pub overlay_unavailable: bool,
     /// Where the daemon moved a history database it could not read when it

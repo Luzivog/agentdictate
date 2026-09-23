@@ -102,7 +102,6 @@ fn helper_update_serializes_only_overlay_workflow_and_active_recording_metadata(
 
     assert_eq!(decoded, update);
     assert!(encoded.contains("/tmp/recording.wav"));
-    assert!(!encoded.contains("last_transcript"));
     assert!(!encoded.contains("recoverable_count"));
     assert_eq!(
         decoded.presentation().active_recording.unwrap().audio_path,

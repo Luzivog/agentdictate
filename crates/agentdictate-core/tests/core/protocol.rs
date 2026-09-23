@@ -66,7 +66,6 @@ fn snapshot_messages_round_trip_without_secret_settings() {
             workflow: Workflow::new().snapshot(),
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 3,
-            last_transcript: Some("safe transcript".into()),
             overlay_unavailable: true,
             history_set_aside: Some("/tmp/agentdictate.sqlite.corrupt-1".into()),
         },

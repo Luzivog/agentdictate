@@ -253,6 +253,14 @@ where
         Ok(())
     }
 
+    /// "Paste last dictation" from the tray or a notification.
+    pub fn paste_last(&self) -> Result<(), DaemonError> {
+        if self.shared.quitting.load(Ordering::Acquire) {
+            return Err(DaemonError::ShuttingDown);
+        }
+        self.lock().daemon_mut().paste_last()
+    }
+
     /// Runs `f` under the process lock, for composition and tests.
     pub fn with_process<O>(&self, f: impl FnOnce(&mut AgentProcess<R, T, D>) -> O) -> O {
         f(&mut self.lock())
@@ -384,6 +392,7 @@ where
             ClientCommandKind::StartRecording { .. }
                 | ClientCommandKind::RetryTranscription { .. }
                 | ClientCommandKind::RetryDelivery { .. }
+                | ClientCommandKind::PasteLast
         );
         if starts_work && self.shared.quitting.load(Ordering::Acquire) {
             return ServerMessage::command_rejected(DaemonError::ShuttingDown.to_string());

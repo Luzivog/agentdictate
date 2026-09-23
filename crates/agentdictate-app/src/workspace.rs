@@ -576,7 +576,6 @@ mod tests {
             workflow: Workflow::new().snapshot(),
             hotkey: agentdictate_core::HotkeyReadiness::Ready,
             recoverable_count: 0,
-            last_transcript: None,
             overlay_unavailable: false,
             history_set_aside: None,
         }

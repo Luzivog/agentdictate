@@ -25,6 +25,52 @@ const CHORD_KEYS: [KeyCode; 4] = [
     KeyCode::KEY_V,
 ];
 
+/// Modifier keys that a physical keyboard could still hold while a chord is
+/// injected, turning Shift+Insert into, say, Ctrl+Alt+Shift+Insert.
+const MODIFIER_KEYS: [KeyCode; 8] = [
+    KeyCode::KEY_LEFTCTRL,
+    KeyCode::KEY_RIGHTCTRL,
+    KeyCode::KEY_LEFTSHIFT,
+    KeyCode::KEY_RIGHTSHIFT,
+    KeyCode::KEY_LEFTALT,
+    KeyCode::KEY_RIGHTALT,
+    KeyCode::KEY_LEFTMETA,
+    KeyCode::KEY_RIGHTMETA,
+];
+
+const MODIFIER_POLL: Duration = Duration::from_millis(10);
+
+/// Waits until no keyboard holds a modifier, so the keys of a shortcut that
+/// asked for a paste, such as one bound to `agentdictate paste-last`, cannot
+/// mix into the paste chord. Returns whether they were released within
+/// `timeout`. Keyboards that cannot be read are ignored.
+pub fn wait_for_released_modifiers(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let keyboards = evdev::enumerate()
+        .map(|(_, device)| device)
+        .filter(|device| device.name() != Some(AGENTDICTATE_INJECTION_DEVICE_NAME))
+        .filter(|device| {
+            device
+                .supported_keys()
+                .is_some_and(|keys| MODIFIER_KEYS.iter().any(|key| keys.contains(*key)))
+        })
+        .collect::<Vec<_>>();
+    loop {
+        let held = keyboards.iter().any(|keyboard| {
+            keyboard
+                .get_key_state()
+                .is_ok_and(|pressed| MODIFIER_KEYS.iter().any(|key| pressed.contains(*key)))
+        });
+        if !held {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(MODIFIER_POLL);
+    }
+}
+
 #[derive(Debug)]
 pub enum InjectionError {
     /// /dev/uinput is missing or not writable, or device creation failed.
@@ -396,6 +442,58 @@ mod tests {
         ));
         assert_eq!(key_events(&mut reader, 1), vec![]);
         assert_nothing_pressed(&reader);
+    }
+
+    #[test]
+    fn waiting_for_modifiers_lasts_until_a_held_one_is_released() {
+        let mut keys = AttributeSet::<KeyCode>::new();
+        keys.insert(KeyCode::KEY_LEFTCTRL);
+        let Ok(mut keyboard) = VirtualDevice::builder().and_then(|builder| {
+            builder
+                .name(crate::hotkey::AGENTDICTATE_TEST_DEVICE_NAME)
+                .with_keys(&keys)?
+                .build()
+        }) else {
+            let _ = writeln!(
+                io::stderr(),
+                "SKIPPED waiting_for_modifiers_lasts_until_a_held_one_is_released: no uinput"
+            );
+            return;
+        };
+        let node = keyboard
+            .enumerate_dev_nodes_blocking()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        // Grabbed, so the held Ctrl never reaches the desktop; the kernel
+        // still reports it as held.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut reader = loop {
+            match Device::open(&node) {
+                Ok(reader) => break reader,
+                Err(error)
+                    if error.kind() == io::ErrorKind::PermissionDenied
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("open {} failed: {error}", node.display()),
+            }
+        };
+        reader.grab().unwrap();
+        emit_key(&mut keyboard, KeyCode::KEY_LEFTCTRL, 1).unwrap();
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            emit_key(&mut keyboard, KeyCode::KEY_LEFTCTRL, 0).unwrap();
+            keyboard
+        });
+        let started = Instant::now();
+
+        assert!(wait_for_released_modifiers(Duration::from_secs(3)));
+
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        drop(releaser.join().unwrap());
     }
 
     #[test]

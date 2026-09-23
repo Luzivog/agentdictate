@@ -35,8 +35,15 @@ arguments it runs one command and exits:
 agentdictate start [--mode dictate|literal]
 agentdictate stop
 agentdictate cancel
+agentdictate paste-last
 agentdictate setup-access
 ```
+
+`paste-last` pastes the last dictation again, through the same gate and single
+paste chord as a dictation, once the shortcut's modifier keys are released. The
+daemon keeps that text in memory only, and refuses while a dictation is in flight.
+The tray's **Paste last dictation** and a notification's **Paste again** do the
+same.
 
 `setup-access` runs a copy of `packaging/grant-access.sh` as root through `pkexec`
 to install and apply the input-access rule. See
@@ -58,14 +65,15 @@ Ctrl+V". It has no buttons, and its window's input region is empty, so it never
 takes a click. The daemon also shows a desktop notification through
 `org.freedesktop.Notifications` on the session bus, which never takes the focus.
 Clicking it opens the window. A failure that transcribing again can fix offers
-**Try again**, which transcribes the Recovery item and copies its text. Each
+**Try again**, which transcribes the Recovery item and copies its text; copied text
+offers **Paste again**. Each
 notification replaces the previous one. A retry from the settings window, and a
 shutdown, announce nothing.
 
 **Tray.** The tray runs inside the daemon as a StatusNotifier item when
 `show_tray_icon` is on. That is a `config.json` setting and it defaults to on. The
 menu has **Open AgentDictate**, **Toggle dictation**, **Start literal dictation**,
-**Cancel dictation**, and **Quit AgentDictate**. Opening settings launches the
+**Paste last dictation**, **Cancel dictation**, and **Quit AgentDictate**. Opening settings launches the
 sibling `agentdictate`. Only one settings window runs at a time: it holds
 `window.lock` in the runtime directory, and a later launch writes `window.raise`,
 which that window watches to come to the front, and exits.

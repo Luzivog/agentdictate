@@ -17,6 +17,8 @@ pub enum TrayAction {
     OpenSettings,
     ToggleDictation,
     StartLiteral,
+    /// Pastes the last dictation again into the focused app.
+    PasteLast,
     /// Discards a recording, or stops waiting for a transcription, whose
     /// result then waits in Recovery.
     Cancel,
@@ -48,6 +50,7 @@ impl ksni::Tray for AgentDictateTray {
         let toggle_actions = self.actions.clone();
         let quit_actions = self.actions.clone();
         let literal_actions = self.actions.clone();
+        let paste_actions = self.actions.clone();
         let cancel_actions = self.actions.clone();
         vec![
             StandardItem {
@@ -71,6 +74,14 @@ impl ksni::Tray for AgentDictateTray {
                 label: "Start literal dictation".into(),
                 activate: Box::new(move |_| {
                     let _ = literal_actions.send(TrayAction::StartLiteral);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Paste last dictation".into(),
+                activate: Box::new(move |_| {
+                    let _ = paste_actions.send(TrayAction::PasteLast);
                 }),
                 ..Default::default()
             }
@@ -143,6 +154,7 @@ fn execute_tray_action(
     let trigger = match action {
         TrayAction::OpenSettings => return Ok(open_settings_window(settings_executable)?),
         TrayAction::Quit => return Ok(handle.quit()?),
+        TrayAction::PasteLast => return Ok(handle.paste_last()?),
         TrayAction::ToggleDictation => Trigger::TrayToggle,
         TrayAction::StartLiteral => Trigger::TrayStartLiteral,
         TrayAction::Cancel => Trigger::TrayCancel,

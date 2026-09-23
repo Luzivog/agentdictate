@@ -211,6 +211,10 @@ where
                 .retry_transcription(job_id)
                 .map(|ticket| (Reply::Snapshot, Followup::ProcessThenReply(ticket)))
                 .map_err(Into::into),
+            ClientCommandKind::PasteLast => daemon
+                .paste_last()
+                .map(|()| (Reply::Snapshot, Followup::None))
+                .map_err(Into::into),
             ClientCommandKind::RetryDelivery { job_id } => daemon
                 .retry_delivery(job_id)
                 .map(|_| (Reply::Snapshot, Followup::None))

@@ -46,7 +46,6 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
                 message: "Permission denied".to_owned(),
             },
             recoverable_count: 3,
-            last_transcript: Some("Safe transcript".to_owned()),
             overlay_unavailable: false,
             history_set_aside: None,
         },
@@ -57,7 +56,6 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
     assert_eq!(model.hotkey.tone, StatusTone::Danger);
     assert!(!model.hotkey.is_ready);
     assert_eq!(model.workspace.history.recovery.item_count, 3);
-    assert_eq!(model.last_transcript.as_deref(), Some("Safe transcript"));
 }
 
 #[test]

@@ -74,9 +74,13 @@ in the tray menu.
   for you. See [dictation output](docs/dictation-output.md).
 - **Exact text.** **Start literal dictation** in the tray skips vocabulary and
   context for one recording.
-- **Something failed.** Open **History**. Items under **Recovery** keep their audio
-  for 7 days; **Transcribe again** or **Paste again** copies the text so you can paste
-  it with <kbd>Ctrl</kbd> + <kbd>V</kbd>.
+- **Paste it again.** **Paste last dictation** in the tray pastes your last
+  dictation into the app you're in. To give it a shortcut, add a custom shortcut in
+  your desktop's keyboard settings that runs `agentdictate paste-last`.
+- **Something failed.** The overlay and a notification say what happened. Open
+  **History**: items under **Recovery** keep their audio for 7 days; **Transcribe
+  again** or **Paste again** copies the text so you can paste it with
+  <kbd>Ctrl</kbd> + <kbd>V</kbd>.
 
 ## Privacy
 

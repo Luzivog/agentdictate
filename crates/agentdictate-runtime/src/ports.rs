@@ -258,6 +258,10 @@ pub trait Deliverer {
     fn observe_focus(&mut self) -> ObservedFocus {
         ObservedFocus::Unknown
     }
+
+    /// Waits, briefly, for the user to let go of the keys of a shortcut that
+    /// asked for a paste, so they cannot mix into the paste chord.
+    fn wait_for_released_keys(&mut self) {}
 }
 
 /// The focused window, as far as the desktop lets AgentDictate tell one

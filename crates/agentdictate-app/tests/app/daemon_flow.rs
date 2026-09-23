@@ -88,6 +88,7 @@ impl RecordingController for TimedRecorder {
 struct SubmittedDelivery {
     attempts: usize,
     methods: Vec<DeliveryMethod>,
+    texts: Vec<String>,
 }
 
 #[test]
@@ -133,11 +134,12 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
 impl Deliverer for SubmittedDelivery {
     fn deliver(
         &mut self,
-        _job: &RecordingJob,
+        job: &RecordingJob,
         method: DeliveryMethod,
     ) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
         self.methods.push(method);
+        self.texts.push(job.final_text.clone());
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: method == DeliveryMethod::Paste,
@@ -260,10 +262,6 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     assert!(!delivered.audio_path.exists());
     assert_eq!(daemon.deliverer().attempts, 1);
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
-    assert_eq!(
-        daemon.snapshot().last_transcript.as_deref(),
-        Some("Final transcript.")
-    );
     assert_eq!(daemon.snapshot().hotkey, HotkeyReadiness::Starting);
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
     let history = history_rows(&observer);
@@ -348,7 +346,6 @@ fn daemon_waits_for_an_unconfirmed_overlay_to_exit_before_delivery() {
         recording.workflow.phase,
         WorkflowPhase::Recording { job_id } if job_id == started.id
     ));
-    assert!(!encoded.contains("last_transcript"));
     assert!(!encoded.contains("recoverable_count"));
     drop(daemon);
     presenter.join().unwrap();
@@ -1125,6 +1122,33 @@ fn result_after_the_stale_paste_limit_is_copied_not_pasted() {
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert!(!delivered.paste_triggered);
     assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
+#[test]
+fn the_last_dictation_is_pasted_again_with_one_chord_but_never_during_a_dictation() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    assert!(matches!(
+        daemon.paste_last(),
+        Err(DaemonError::NothingToPaste)
+    ));
+    daemon.start_recording().unwrap();
+    finish(&mut daemon);
+
+    daemon.paste_last().unwrap();
+
+    assert_eq!(
+        daemon.deliverer().methods,
+        [DeliveryMethod::Paste, DeliveryMethod::Paste]
+    );
+    assert_eq!(
+        daemon.deliverer().texts,
+        ["Final transcript.", "Final transcript."]
+    );
+    daemon.start_recording().unwrap();
+    assert!(matches!(daemon.paste_last(), Err(DaemonError::Busy { .. })));
+    assert_eq!(daemon.deliverer().attempts, 2);
 }
 
 #[test]
