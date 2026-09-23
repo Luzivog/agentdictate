@@ -294,11 +294,12 @@ holds a sample of every message for the current version, and a change under the 
 version fails that test. Each reply answers the command just sent on the
 same connection. Every session runs on its own thread and ends after 60 s without a
 command. On connect the daemon sends its status snapshot first, so a reconnect never
-depends on replayed events. IPC carries commands and that snapshot only. The
-settings window reads History, usage, and Recovery straight from the database, with
-a read-only connection, so a dictation in progress never delays them. It watches
-the database, `overlay-health`, a `status` file, and the socket with inotify and
-collects events for 30 ms after the first. Then a commit, detected with `PRAGMA
+depends on replayed events. Besides commands, their replies and that snapshot, IPC
+carries only the progress a command sends before its reply, such as microphone levels
+during Setup's microphone test. The settings window reads History, usage, and
+Recovery straight from the database, with a read-only connection, so a dictation in
+progress never delays them. It watches the database, `overlay-health`, a `status`
+file, and the socket with inotify and collects events for 30 ms after the first. Then a commit, detected with `PRAGMA
 data_version`, re-reads the database. Any other change asks the daemon for its
 status: the daemon writes `status` when it starts and whenever its readiness,
 recording state, or settings change. The status carries the daemon's `Readiness`:

@@ -1,14 +1,9 @@
 use gpui::{IntoElement, SharedString, prelude::*, px};
 use gpui_component::h_flex;
 
-/// Clips a variable, single-line value without asking GPUI to shape an
-/// ellipsized zero-width flex child.
-///
-/// GPUI 0.2.2 can retain the ellipsis glyph run produced during its initial
-/// zero-width flex measurement after the container expands. This primitive
-/// keeps clipping on the final-width text surface and never enables GPUI's
-/// ellipsis shaping path. A single element is deliberate: nested text surfaces
-/// are culled inconsistently inside GPUI's scrolling containers.
+/// Clips a variable, single-line value at its container's width, without an
+/// ellipsis. A single element is deliberate: nested text surfaces are culled
+/// inconsistently inside GPUI's scrolling containers.
 pub(super) fn single_line_clip(
     selector: impl Into<SharedString>,
     text: impl Into<SharedString>,
