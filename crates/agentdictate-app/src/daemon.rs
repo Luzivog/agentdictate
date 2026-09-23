@@ -18,17 +18,21 @@ use chrono::Utc;
 use thiserror::Error;
 
 use crate::{
-    ActiveRecordingUpdate, AppPaths, OverlayController, OverlayUpdate, ProcessingTicket,
-    Transcriber, TranscriptionCompletion,
+    ActiveRecordingUpdate, AppPaths, FinishingEncode, OverlayController, OverlayUpdate,
+    ProcessingTicket, Transcriber, TranscriptionCompletion,
 };
 
 /// Recovery's message on a transcript that finished after its dictation was
 /// cancelled.
 const CANCELLED_NOTE: &str = "Cancelled before paste";
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A recording whose WAV the recorder finalized.
+#[derive(Debug)]
 pub struct CapturedRecording {
     pub duration_seconds: f64,
+    /// Its upload audio, encoded while it recorded. Dropping it, as a discard
+    /// does, kills the encoder; without it, the saved WAV is encoded.
+    pub encoding: Option<FinishingEncode>,
 }
 
 /// Recorder lifecycle owned by the daemon. `Recorder::start` is called only
@@ -454,7 +458,11 @@ where
         });
         self.advance(id, WorkflowSignal::CaptureFinalized { job_id: id });
         self.publish_overlay_update();
-        Ok(ProcessingTicket::new(job, self.transcriber.clone()))
+        Ok(ProcessingTicket::new(
+            job,
+            self.transcriber.clone(),
+            capture.encoding,
+        ))
     }
 
     /// Records a ticket's result. Only the job the daemon is processing is
@@ -758,7 +766,7 @@ where
         });
         self.advance(id, WorkflowSignal::RetryRequested { job_id: id });
         self.publish_overlay_update();
-        Ok(ProcessingTicket::new(job, self.transcriber.clone()))
+        Ok(ProcessingTicket::new(job, self.transcriber.clone(), None))
     }
 
     /// "Paste again" from Recovery: copies the stored transcript to the

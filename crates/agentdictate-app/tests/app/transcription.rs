@@ -48,7 +48,7 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
         ] {
             let original = result.clone();
             let mut pipeline = TranscriptionPipeline::new(Settings::default(), Speech(result));
-            let actual = pipeline.transcribe(&job);
+            let actual = pipeline.transcribe(&job, None);
             match original {
                 Ok(text) if !text.trim().is_empty() => {
                     assert_eq!(actual.unwrap().text, "Yes.")

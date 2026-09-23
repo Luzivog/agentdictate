@@ -7,7 +7,7 @@ use agentdictate_core::{JobId, PasteShortcut, Settings};
 use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
     clipboard::{ClipboardError, ClipboardSelection, SelectionOwner},
-    command::SystemCommandRunner,
+    command::{PlatformExecutable, PlatformTool, SystemCommandRunner},
     focus::{FocusError, observe_x11_focus},
     injection::PasteInjector,
     paste::{
@@ -20,6 +20,7 @@ use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob,
 };
 
+use crate::opus_encoder::OpusEncoder;
 use crate::{CapturedRecording, DaemonDeliverer, RecorderEvent, RecordingController};
 
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,6 +55,9 @@ struct ActiveRecording {
     /// The file size when it last grew, and when.
     last_growth: (u64, Instant),
     reported: bool,
+    /// Encodes the upload while the recording runs; `None` when ffmpeg
+    /// could not start, so the saved WAV is encoded at transcription.
+    encoder: Option<OpusEncoder>,
 }
 
 impl ActiveRecording {
@@ -123,20 +127,25 @@ enum RecorderOwnerCommand {
 /// Owns every `pw-record` child from one daemon-lifetime thread. Linux ties
 /// `PR_SET_PDEATHSIG` to the thread that forks, so spawning from per-client IPC
 /// threads would make a successful request kill its own recorder on return.
-/// The thread also supervises the active recording and reports its exit,
-/// stall, or maximum length as a `RecorderEvent`. It never waits for the
-/// daemon: the daemon holds its lock while it waits for this thread.
+/// The thread also starts each recording's `OpusEncoder`, supervises the
+/// active recording, and reports its exit, stall, or maximum length as a
+/// `RecorderEvent`. It never waits for the daemon: the daemon holds its lock
+/// while it waits for this thread.
 struct RecorderOwner {
     commands: SyncSender<RecorderOwnerCommand>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl RecorderOwner {
-    fn start(recorder: PwRecordRecorder, events: Sender<RecorderEvent>) -> Self {
+    fn start(
+        recorder: PwRecordRecorder,
+        ffmpeg: PlatformExecutable,
+        events: Sender<RecorderEvent>,
+    ) -> Self {
         let (commands, receiver) = sync_channel(0);
         let worker = std::thread::Builder::new()
             .name("agentdictate-recorder-owner".into())
-            .spawn(move || recorder_owner_loop(&recorder, &receiver, &events))
+            .spawn(move || recorder_owner_loop(&recorder, &ffmpeg, &receiver, &events))
             .expect("recorder owner thread should start");
         Self {
             commands,
@@ -194,6 +203,7 @@ impl Drop for RecorderOwner {
 
 fn recorder_owner_loop(
     recorder: &PwRecordRecorder,
+    ffmpeg: &PlatformExecutable,
     commands: &Receiver<RecorderOwnerCommand>,
     events: &Sender<RecorderEvent>,
 ) {
@@ -236,11 +246,21 @@ fn recorder_owner_loop(
                                 limits,
                                 last_growth: (0, Instant::now()),
                                 reported: false,
+                                encoder: None,
                             });
                             next_check = Instant::now() + limits.tick;
                         })
                 };
+                let started = result.is_ok();
                 let _ = reply.send(result);
+                // Started after the reply, so it never delays the recording.
+                if started && let Some(recording) = &mut active {
+                    recording.encoder = OpusEncoder::start(ffmpeg, &audio_path)
+                        .inspect_err(|error| {
+                            tracing::warn!(%job_id, %error, "could not encode during the recording; the saved audio will be encoded");
+                        })
+                        .ok();
+                }
             }
             Some(RecorderOwnerCommand::Finish {
                 job_id,
@@ -256,12 +276,21 @@ fn recorder_owner_loop(
                             "the active recorder belongs to {active_job}, not {job_id}"
                         ))
                     }
-                    Some(recording) => {
-                        let duration_seconds = recording.started_at.elapsed().as_secs_f64();
+                    Some(ActiveRecording {
+                        started_at,
+                        recording,
+                        encoder,
+                        ..
+                    }) => {
+                        let duration_seconds = started_at.elapsed().as_secs_f64();
+                        // The encoder finishes only once pw-record finalized
+                        // the WAV; a failed stop drops, and so kills, it.
                         recording
-                            .recording
                             .stop(deadline)
-                            .map(|_| CapturedRecording { duration_seconds })
+                            .map(|_| CapturedRecording {
+                                duration_seconds,
+                                encoding: encoder.map(OpusEncoder::finish),
+                            })
                             .map_err(|error| error.to_string())
                     }
                 };
@@ -291,6 +320,7 @@ impl SystemRecordingController {
         Self::new(
             settings,
             "pw-record",
+            PlatformExecutable::discover(PlatformTool::Ffmpeg),
             PlaybackDucker::open(SystemPactl::discover(), ducking_state_file),
         )
     }
@@ -298,12 +328,14 @@ impl SystemRecordingController {
     fn new(
         settings: &Settings,
         recorder_program: impl Into<PathBuf>,
+        ffmpeg: PlatformExecutable,
         ducker: PlaybackDucker,
     ) -> (Self, Receiver<RecorderEvent>) {
         let (events, receiver) = channel();
         let controller = Self {
             recorder: RecorderOwner::start(
                 PwRecordRecorder::new(SystemCommandRunner, recorder_program),
+                ffmpeg,
                 events,
             ),
             ducker,
@@ -315,14 +347,16 @@ impl SystemRecordingController {
     }
 
     #[cfg(test)]
-    fn for_program(
+    fn for_programs(
         settings: &Settings,
         state_directory: &Path,
         recorder_program: &Path,
+        ffmpeg: PlatformExecutable,
     ) -> (Self, Receiver<RecorderEvent>) {
         Self::new(
             settings,
             recorder_program,
+            ffmpeg,
             PlaybackDucker::open(
                 SystemPactl::discover(),
                 state_directory.join("ducking.json"),
@@ -886,8 +920,12 @@ mod tests {
             audio_ducking_enabled: false,
             ..Settings::default()
         };
-        let (controller, _events) =
-            SystemRecordingController::for_program(&settings, directory.path(), &recorder);
+        let (controller, _events) = SystemRecordingController::for_programs(
+            &settings,
+            directory.path(),
+            &recorder,
+            fake_ffmpeg(directory.path()),
+        );
         let controller = Arc::new(Mutex::new(controller));
         let job = starting_job(directory.path());
         let starter = {
@@ -952,7 +990,12 @@ mod tests {
         recorder
     }
 
-    /// Starts one recording with the fake, supervised every 20 ms.
+    /// A fake ffmpeg that "encodes" by copying its input.
+    fn fake_ffmpeg(directory: &std::path::Path) -> PlatformExecutable {
+        crate::opus_encoder::fake_ffmpeg(directory, "exec cat")
+    }
+
+    /// Starts one recording with the fakes, supervised every 20 ms.
     fn supervised_recording(
         directory: &std::path::Path,
         settings: &Settings,
@@ -963,8 +1006,12 @@ mod tests {
         RecordingJob,
     ) {
         let recorder = fake_pw_record(directory, then);
-        let (mut controller, events) =
-            SystemRecordingController::for_program(settings, directory, &recorder);
+        let (mut controller, events) = SystemRecordingController::for_programs(
+            settings,
+            directory,
+            &recorder,
+            fake_ffmpeg(directory),
+        );
         controller.tick = Duration::from_millis(20);
         controller.stall_after = Duration::from_millis(200);
         let job = starting_job(directory);
@@ -1017,6 +1064,28 @@ mod tests {
 
         assert_eq!(event, RecorderEvent::Exited { job_id: job.id });
         controller.finish(&job).unwrap();
+    }
+
+    #[test]
+    fn a_finished_recording_carries_the_encode_of_exactly_its_audio() {
+        let directory = tempdir().unwrap();
+        let (mut controller, _events, job) = supervised_recording(
+            directory.path(),
+            &quiet_settings(),
+            "while :; do printf '0123456789abcdef' >> \"$output\"; sleep 0.01; done",
+        );
+        thread::sleep(Duration::from_millis(200));
+
+        let capture = controller.finish(&job).unwrap();
+        let (encoded, _) = capture
+            .encoding
+            .expect("the recording was encoded while it ran")
+            .wait(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+
+        let audio = fs::read(&job.audio_path).unwrap();
+        assert!(encoded.len() > 16 * 10, "only {} bytes", encoded.len());
+        assert_eq!(encoded, audio[44..]);
     }
 
     fn quiet_settings() -> Settings {

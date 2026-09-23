@@ -9,6 +9,7 @@ mod handle;
 mod hotkey_dispatch;
 mod native_access;
 mod openai;
+mod opus_encoder;
 mod overlay_process;
 mod process;
 mod processing;
@@ -31,6 +32,7 @@ pub use native_access::{NativeAccessError, grant_native_access};
 pub use openai::{
     ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
 };
+pub use opus_encoder::FinishingEncode;
 #[cfg(feature = "desktop")]
 pub use overlay_process::run_overlay_helper;
 pub use overlay_process::{

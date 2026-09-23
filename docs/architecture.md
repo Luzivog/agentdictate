@@ -110,9 +110,9 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   `desktop` feature.
 - **agentdictate-app**: composition. The daemon and the `DaemonHandle` that shares
   it between threads, the `Transcriber` and its per-job processing tickets, the
-  OpenAI speech transport, the overlay supervisor and
-  helper, the tray, the service unit and login startup, `setup-access`, the hotkey
-  dispatch gate, logging, and the three binaries.
+  OpenAI speech transport, the ffmpeg encoder that runs beside each recording, the
+  overlay supervisor and helper, the tray, the service unit and login startup,
+  `setup-access`, the hotkey dispatch gate, logging, and the three binaries.
 
 ## Dictation pipeline
 
@@ -124,26 +124,32 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    same ones: mode, language, context, and vocabulary, never
    credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
    node latency) writing a WAV under `recordings/`, lowers other audio on a separate
-   thread, and launches the overlay helper.
+   thread, and launches the overlay helper. Once audio flows, the recorder owner
+   thread starts one `ffmpeg` that encodes the growing WAV to WebM/Opus (32 kbps,
+   speech mode) while you speak; every 50 ms, a feeder thread hands it what
+   `pw-record` appended.
 2. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
-   finalizes the WAV and records the `captured` checkpoint, then `transcribing`. The
-   recorder owner thread ends a recording at **Stop recording after**,
-   whatever started it. Esc discards the recording instead. A recording longer than
-   5 s waits in Recovery as `cancelled`, with its audio, for 24 hours; a shorter one
-   is deleted with its audio unless **Keep audio recordings** is on. If the recorder
-   exits by itself, or the microphone delivers no audio for 3 s, the recording is kept
-   in Recovery and not transcribed.
+   finalizes the WAV, hands ffmpeg the rest of its audio, and records the `captured`
+   checkpoint, then `transcribing`. The recorder owner thread ends a recording at
+   **Stop recording after**, whatever started it. Esc discards the recording
+   instead and kills its ffmpeg. A recording longer than 5 s waits in Recovery as
+   `cancelled`, with its audio, for 24 hours; a shorter one is deleted with its audio
+   unless **Keep audio recordings** is on. If the recorder exits by itself, or the
+   microphone delivers no audio for 3 s, the recording is kept in Recovery and not
+   transcribed.
 3. **Transcribe.** Transcription runs on its own thread, outside the daemon lock, so
    settings, the tray, and the settings window stay responsive meanwhile. Presses
    while a dictation transcribes are ignored. **Cancel dictation** in the tray or
    `agentdictate cancel` stops waiting: a new dictation can start at once, and the
    late result waits in Recovery as "Cancelled before paste". Esc does not cancel a
-   transcription. ffmpeg encodes
-   the WAV to WebM/Opus at 32 kbps in speech mode, and the app posts it to
-   `/v1/audio/transcriptions` with the model, `languages[]`, `keywords[]` (the
-   vocabulary spellings), and `prompt` (the context). Without ffmpeg, the WAV is
-   uploaded. A request that fails before OpenAI returns any status is sent once more,
-   and an HTTP 400 about the file resends the WAV once. Nothing else is retried.
+   transcription. The upload waits for ffmpeg to finish the WebM, usually tens of
+   milliseconds after the stop. If that encode failed, ffmpeg encodes the saved WAV
+   now, as it does for every Recovery retry; without ffmpeg, the WAV itself is
+   uploaded. The app posts the audio to `/v1/audio/transcriptions` with the model,
+   `languages[]`, `keywords[]` (the vocabulary spellings), and `prompt` (the
+   context). A request that fails before OpenAI returns any status is sent once
+   more, and an HTTP 400 about the file resends the WAV once. Nothing else is
+   retried.
 4. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
    job is removed and nothing is pasted or kept in History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.

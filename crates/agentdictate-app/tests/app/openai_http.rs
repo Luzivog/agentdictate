@@ -35,6 +35,7 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
         .transcribe_audio(TranscriptionRequest {
             keywords: &["AgentDictate".into(), "GPUI".into()],
             audio_path: &audio_path,
+            encoding: None,
             model: "gpt-transcribe",
             language: "en,fr",
             prompt: "AgentDictate and GPUI",
@@ -183,6 +184,7 @@ fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'
     TranscriptionRequest {
         keywords: &[],
         audio_path,
+        encoding: None,
         model: "gpt-transcribe",
         language: "en",
         prompt: "",

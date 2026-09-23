@@ -21,8 +21,8 @@ sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x1
 
 `pipewire-bin` provides `pw-record`, which records the microphone.
 `pulseaudio-utils` provides `pactl`, which lowers other audio while you dictate.
-`ffmpeg` compresses each recording before upload; without it, AgentDictate uploads
-the raw WAV, about 8 times larger. The clipboard and paste injection are built into
+`ffmpeg` compresses each recording for upload while you speak; without it,
+AgentDictate uploads the raw WAV, about 8 times larger. The clipboard and paste injection are built into
 AgentDictate and need no extra tools.
 
 ## Install from source

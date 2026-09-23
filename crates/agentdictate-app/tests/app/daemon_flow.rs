@@ -10,8 +10,9 @@ use std::{
 };
 
 use agentdictate_app::{
-    AppPaths, CapturedRecording, Daemon, DaemonError, DaemonStatus, OverlayUpdate, RecorderEvent,
-    RecordingController, Transcriber, TranscriptionCompletion, start_overlay_presenter,
+    AppPaths, CapturedRecording, Daemon, DaemonError, DaemonStatus, FinishingEncode, OverlayUpdate,
+    RecorderEvent, RecordingController, Transcriber, TranscriptionCompletion,
+    start_overlay_presenter,
 };
 use agentdictate_core::{
     HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage,
@@ -44,6 +45,7 @@ impl RecordingController for PreservingRecorder {
         self.finish_attempts += 1;
         Ok(CapturedRecording {
             duration_seconds: 27.5,
+            encoding: None,
         })
     }
 }
@@ -77,6 +79,7 @@ impl RecordingController for TimedRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: self.seconds,
+            encoding: None,
         })
     }
 }
@@ -92,7 +95,11 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
     #[derive(Clone)]
     struct Empty;
     impl Transcriber for Empty {
-        fn transcribe(&mut self, _: &RecordingJob) -> Result<Transcript, ExternalError> {
+        fn transcribe(
+            &mut self,
+            _: &RecordingJob,
+            _: Option<FinishingEncode>,
+        ) -> Result<Transcript, ExternalError> {
             Err(ExternalError::NoSpeech)
         }
     }
@@ -180,6 +187,7 @@ impl RecordingController for FlagInspectingRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: 2.0,
+            encoding: None,
         })
     }
 }
@@ -896,7 +904,11 @@ impl ScriptedTranscriber {
 }
 
 impl Transcriber for ScriptedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
+    fn transcribe(
+        &mut self,
+        _job: &RecordingJob,
+        _: Option<FinishingEncode>,
+    ) -> Result<Transcript, ExternalError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let reply = self
             .replies

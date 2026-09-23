@@ -7,7 +7,7 @@ use std::{
 
 use agentdictate_app::{
     AgentProcess, AppPaths, CapturedRecording, Daemon, DaemonDeliverer, DaemonHandle,
-    RecordingController, Transcriber, Trigger, TriggerOutcome,
+    FinishingEncode, RecordingController, Transcriber, Trigger, TriggerOutcome,
 };
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, JobStage, ServerMessageKind, SettingChange, Settings,
@@ -64,7 +64,11 @@ struct GatedTranscriber {
 }
 
 impl Transcriber for GatedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
+    fn transcribe(
+        &mut self,
+        _job: &RecordingJob,
+        _: Option<FinishingEncode>,
+    ) -> Result<Transcript, ExternalError> {
         self.gate.pass();
         Ok(Transcript {
             text: "Gated words.".into(),
@@ -77,7 +81,11 @@ impl Transcriber for GatedTranscriber {
 struct PanickingTranscriber;
 
 impl Transcriber for PanickingTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
+    fn transcribe(
+        &mut self,
+        _job: &RecordingJob,
+        _: Option<FinishingEncode>,
+    ) -> Result<Transcript, ExternalError> {
         panic!("transcriber bug")
     }
 }
@@ -95,6 +103,7 @@ impl RecordingController for FileRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: 3.0,
+            encoding: None,
         })
     }
 }

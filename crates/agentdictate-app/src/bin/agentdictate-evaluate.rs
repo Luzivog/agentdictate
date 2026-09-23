@@ -80,6 +80,7 @@ fn main() -> anyhow::Result<()> {
                 transport.transcribe_audio(TranscriptionRequest {
                     keywords: &keywords,
                     audio_path: audio,
+                    encoding: None,
                     model: &settings.transcription_model,
                     language: &options.language,
                     prompt: &options.context,

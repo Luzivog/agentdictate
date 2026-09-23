@@ -1,20 +1,14 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{DictationOptions, Settings};
-use agentdictate_linux::command::{
-    PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool, SystemCommandRunner,
-};
+use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
 
 use crate::Transcriber;
+use crate::opus_encoder::{FinishingEncode, encode_file};
 use reqwest::StatusCode;
 use serde_json::Value;
-
-/// 32 kbps Opus reduces the 256 kbps PCM payload by roughly 8x before container
-/// overhead. Recognition quality still depends on the audio and selected model.
-const UPLOAD_OPUS_BITRATE: &str = "32k";
 
 /// Container of the audio sent to the transcription endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +41,10 @@ impl UploadFormat {
 struct UploadAudio {
     bytes: Vec<u8>,
     format: UploadFormat,
+    /// How long the upload waited for the encode after the recording stopped.
     encode_ms: Option<u64>,
+    /// Whether ffmpeg encoded the audio while it was recorded.
+    encoded_during_recording: bool,
 }
 
 /// Bounds a hung encoder. ffmpeg normally needs ~13 ms per audio-second, so
@@ -57,58 +54,37 @@ fn encode_deadline(audio_seconds: f64) -> Instant {
     Instant::now() + Duration::from_secs(10) + scaled
 }
 
-fn encode_webm_opus(
-    ffmpeg: &PlatformExecutable,
-    audio_path: &Path,
-    deadline: Instant,
-) -> Result<Vec<u8>, PlatformCommandError> {
-    let mut arguments = vec![OsString::from("-loglevel"), "error".into(), "-i".into()];
-    arguments.push(audio_path.into());
-    // `-application voip` keeps libopus in its speech-optimized mode.
-    arguments.extend(
-        [
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "libopus",
-            "-b:a",
-            UPLOAD_OPUS_BITRATE,
-            "-application",
-            "voip",
-            "-f",
-            "webm",
-            "pipe:1",
-        ]
-        .map(OsString::from),
-    );
-    let encoded = SystemCommandRunner.run_output(
-        PlatformCapability::AudioCompression,
-        ffmpeg,
-        &arguments,
-        deadline,
-    )?;
-    if encoded.is_empty() {
-        return Err(PlatformCommandError::UnexpectedOutput {
-            tool: PlatformTool::Ffmpeg,
-            detail: "no audio",
-        });
-    }
-    Ok(encoded)
-}
-
+/// Prefers the encode made while the recording ran. When it failed, the
+/// saved WAV is encoded now, and without ffmpeg the WAV itself is uploaded.
+/// Both encodes share `deadline`.
 fn prepare_upload_audio(
     ffmpeg: &PlatformExecutable,
     audio_path: &Path,
+    encoding: Option<FinishingEncode>,
     deadline: Instant,
 ) -> Result<UploadAudio, ExternalError> {
+    if let Some(encoding) = encoding {
+        match encoding.wait(deadline) {
+            Ok((bytes, waited)) => {
+                return Ok(UploadAudio {
+                    bytes,
+                    format: UploadFormat::WebmOpus,
+                    encode_ms: Some(waited.as_millis() as u64),
+                    encoded_during_recording: true,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the encode during the recording failed; encoding the saved audio");
+            }
+        }
+    }
     let encode_started = Instant::now();
-    match encode_webm_opus(ffmpeg, audio_path, deadline) {
+    match encode_file(ffmpeg, audio_path, deadline) {
         Ok(bytes) => Ok(UploadAudio {
             bytes,
             format: UploadFormat::WebmOpus,
             encode_ms: Some(encode_started.elapsed().as_millis() as u64),
+            encoded_during_recording: false,
         }),
         Err(error) => {
             tracing::warn!(%error, "audio compression unavailable; uploading raw WAV");
@@ -125,6 +101,7 @@ fn wav_upload(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
         bytes,
         format: UploadFormat::Wav,
         encode_ms: None,
+        encoded_during_recording: false,
     })
 }
 
@@ -203,6 +180,8 @@ fn failed_before_status(error: &reqwest::Error) -> bool {
 pub struct TranscriptionRequest<'a> {
     pub keywords: &'a [String],
     pub audio_path: &'a Path,
+    /// The audio encoded while it recorded; `None` encodes `audio_path`.
+    pub encoding: Option<FinishingEncode>,
     pub model: &'a str,
     pub language: &'a str,
     pub prompt: &'a str,
@@ -238,7 +217,11 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
     /// Transcribes the saved audio. An empty result counts as no speech only
     /// when the audio is near-silent; otherwise the audio is kept for another
     /// attempt, so a misheard dictation is never silently dropped.
-    fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
+    fn transcribe(
+        &mut self,
+        job: &RecordingJob,
+        encoding: Option<FinishingEncode>,
+    ) -> Result<Transcript, ExternalError> {
         let options = job
             .options
             .clone()
@@ -247,6 +230,7 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
         let text = match self.speech.transcribe_audio(TranscriptionRequest {
             keywords: &keywords,
             audio_path: &job.audio_path,
+            encoding,
             model: &job.transcription_model,
             language: &options.language,
             prompt: &options.context,
@@ -409,11 +393,12 @@ impl SpeechTransport for ReqwestOpenAiTransport {
 
     fn transcribe_audio(
         &mut self,
-        request: TranscriptionRequest<'_>,
+        mut request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
         let mut upload = prepare_upload_audio(
             &self.ffmpeg,
             request.audio_path,
+            request.encoding.take(),
             encode_deadline(request.duration_seconds),
         )?;
         let request_started = Instant::now();
@@ -449,6 +434,7 @@ impl SpeechTransport for ReqwestOpenAiTransport {
             upload_format = ?upload.format,
             upload_bytes = upload.bytes.len(),
             encode_ms = upload.encode_ms,
+            encoded_during_recording = upload.encoded_during_recording,
             request_ms,
             transcript_chars = text.chars().count(),
             "transcription request completed"
@@ -463,32 +449,58 @@ impl SpeechTransport for ReqwestOpenAiTransport {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
 
-    use super::{UploadFormat, encode_webm_opus, prepare_upload_audio};
+    use super::{UploadAudio, UploadFormat, prepare_upload_audio};
+    use crate::opus_encoder::OpusEncoder;
 
-    #[test]
-    fn a_valid_wav_encodes_to_a_webm_opus_payload() {
-        let ffmpeg = PlatformExecutable::discover(PlatformTool::Ffmpeg);
-        if ffmpeg.path().is_none() {
-            eprintln!("skipping: ffmpeg is not installed");
-            return;
-        }
+    /// A fake ffmpeg. Its encode during the recording reads the audio, then
+    /// runs `then`; its encode of the saved WAV prints a marker.
+    fn fake_ffmpeg(directory: &Path, then: &str) -> PlatformExecutable {
+        crate::opus_encoder::fake_ffmpeg(
+            directory,
+            &format!(
+                "case \" $* \" in\n\
+                 *\" pipe:0 \"*) cat >/dev/null; {then} ;;\n\
+                 *) printf SAVED-WAV-WEBM ;;\n\
+                 esac"
+            ),
+        )
+    }
+
+    fn upload_after_recording(then: &str) -> UploadAudio {
         let directory = tempfile::tempdir().unwrap();
         let audio_path = directory.path().join("recording.wav");
         std::fs::write(&audio_path, tiny_wav()).unwrap();
-
-        let encoded = encode_webm_opus(
+        let ffmpeg = fake_ffmpeg(directory.path(), then);
+        let encoding = OpusEncoder::start(&ffmpeg, &audio_path).unwrap().finish();
+        prepare_upload_audio(
             &ffmpeg,
             &audio_path,
-            Instant::now() + Duration::from_secs(10),
+            Some(encoding),
+            Instant::now() + Duration::from_secs(3),
         )
-        .unwrap();
+        .unwrap()
+    }
 
-        // Every WebM file starts with the EBML magic number.
-        assert!(encoded.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]));
+    #[test]
+    fn the_upload_uses_the_encode_made_during_the_recording() {
+        let upload = upload_after_recording("printf RECORDING-WEBM");
+
+        assert_eq!(upload.bytes, b"RECORDING-WEBM");
+        assert!(upload.encoded_during_recording);
+    }
+
+    #[test]
+    fn a_failed_encode_during_the_recording_falls_back_to_encoding_the_saved_wav() {
+        let upload = upload_after_recording("exit 1");
+
+        assert_eq!(upload.format, UploadFormat::WebmOpus);
+        assert_eq!(upload.bytes, b"SAVED-WAV-WEBM");
+        assert!(!upload.encoded_during_recording);
     }
 
     #[test]
@@ -504,6 +516,7 @@ mod tests {
         let upload = prepare_upload_audio(
             &PlatformExecutable::at(PlatformTool::Ffmpeg, ffmpeg),
             &audio_path,
+            None,
             started + Duration::from_millis(200),
         )
         .unwrap();

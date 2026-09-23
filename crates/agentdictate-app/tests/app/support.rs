@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use agentdictate_app::{CapturedRecording, Daemon, RecordingController, Transcriber};
+use agentdictate_app::{
+    CapturedRecording, Daemon, FinishingEncode, RecordingController, Transcriber,
+};
 use agentdictate_core::JobStage;
 use agentdictate_runtime::{Deliverer, ExternalError, Recorder, RecordingJob, Runtime, Transcript};
 
@@ -25,6 +27,7 @@ impl RecordingController for InspectingRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: 12.5,
+            encoding: None,
         })
     }
 }
@@ -33,7 +36,11 @@ impl RecordingController for InspectingRecorder {
 pub(crate) struct FixedTranscriber;
 
 impl Transcriber for FixedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
+    fn transcribe(
+        &mut self,
+        _job: &RecordingJob,
+        _: Option<FinishingEncode>,
+    ) -> Result<Transcript, ExternalError> {
         Ok(Transcript {
             text: "Final transcript.".into(),
             model: "gpt-transcribe".into(),
