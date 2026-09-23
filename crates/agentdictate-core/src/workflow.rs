@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::FailureKind;
+
 /// Stable identifier shared by persisted jobs, runtime events, and UI snapshots.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -81,9 +83,11 @@ pub enum WorkflowPhase {
         job_id: JobId,
         stage: ProcessingStage,
     },
+    /// The job stopped short and waits in Recovery; `failure` says why.
     NeedsAttention {
         job_id: JobId,
         at: JobStage,
+        failure: FailureKind,
     },
 }
 
@@ -130,9 +134,11 @@ pub enum WorkflowSignal {
     DeliverySubmitted {
         job_id: JobId,
     },
+    /// The job stopped short at `at` and waits in Recovery.
     Interrupted {
         job_id: JobId,
         at: JobStage,
+        failure: FailureKind,
     },
     /// Recovery's "Transcribe again" started processing a stored job.
     RetryRequested {
@@ -284,8 +290,16 @@ impl Workflow {
                 | WorkflowPhase::Processing {
                     job_id: expected, ..
                 },
-                WorkflowSignal::Interrupted { job_id, at },
-            ) if expected == job_id => WorkflowPhase::NeedsAttention { job_id, at },
+                WorkflowSignal::Interrupted {
+                    job_id,
+                    at,
+                    failure,
+                },
+            ) if expected == job_id => WorkflowPhase::NeedsAttention {
+                job_id,
+                at,
+                failure,
+            },
             (
                 WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. },
                 WorkflowSignal::RetryRequested { job_id },

@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 
+use crate::FailureKind;
 use crate::workflow::{JobId, JobStage};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,7 +16,11 @@ pub struct RecoverySnapshot {
     pub duration_seconds: f64,
     pub raw_transcript: String,
     pub final_text: String,
+    /// The stored detail: a failure's technical message, or a note such as
+    /// a cancelled job's. The window shows it only when `failure` is `None`.
     pub error_message: Option<String>,
+    /// Why the dictation failed, when it did.
+    pub failure: Option<FailureKind>,
     pub audio_present: bool,
     pub delivery_ambiguous: bool,
 }

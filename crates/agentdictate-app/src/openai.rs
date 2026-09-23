@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{DictationOptions, Settings};
+use agentdictate_core::{DictationOptions, FailureKind, Settings};
 use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
 
@@ -239,7 +239,8 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
             Err(ExternalError::NoSpeech)
                 if !crate::captured_audio::is_near_silent(&job.audio_path) =>
             {
-                return Err(ExternalError::new(
+                return Err(ExternalError::of_kind(
+                    FailureKind::NoSpeech,
                     "No speech was recognized. Audio is saved for another attempt.",
                 ));
             }
@@ -249,7 +250,10 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
             return Err(if crate::captured_audio::is_near_silent(&job.audio_path) {
                 ExternalError::NoSpeech
             } else {
-                ExternalError::new("Transcription returned an empty result; audio is saved")
+                ExternalError::of_kind(
+                    FailureKind::NoSpeech,
+                    "Transcription returned an empty result; audio is saved",
+                )
             });
         }
         Ok(Transcript {
@@ -301,7 +305,8 @@ impl ReqwestOpenAiTransport {
 
     fn authorization(&self) -> Result<String, ExternalError> {
         if self.api_key.is_empty() {
-            return Err(ExternalError::new(
+            return Err(ExternalError::of_kind(
+                FailureKind::CredentialMissing,
                 "OpenAI API key missing. Paste your API key in AgentDictate settings.",
             ));
         }
@@ -333,25 +338,35 @@ impl ReqwestOpenAiTransport {
                 tracing::warn!(%error, "transcription request retried");
                 self.client = http_client();
                 send(&self.client, form()?).map_err(|error| {
-                    ExternalError::new(format!("Could not reach OpenAI: {error}"))
+                    ExternalError::of_kind(
+                        FailureKind::Offline,
+                        format!("Could not reach OpenAI: {error}"),
+                    )
                 })?
             }
             Err(error) => {
-                return Err(ExternalError::new(format!(
-                    "Could not reach OpenAI: {error}"
-                )));
+                return Err(ExternalError::of_kind(
+                    FailureKind::Offline,
+                    format!("Could not reach OpenAI: {error}"),
+                ));
             }
         };
         let status = response.status();
         let body = response.text().map_err(|error| {
-            ExternalError::new(format!("Could not read OpenAI's response: {error}"))
+            ExternalError::of_kind(
+                FailureKind::Offline,
+                format!("Could not read OpenAI's response: {error}"),
+            )
         })?;
         Ok((status, body))
     }
 
     fn response_error(status: StatusCode, body: &str) -> ExternalError {
         if status == StatusCode::UNAUTHORIZED {
-            return ExternalError::new("OpenAI authentication failed. Check your API key.");
+            return ExternalError::of_kind(
+                FailureKind::CredentialRejected,
+                "OpenAI authentication failed. Check your API key.",
+            );
         }
         let message = serde_json::from_str::<Value>(body)
             .ok()
@@ -374,15 +389,29 @@ impl ReqwestOpenAiTransport {
                 | StatusCode::SERVICE_UNAVAILABLE
                 | StatusCode::GATEWAY_TIMEOUT
         ) {
-            return ExternalError::new(format!(
-                "Could not reach OpenAI or the request was not accepted: {message}"
-            ));
+            let kind = if status == StatusCode::TOO_MANY_REQUESTS {
+                FailureKind::RateLimited
+            } else {
+                FailureKind::ProviderError
+            };
+            return ExternalError::of_kind(
+                kind,
+                format!("Could not reach OpenAI or the request was not accepted: {message}"),
+            );
         }
-        ExternalError::new(if message.is_empty() {
-            format!("OpenAI request failed with status {status}")
+        let kind = if status == StatusCode::FORBIDDEN {
+            FailureKind::CredentialRejected
         } else {
-            message
-        })
+            FailureKind::ProviderError
+        };
+        ExternalError::of_kind(
+            kind,
+            if message.is_empty() {
+                format!("OpenAI request failed with status {status}")
+            } else {
+                message
+            },
+        )
     }
 }
 
@@ -425,7 +454,10 @@ impl SpeechTransport for ReqwestOpenAiTransport {
                     .map(str::to_owned)
             })
             .ok_or_else(|| {
-                ExternalError::new("OpenAI returned an invalid transcription response")
+                ExternalError::of_kind(
+                    FailureKind::ProviderError,
+                    "OpenAI returned an invalid transcription response",
+                )
             })?;
         let text = text.trim().to_owned();
         tracing::info!(

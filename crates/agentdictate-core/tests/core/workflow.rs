@@ -1,4 +1,4 @@
-use agentdictate_core::{JobId, JobStage, Workflow, WorkflowPhase, WorkflowSignal};
+use agentdictate_core::{FailureKind, JobId, JobStage, Workflow, WorkflowPhase, WorkflowSignal};
 
 #[test]
 fn recording_is_not_announced_until_audio_is_durable() {
@@ -56,6 +56,7 @@ fn an_interrupted_recording_becomes_explicitly_recoverable() {
         .apply(WorkflowSignal::Interrupted {
             job_id,
             at: JobStage::Starting,
+            failure: FailureKind::MicrophoneUnavailable,
         })
         .unwrap();
 
@@ -64,6 +65,7 @@ fn an_interrupted_recording_becomes_explicitly_recoverable() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Starting,
+            failure: FailureKind::MicrophoneUnavailable,
         }
     );
 }
@@ -119,6 +121,7 @@ fn recovery_retry_enters_processing_from_needs_attention_for_another_job() {
         .apply(WorkflowSignal::Interrupted {
             job_id: failed_job,
             at: JobStage::Failed,
+            failure: FailureKind::Offline,
         })
         .unwrap();
     let older_job = JobId::new();
@@ -147,6 +150,7 @@ fn a_recoverable_failure_does_not_block_the_next_recording() {
         .apply(WorkflowSignal::Interrupted {
             job_id: failed_job,
             at: JobStage::Interrupted,
+            failure: FailureKind::MicrophoneStalled,
         })
         .unwrap();
     let next_job = JobId::new();

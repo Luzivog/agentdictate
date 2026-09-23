@@ -153,6 +153,10 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 4. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
    job is removed and nothing is pasted or kept in History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.
+   Every failure is stored with a typed reason, `FailureKind` (offline, API key
+   missing or refused, rate limited, service error, nothing heard, microphone,
+   paste not confirmed, or unexpected). The window words the reason; the raw error
+   only goes to the log.
 5. **Normalize.** The raw text is saved first, so a later failure never needs a second
    paid transcription. Vocabulary aliases then replace spoken forms with their
    spellings. The job is now

@@ -103,10 +103,7 @@ impl RecoveryItemViewModel {
                 stage,
                 format_history_time(entry.updated_at, now),
                 format_duration_clock(entry.duration_seconds),
-                entry
-                    .error_message
-                    .clone()
-                    .unwrap_or_else(|| "Recording saved safely".to_owned()),
+                crate::recovery_reason(entry.failure, entry.error_message.as_deref()),
                 has_text.then(|| entry.final_text.clone()),
             )
         }

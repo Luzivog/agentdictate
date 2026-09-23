@@ -6,13 +6,13 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
-    AppSnapshot, HotkeyReadiness, JobId, JobStage, RecordingMode, Settings, Workflow,
+    AppSnapshot, FailureKind, HotkeyReadiness, JobId, JobStage, RecordingMode, Settings, Workflow,
     WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
-    HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError,
-    StoredTranscript,
+    HeadlessDeliveryGate, JobFailure, Recorder, RecordingJob, RecordingRequest, Runtime,
+    RuntimeError, StoredTranscript,
 };
 use chrono::Utc;
 use thiserror::Error;
@@ -369,18 +369,15 @@ where
     /// kept for Recovery needs attention; otherwise nothing was recorded and
     /// the workflow returns to Ready, closing the overlay.
     fn abandon_start(&mut self, job_id: JobId) {
-        let kept_at = match self.runtime.recoverable_jobs() {
-            Ok(jobs) => jobs
-                .into_iter()
-                .find(|job| job.id == job_id)
-                .map(|job| job.stage),
+        let kept = match self.runtime.recoverable_jobs() {
+            Ok(jobs) => jobs.into_iter().find(|job| job.id == job_id),
             Err(error) => {
                 tracing::error!(%job_id, %error, "could not read the failed start's recovery state");
                 None
             }
         };
-        match kept_at {
-            Some(at) => self.settle(job_id, WorkflowSignal::Interrupted { job_id, at }),
+        match kept {
+            Some(job) => self.settle(job_id, interruption(&job, FailureKind::Unexpected)),
             None => {
                 self.workflow = Workflow::new();
                 self.publish_overlay_update();
@@ -405,13 +402,17 @@ where
                 let persisted = self.runtime.interrupt_job(
                     id,
                     JobStage::Recording,
-                    format!("recording could not be finalized: {error}"),
+                    JobFailure::new(
+                        FailureKind::Unexpected,
+                        format!("recording could not be finalized: {error}"),
+                    ),
                 );
                 self.settle(
                     id,
                     WorkflowSignal::Interrupted {
                         job_id: id,
                         at: JobStage::Interrupted,
+                        failure: FailureKind::Unexpected,
                     },
                 );
                 persisted?;
@@ -446,6 +447,7 @@ where
                     WorkflowSignal::Interrupted {
                         job_id: id,
                         at: JobStage::Captured,
+                        failure: FailureKind::Unexpected,
                     },
                 );
                 return Err(error.into());
@@ -488,8 +490,8 @@ where
             Err(error) => {
                 tracing::error!(job_id = %id, %error, "could not store the transcription result");
                 if current.is_some() {
-                    let at = self.persisted_stage(id);
-                    self.settle(id, WorkflowSignal::Interrupted { job_id: id, at });
+                    let end = self.persisted_interruption(id, FailureKind::Unexpected);
+                    self.settle(id, end);
                 }
                 return Err(error.into());
             }
@@ -510,14 +512,13 @@ where
                 Ok(job)
             }
             StoredTranscript::Failed(job) => {
-                tracing::warn!(job_id = %id, error = ?job.error_message, "transcription failed");
-                self.settle(
-                    id,
-                    WorkflowSignal::Interrupted {
-                        job_id: id,
-                        at: JobStage::Failed,
-                    },
+                tracing::warn!(
+                    job_id = %id,
+                    error = ?job.error_message,
+                    failure = ?job.failure,
+                    "transcription failed"
                 );
+                self.settle(id, interruption(&job, FailureKind::Unexpected));
                 Ok(job)
             }
             StoredTranscript::Ready(ready) => self.deliver(processing, ready, finished_at),
@@ -595,8 +596,8 @@ where
             Err(error) => {
                 tracing::error!(job_id = %id, %error, "dictation delivery failed");
                 // The runtime already marked the job failed or ambiguous.
-                let at = self.persisted_stage(id);
-                self.settle(id, WorkflowSignal::Interrupted { job_id: id, at });
+                let end = self.persisted_interruption(id, FailureKind::PasteNotConfirmed);
+                self.settle(id, end);
                 return Err(error.into());
             }
         };
@@ -610,10 +611,7 @@ where
             self.cleanup_completed_audio(&result);
             WorkflowSignal::DeliverySubmitted { job_id: id }
         } else {
-            WorkflowSignal::Interrupted {
-                job_id: id,
-                at: result.stage,
-            }
+            interruption(&result, FailureKind::PasteNotConfirmed)
         };
         self.last_transcript = Some(result.final_text.clone());
         self.settle(id, end);
@@ -658,13 +656,17 @@ where
                 let interrupted = self.runtime.interrupt_job(
                     id,
                     JobStage::Recording,
-                    format!("recording could not be finalized while discarding: {error}"),
+                    JobFailure::new(
+                        FailureKind::Unexpected,
+                        format!("recording could not be finalized while discarding: {error}"),
+                    ),
                 );
                 self.settle(
                     id,
                     WorkflowSignal::Interrupted {
                         job_id: id,
                         at: JobStage::Interrupted,
+                        failure: FailureKind::Unexpected,
                     },
                 );
                 return interrupted.map_err(Into::into);
@@ -699,6 +701,7 @@ where
                     WorkflowSignal::Interrupted {
                         job_id: id,
                         at: JobStage::Captured,
+                        failure: FailureKind::Unexpected,
                     },
                 );
                 Err(error.into())
@@ -725,14 +728,16 @@ where
                 self.stop_recording().map(Some)
             }
             RecorderEvent::Exited { .. } => self
-                .preserve_active_recording(
+                .preserve_active_recording(JobFailure::new(
+                    FailureKind::MicrophoneStalled,
                     "recorder exited unexpectedly before the dictation completed; audio was preserved",
-                )
+                ))
                 .map(|_| None),
             RecorderEvent::Stalled { .. } => self
-                .preserve_active_recording(
+                .preserve_active_recording(JobFailure::new(
+                    FailureKind::MicrophoneStalled,
                     "the microphone stopped sending audio, so the recording was stopped; audio was preserved",
-                )
+                ))
                 .map(|_| None),
         }
     }
@@ -741,9 +746,10 @@ where
     /// shutdown can never discard an in-progress dictation.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
         if matches!(self.activity, Activity::Recording(_)) {
-            self.preserve_active_recording(
+            self.preserve_active_recording(JobFailure::new(
+                FailureKind::Unexpected,
                 "AgentDictate shut down before this dictation completed; audio was preserved",
-            )?;
+            ))?;
         }
         Ok(())
     }
@@ -917,7 +923,10 @@ where
         if let Err(recovery_error) = self.runtime.interrupt_job(
             id,
             JobStage::Recording,
-            format!("recording was finalized but its capture checkpoint failed: {primary}"),
+            JobFailure::new(
+                FailureKind::Unexpected,
+                format!("recording was finalized but its capture checkpoint failed: {primary}"),
+            ),
         ) {
             tracing::error!(
                 job_id = %id,
@@ -930,29 +939,40 @@ where
             WorkflowSignal::Interrupted {
                 job_id: id,
                 at: JobStage::Interrupted,
+                failure: FailureKind::Unexpected,
             },
         );
     }
 
+    /// Stops the active recording and keeps its audio for Recovery, with
+    /// `failure` saying why.
     fn preserve_active_recording(
         &mut self,
-        reason: &'static str,
+        failure: JobFailure,
     ) -> Result<RecordingJob, DaemonError> {
         let id = self.recording_job()?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
             Err(error) => {
+                let kind = failure.kind;
                 let interrupted = self.runtime.interrupt_job(
                     id,
                     JobStage::Recording,
-                    format!("{reason}; recording could not be finalized: {error}"),
+                    JobFailure::new(
+                        kind,
+                        format!(
+                            "{}; recording could not be finalized: {error}",
+                            failure.message
+                        ),
+                    ),
                 );
                 self.settle(
                     id,
                     WorkflowSignal::Interrupted {
                         job_id: id,
                         at: JobStage::Interrupted,
+                        failure: kind,
                     },
                 );
                 return interrupted.map_err(Into::into);
@@ -967,14 +987,14 @@ where
             self.recover_after_capture_checkpoint_failure(id, &error);
             return Err(error.into());
         }
-        let interrupted = self
-            .runtime
-            .interrupt_job(id, JobStage::Captured, reason.to_owned());
+        let kind = failure.kind;
+        let interrupted = self.runtime.interrupt_job(id, JobStage::Captured, failure);
         self.settle(
             id,
             WorkflowSignal::Interrupted {
                 job_id: id,
                 at: JobStage::Interrupted,
+                failure: kind,
             },
         );
         interrupted.map_err(Into::into)
@@ -1039,13 +1059,17 @@ where
         Ok(self.runtime.recoveries()?.len())
     }
 
-    /// The job's stored stage, for the workflow after a failed step.
-    fn persisted_stage(&self, id: JobId) -> JobStage {
-        self.runtime
-            .job(id)
-            .ok()
-            .flatten()
-            .map_or(JobStage::Failed, |job| job.stage)
+    /// The workflow's end after a failed step, from the job as stored:
+    /// `fallback` when it cannot be read or holds no failure.
+    fn persisted_interruption(&self, id: JobId, fallback: FailureKind) -> WorkflowSignal {
+        match self.runtime.job(id).ok().flatten() {
+            Some(job) => interruption(&job, fallback),
+            None => WorkflowSignal::Interrupted {
+                job_id: id,
+                at: JobStage::Failed,
+                failure: fallback,
+            },
+        }
     }
 
     fn require_idle(&self) -> Result<(), DaemonError> {
@@ -1110,6 +1134,16 @@ where
                 tracing::warn!(job_id = %job.id, %error, "could not remove completed recording audio");
             }
         }
+    }
+}
+
+/// Ends the workflow with `job` kept for Recovery, as stored; `fallback`
+/// stands in for a failure the job does not record.
+fn interruption(job: &RecordingJob, fallback: FailureKind) -> WorkflowSignal {
+    WorkflowSignal::Interrupted {
+        job_id: job.id,
+        at: job.stage,
+        failure: job.failure.unwrap_or(fallback),
     }
 }
 

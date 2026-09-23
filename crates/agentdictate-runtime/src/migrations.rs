@@ -19,7 +19,7 @@ type Migration = fn(&Transaction<'_>) -> rusqlite::Result<()>;
 
 /// Every schema step, oldest first. A database at version N has had the
 /// first N; append new steps and never edit a released one.
-const MIGRATIONS: &[Migration] = &[merge_dictations];
+const MIGRATIONS: &[Migration] = &[merge_dictations, add_failure_kinds];
 
 /// The schema version this build migrates databases to.
 pub(crate) const LATEST_VERSION: usize = MIGRATIONS.len();
@@ -290,3 +290,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dictation_jobs_runtime_id ON dictation_job
 CREATE INDEX dictation_jobs_recoverable ON dictation_jobs(updated_at)
     WHERE stage IN ('captured', 'ready_to_deliver', 'interrupted', 'failed');
 "#;
+
+/// Version 2. A Recovery item keeps why it failed as a `FailureKind` name,
+/// so the window words the reason instead of showing the raw error. Items
+/// from before have none and keep showing their stored message.
+fn add_failure_kinds(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch("ALTER TABLE dictation_jobs ADD COLUMN failure_kind TEXT;")
+}

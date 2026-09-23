@@ -6,6 +6,7 @@ mod action;
 mod assets;
 #[cfg(feature = "desktop")]
 mod desktop;
+mod failure;
 mod history;
 mod overlay;
 mod route;
@@ -26,6 +27,7 @@ pub use desktop::{
     APPLICATION_ID, HotkeyCaptureSink, RecordingOverlay, SettingsShell, SettingsSink,
     SettingsWindow, run_recording_overlay, run_settings_window,
 };
+pub use failure::{FailureWording, failure_wording, recovery_reason};
 pub use history::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, RecoveryViewModel, TranscriptViewModel,
 };

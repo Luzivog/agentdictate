@@ -81,6 +81,7 @@ fn recovery_items_offer_the_retry_their_state_needs_and_say_when_they_expire() {
         raw_transcript: String::new(),
         final_text: final_text.to_owned(),
         error_message: None,
+        failure: None,
         audio_present: true,
         delivery_ambiguous: false,
     };

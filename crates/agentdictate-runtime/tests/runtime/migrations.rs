@@ -489,7 +489,7 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
 
     let mut runtime = Runtime::open(&database_path).unwrap();
 
-    assert_eq!(user_version(&database_path), 1);
+    assert_eq!(user_version(&database_path), 2);
     let connection = Connection::open(&database_path).unwrap();
     let tables = connection
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -655,7 +655,7 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
 fn migrating_keeps_one_private_backup_and_runs_once() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
-    let backup = directory.path().join("agentdictate.db.pre-v1");
+    let backup = directory.path().join("agentdictate.db.pre-v2");
     write_unversioned_database(&database_path);
     fs::write(&backup, b"an older backup").unwrap();
 
@@ -677,12 +677,12 @@ fn migrating_keeps_one_private_backup_and_runs_once() {
     fs::remove_file(&backup).unwrap();
     drop(Runtime::open(&database_path).unwrap());
     assert!(!backup.exists());
-    assert_eq!(user_version(&database_path), 1);
+    assert_eq!(user_version(&database_path), 2);
 
     let fresh = directory.path().join("fresh.db");
     drop(Runtime::open(&fresh).unwrap());
-    assert!(!directory.path().join("fresh.db.pre-v1").exists());
-    assert_eq!(user_version(&fresh), 1);
+    assert!(!directory.path().join("fresh.db.pre-v2").exists());
+    assert_eq!(user_version(&fresh), 2);
 }
 
 #[test]
@@ -692,14 +692,14 @@ fn a_database_from_a_newer_version_is_refused() {
     drop(Runtime::open(&database_path).unwrap());
     Connection::open(&database_path)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 2")
+        .execute_batch("PRAGMA user_version = 3")
         .unwrap();
 
     assert!(matches!(
         Runtime::open(&database_path),
         Err(agentdictate_runtime::RuntimeError::NewerDatabase {
-            version: 2,
-            latest: 1
+            version: 3,
+            latest: 2
         })
     ));
 }

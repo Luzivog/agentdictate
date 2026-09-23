@@ -1,6 +1,6 @@
 use agentdictate_app::{LifecycleAction, Trigger, lifecycle_action};
 use agentdictate_core::{
-    DictationMode, JobId, JobStage, ProcessingStage, RecordingMode, WorkflowPhase,
+    DictationMode, FailureKind, JobId, JobStage, ProcessingStage, RecordingMode, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::HotkeySignal;
 
@@ -14,6 +14,7 @@ fn lifecycle_action_covers_every_trigger_and_phase() {
     let attention = WorkflowPhase::NeedsAttention {
         job_id,
         at: JobStage::Failed,
+        failure: FailureKind::Offline,
     };
     let recording = WorkflowPhase::Recording { job_id };
     let stopping = WorkflowPhase::Stopping { job_id };

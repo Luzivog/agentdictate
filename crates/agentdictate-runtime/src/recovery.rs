@@ -30,6 +30,7 @@ impl Runtime {
                 raw_transcript: job.raw_transcript,
                 final_text: job.final_text,
                 error_message: job.error_message,
+                failure: job.failure,
                 audio_present: job.audio_path.is_file(),
                 delivery_ambiguous: job.delivery_status == DeliveryStatus::Ambiguous,
             })

@@ -15,7 +15,7 @@ use agentdictate_app::{
     start_overlay_presenter,
 };
 use agentdictate_core::{
-    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage,
+    FailureKind, HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage,
     RecoverySnapshot, Settings, WorkflowPhase, parse_vocabulary,
 };
 use agentdictate_runtime::{
@@ -411,6 +411,7 @@ fn stop_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Interrupted,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -536,6 +537,7 @@ fn failure_after_transcription_keeps_the_raw_transcript_in_recovery_and_the_next
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Failed,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
@@ -689,6 +691,7 @@ fn failed_escape_delete_restores_audio_and_surfaces_recovery_attention() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Captured,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -719,6 +722,7 @@ fn escape_finalize_failure_preserves_partial_audio_for_recovery() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Interrupted,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -751,6 +755,7 @@ fn discard_capture_checkpoint_failure_clears_the_session_and_preserves_audio() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Interrupted,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -790,6 +795,7 @@ fn recorder_start_failure_is_published_as_recoverable_attention() {
         daemon.snapshot().workflow.phase,
         WorkflowPhase::NeedsAttention {
             at: JobStage::Interrupted,
+            failure: FailureKind::MicrophoneUnavailable,
             ..
         }
     ));
@@ -830,6 +836,7 @@ fn unexpected_recorder_exit_preserves_audio_for_recovery_without_transcribing() 
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Interrupted,
+            failure: FailureKind::MicrophoneStalled,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -880,6 +887,7 @@ fn graceful_shutdown_finalizes_and_preserves_active_audio_for_recovery() {
         WorkflowPhase::NeedsAttention {
             job_id,
             at: JobStage::Interrupted,
+            failure: FailureKind::Unexpected,
         } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 1);
@@ -1262,7 +1270,11 @@ fn stalled_recorder_preserves_audio_for_recovery() {
     assert_eq!(daemon.deliverer().attempts, 0);
     assert!(matches!(
         daemon.phase(),
-        WorkflowPhase::NeedsAttention { job_id, at: JobStage::Interrupted } if job_id == started.id
+        WorkflowPhase::NeedsAttention {
+            job_id,
+            at: JobStage::Interrupted,
+            failure: FailureKind::MicrophoneStalled,
+        } if job_id == started.id
     ));
     let recovery = recoveries(&paths).remove(0);
     assert_eq!(recovery.stage, JobStage::Interrupted);

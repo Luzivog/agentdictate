@@ -1,5 +1,5 @@
 use agentdictate_app::{SpeechTransport, Transcriber, TranscriptionPipeline, TranscriptionRequest};
-use agentdictate_core::{JobId, JobStage, Settings};
+use agentdictate_core::{FailureKind, JobId, JobStage, Settings};
 use agentdictate_runtime::{DeliveryStatus, ExternalError, RecordingJob};
 use chrono::Utc;
 
@@ -33,6 +33,7 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
         paste_triggered: false,
         delivery_status: DeliveryStatus::NotAttempted,
         error_message: None,
+        failure: None,
     };
     for sample in [12i16, 2000] {
         let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data\x80\x0c\0\0".to_vec();
@@ -57,7 +58,8 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
                     assert_eq!(actual.unwrap_err().to_string(), "network unavailable")
                 }
                 _ if sample == 12 => assert_eq!(actual.unwrap_err(), ExternalError::NoSpeech),
-                _ => assert!(matches!(actual, Err(ExternalError::Failure { .. }))),
+                // Audio with sound but no words stays in Recovery as unheard.
+                _ => assert_eq!(actual.unwrap_err().kind(), FailureKind::NoSpeech),
             }
         }
     }

@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use agentdictate_app::{ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
+use agentdictate_core::FailureKind;
 use tempfile::tempdir;
 
 #[test]
@@ -121,6 +122,7 @@ fn an_http_error_status_is_never_retried() {
         .unwrap_err();
 
     assert!(error.to_string().contains("overloaded"), "{error}");
+    assert_eq!(error.kind(), FailureKind::ProviderError);
     assert!(
         !server.join().unwrap(),
         "a status error must not be sent again"
@@ -178,6 +180,85 @@ fn compressed_audio_rejected_as_a_bad_file_is_sent_again_as_the_original_wav() {
     assert!(original.contains("filename=\"recording.wav\""));
     assert!(original.contains("Content-Type: audio/wav"));
     assert!(original.contains("RIFFrecorded speech"));
+}
+
+/// Each failure reaches the user as the kind of problem it is, so the window
+/// can say what to do instead of showing the service's raw error.
+#[test]
+fn transcription_failures_are_typed_for_the_user() {
+    let directory = tempdir().unwrap();
+    let audio_path = directory.path().join("recording.wav");
+    std::fs::write(&audio_path, b"RIFFrecorded speech").unwrap();
+    for (status, body, expected) in [
+        (
+            "401 Unauthorized",
+            r#"{"error":{"message":"Incorrect API key provided"}}"#,
+            FailureKind::CredentialRejected,
+        ),
+        (
+            "403 Forbidden",
+            r#"{"error":{"message":"Project does not have access"}}"#,
+            FailureKind::CredentialRejected,
+        ),
+        (
+            "429 Too Many Requests",
+            r#"{"error":{"message":"You exceeded your current quota"}}"#,
+            FailureKind::RateLimited,
+        ),
+        (
+            "500 Internal Server Error",
+            r#"{"error":{"message":"The server had an error"}}"#,
+            FailureKind::ProviderError,
+        ),
+        (
+            "400 Bad Request",
+            r#"{"error":{"message":"Audio file is too short"}}"#,
+            FailureKind::ProviderError,
+        ),
+        (
+            "200 OK",
+            r#"{"unexpected":true}"#,
+            FailureKind::ProviderError,
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let mut transport =
+            ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{address}/v1"));
+
+        let error = transport
+            .transcribe_audio(transcription_request(&audio_path))
+            .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error.kind(), expected, "{status}: {error}");
+    }
+
+    let unreachable = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let error =
+        ReqwestOpenAiTransport::with_api_base("sk-test", format!("http://{unreachable}/v1"))
+            .transcribe_audio(transcription_request(&audio_path))
+            .unwrap_err();
+    assert_eq!(error.kind(), FailureKind::Offline, "{error}");
+
+    let error = ReqwestOpenAiTransport::with_api_base("", format!("http://{unreachable}/v1"))
+        .transcribe_audio(transcription_request(&audio_path))
+        .unwrap_err();
+    assert_eq!(error.kind(), FailureKind::CredentialMissing, "{error}");
 }
 
 fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'_> {

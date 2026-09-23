@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agentdictate_core::{JobId, JobStage};
+use agentdictate_core::{FailureKind, JobId, JobStage};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
@@ -51,18 +51,58 @@ pub enum RuntimeError {
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ExternalError {
+    /// `kind` is what a user is told when this failure ends a dictation.
     #[error("{message}")]
-    Failure { message: String },
+    Failure { kind: FailureKind, message: String },
     #[error("No speech detected.")]
     NoSpeech,
 }
 
 impl ExternalError {
+    /// A failure with no kind more specific than `Unexpected`.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
+        Self::of_kind(FailureKind::Unexpected, message)
+    }
+
+    #[must_use]
+    pub fn of_kind(kind: FailureKind, message: impl Into<String>) -> Self {
         Self::Failure {
+            kind,
             message: message.into(),
         }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> FailureKind {
+        match self {
+            Self::Failure { kind, .. } => *kind,
+            Self::NoSpeech => FailureKind::NoSpeech,
+        }
+    }
+}
+
+/// Why a job stopped short, kept with it for Recovery: `kind` is what the
+/// user is told, and `message` the detail for the log.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobFailure {
+    pub kind: FailureKind,
+    pub message: String,
+}
+
+impl JobFailure {
+    #[must_use]
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<ExternalError> for JobFailure {
+    fn from(error: ExternalError) -> Self {
+        Self::new(error.kind(), error.to_string())
     }
 }
 
@@ -103,6 +143,9 @@ pub struct RecordingJob {
     pub paste_triggered: bool,
     pub delivery_status: DeliveryStatus,
     pub error_message: Option<String>,
+    /// Why the job stopped short, when it did. Jobs from before failures
+    /// were typed, and notes such as a cancelled job's, have none.
+    pub failure: Option<FailureKind>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,9 +189,7 @@ pub enum TranscriptionOutcome {
     /// The audio was quiet: there is nothing to deliver or recover.
     NoSpeech,
     /// The attempt failed; the job keeps its audio for Recovery.
-    Failed {
-        message: String,
-    },
+    Failed(JobFailure),
 }
 
 /// The job as `Runtime::store_transcript` left it.

@@ -790,6 +790,7 @@ mod tests {
             paste_triggered: false,
             delivery_status: DeliveryStatus::NotAttempted,
             error_message: None,
+            failure: None,
         }
     }
 
@@ -968,6 +969,7 @@ mod tests {
             paste_triggered: false,
             delivery_status: DeliveryStatus::NotAttempted,
             error_message: None,
+            failure: None,
         }
     }
 

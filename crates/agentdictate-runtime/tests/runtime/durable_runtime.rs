@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use agentdictate_core::{DictationOptions, Settings, parse_vocabulary};
+use agentdictate_core::{DictationOptions, FailureKind, Settings, parse_vocabulary};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
-    DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob,
-    Runtime, RuntimeError, StoredTranscript, Transcript, TranscriptionOutcome,
+    DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobFailure, JobId, JobStage, Recorder,
+    RecordingJob, Runtime, RuntimeError, StoredTranscript, Transcript, TranscriptionOutcome,
 };
 use tempfile::TempDir;
 
@@ -540,9 +540,7 @@ fn transcript_is_accepted_only_while_the_job_is_transcribing() {
         for outcome in [
             transcript("Late words."),
             TranscriptionOutcome::NoSpeech,
-            TranscriptionOutcome::Failed {
-                message: "late failure".into(),
-            },
+            TranscriptionOutcome::Failed(JobFailure::new(FailureKind::Offline, "late failure")),
         ] {
             assert_eq!(
                 runtime.store_transcript(id, outcome, None).unwrap(),
@@ -768,7 +766,10 @@ fn capture_finalization_failure_can_interrupt_the_recording_durably() {
         .interrupt_job(
             job.id,
             JobStage::Recording,
-            "audio stream stopped before the spool was finalized",
+            JobFailure::new(
+                FailureKind::MicrophoneStalled,
+                "audio stream stopped before the spool was finalized",
+            ),
         )
         .unwrap();
 
@@ -891,9 +892,10 @@ fn failed_transcription_can_be_retried_explicitly() {
     let StoredTranscript::Failed(failed) = runtime
         .store_transcript(
             job.id,
-            TranscriptionOutcome::Failed {
-                message: "temporary transcription failure".into(),
-            },
+            TranscriptionOutcome::Failed(JobFailure::new(
+                FailureKind::Offline,
+                "temporary transcription failure",
+            )),
             None,
         )
         .unwrap()
@@ -904,8 +906,14 @@ fn failed_transcription_can_be_retried_explicitly() {
         failed.error_message.as_deref(),
         Some("temporary transcription failure")
     );
+    assert_eq!(
+        runtime.recoveries().unwrap()[0].failure,
+        Some(FailureKind::Offline),
+        "Recovery keeps why the job failed"
+    );
 
-    runtime.prepare_transcription_retry(job.id).unwrap();
+    let retrying = runtime.prepare_transcription_retry(job.id).unwrap();
+    assert_eq!(retrying.failure, None);
     let StoredTranscript::Ready(ready) = runtime
         .store_transcript(job.id, transcript("Only once."), None)
         .unwrap()
@@ -1008,9 +1016,11 @@ fn delivery_that_fails_before_any_paste_stays_ready_and_can_be_retried() {
         not_sent.error_message.as_deref(),
         Some("the clipboard was not ready, so nothing was pasted")
     );
+    assert_eq!(not_sent.failure, Some(FailureKind::PasteNotConfirmed));
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
     let delivered = copy_again(&mut runtime, job.id, &mut submitted).unwrap();
     assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(delivered.failure, None);
     assert_eq!(submitted.attempts, 1);
 }
 
@@ -1121,7 +1131,11 @@ fn deleting_a_recovery_removes_audio_before_marking_the_job_deleted() {
         .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
-        .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
+        .interrupt_job(
+            job.id,
+            JobStage::Recording,
+            JobFailure::new(FailureKind::MicrophoneStalled, "microphone disconnected"),
+        )
         .unwrap();
 
     let deleted = runtime.delete_recovery(job.id).unwrap();
@@ -1148,7 +1162,11 @@ fn failed_recovery_delete_restores_the_only_audio_copy() {
         .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
-        .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
+        .interrupt_job(
+            job.id,
+            JobStage::Recording,
+            JobFailure::new(FailureKind::MicrophoneStalled, "microphone disconnected"),
+        )
         .unwrap();
     rusqlite::Connection::open(&database_path)
         .unwrap()
@@ -1195,7 +1213,11 @@ fn startup_restores_audio_quarantined_before_the_delete_checkpoint() {
         .start_recording(request(&audio_path, TRANSCRIPTION_MODEL), &mut recorder)
         .unwrap();
     runtime
-        .interrupt_job(job.id, JobStage::Recording, "microphone disconnected")
+        .interrupt_job(
+            job.id,
+            JobStage::Recording,
+            JobFailure::new(FailureKind::MicrophoneStalled, "microphone disconnected"),
+        )
         .unwrap();
     drop(runtime);
     let quarantine = audio_path.with_file_name(format!(".agentdictate-delete-{}.pending", job.id));

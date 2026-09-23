@@ -7,11 +7,11 @@ use agentdictate_core::{
 fn client_commands_have_a_versioned_stable_wire_shape() {
     assert_eq!(
         serde_json::to_string(&ClientCommand::start_recording()).unwrap(),
-        r#"{"protocol_version":14,"command":"start_recording"}"#
+        r#"{"protocol_version":15,"command":"start_recording"}"#
     );
     assert_eq!(
         serde_json::to_string(&ClientCommand::new(ClientCommandKind::StopRecording)).unwrap(),
-        r#"{"protocol_version":14,"command":"stop_recording"}"#
+        r#"{"protocol_version":15,"command":"stop_recording"}"#
     );
 }
 
@@ -25,7 +25,7 @@ fn rejected_commands_return_an_error_instead_of_looking_successful() {
     ));
     assert_eq!(
         serde_json::to_string(&message).unwrap(),
-        r#"{"protocol_version":14,"message":"command_rejected","error":"microphone unavailable"}"#
+        r#"{"protocol_version":15,"message":"command_rejected","error":"microphone unavailable"}"#
     );
 }
 

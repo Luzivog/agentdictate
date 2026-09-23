@@ -3,6 +3,8 @@ use std::str::FromStr;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
+use agentdictate_core::FailureKind;
+
 use crate::{DeliveryStatus, JobId, JobStage, RecordingJob, RuntimeError};
 
 pub(crate) fn row_to_job(
@@ -32,6 +34,9 @@ pub(crate) fn row_to_job(
             paste_triggered: row.get(10)?,
             delivery_status: parse_delivery_status(&row.get::<_, String>(11)?)?,
             error_message: row.get(12)?,
+            failure: row
+                .get::<_, Option<String>>(14)?
+                .map(|name| FailureKind::from_stored(&name)),
         })
     })())
 }

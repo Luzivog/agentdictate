@@ -2,8 +2,10 @@
 
 use std::time::Instant;
 
-use agentdictate_core::{JobId, Settings};
-use agentdictate_runtime::{ExternalError, RecordingJob, Transcript, TranscriptionOutcome};
+use agentdictate_core::{FailureKind, JobId, Settings};
+use agentdictate_runtime::{
+    ExternalError, JobFailure, RecordingJob, Transcript, TranscriptionOutcome,
+};
 
 use crate::FinishingEncode;
 
@@ -75,7 +77,7 @@ impl<T: Transcriber> ProcessingTicket<T> {
             outcome = match &outcome {
                 TranscriptionOutcome::Text(_) => "text",
                 TranscriptionOutcome::NoSpeech => "no_speech",
-                TranscriptionOutcome::Failed { .. } => "failed",
+                TranscriptionOutcome::Failed(_) => "failed",
             },
             "transcription finished"
         );
@@ -96,7 +98,7 @@ impl<T: Transcriber> ProcessingTicket<T> {
         match self.transcriber.transcribe(&self.job, self.encoding.take()) {
             Ok(transcript) => TranscriptionOutcome::Text(transcript),
             Err(ExternalError::NoSpeech) => TranscriptionOutcome::NoSpeech,
-            Err(ExternalError::Failure { message }) => TranscriptionOutcome::Failed { message },
+            Err(error) => TranscriptionOutcome::Failed(error.into()),
         }
     }
 }
@@ -116,9 +118,10 @@ impl TranscriptionCompletion {
     pub fn failed(job_id: JobId, message: impl Into<String>) -> Self {
         Self {
             job_id,
-            outcome: TranscriptionOutcome::Failed {
-                message: message.into(),
-            },
+            outcome: TranscriptionOutcome::Failed(JobFailure::new(
+                FailureKind::Unexpected,
+                message,
+            )),
             finished_at: Instant::now(),
         }
     }

@@ -11,10 +11,11 @@ use crate::retention::KEPT_CANCEL_SECONDS;
 use crate::schema::{row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
-    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, JobId, JobStage,
-    Recorder, RecordingJob, RecordingRequest, RuntimeError, StoredTranscript, Transcript,
-    TranscriptionOutcome,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, JobFailure,
+    JobId, JobStage, Recorder, RecordingJob, RecordingRequest, RuntimeError, StoredTranscript,
+    Transcript, TranscriptionOutcome,
 };
+use agentdictate_core::FailureKind;
 
 pub struct Runtime {
     pub(crate) connection: Connection,
@@ -108,7 +109,14 @@ impl Runtime {
         let starting = self.job(id)?.expect("inserted job must be readable");
 
         if let Err(error) = recorder.start(&starting) {
-            let _ = self.update_stage(id, JobStage::Interrupted, Some(error.to_string()));
+            let _ = self.update_stage(
+                id,
+                JobStage::Interrupted,
+                Some(JobFailure::new(
+                    FailureKind::MicrophoneUnavailable,
+                    error.to_string(),
+                )),
+            );
             return Err(error.into());
         }
 
@@ -122,7 +130,11 @@ impl Runtime {
                     "; recorder compensation also failed: {compensation_error}"
                 ));
             }
-            let _ = self.update_stage(id, JobStage::Interrupted, Some(recovery_message));
+            let _ = self.update_stage(
+                id,
+                JobStage::Interrupted,
+                Some(JobFailure::new(FailureKind::Unexpected, recovery_message)),
+            );
             return Err(checkpoint_error);
         }
         let job = self.job(id)?.expect("updated job must be readable");
@@ -146,7 +158,7 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'captured', duration_seconds = ?1,
-                updated_at = ?2, error_message = NULL
+                updated_at = ?2, error_message = NULL, failure_kind = NULL
             WHERE runtime_id = ?3
             "#,
             params![duration_seconds, timestamp(Utc::now()), id.to_string()],
@@ -165,7 +177,7 @@ impl Runtime {
         &mut self,
         id: JobId,
         at: JobStage,
-        error_message: impl Into<String>,
+        failure: JobFailure,
     ) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if current.stage != at {
@@ -175,7 +187,7 @@ impl Runtime {
                 actual: current.stage,
             });
         }
-        self.update_stage(id, JobStage::Interrupted, Some(error_message.into()))?;
+        self.update_stage(id, JobStage::Interrupted, Some(failure))?;
         let interrupted = self.job(id)?.expect("updated job must be readable");
         Ok(interrupted)
     }
@@ -218,6 +230,7 @@ impl Runtime {
             stage: JobStage::Deleted,
             updated_at: Utc::now(),
             error_message: None,
+            failure: None,
             ..current
         };
         Ok(deleted)
@@ -268,7 +281,7 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'transcribing', updated_at = ?1,
-                delivery_status = 'not_attempted', error_message = NULL
+                delivery_status = 'not_attempted', error_message = NULL, failure_kind = NULL
             WHERE runtime_id = ?2
             "#,
             params![timestamp(Utc::now()), id.to_string()],
@@ -315,8 +328,8 @@ impl Runtime {
                     })
                     .map_err(Into::into)
             }
-            TranscriptionOutcome::Failed { message } => self
-                .update_stage(id, JobStage::Failed, Some(message))
+            TranscriptionOutcome::Failed(failure) => self
+                .update_stage(id, JobStage::Failed, Some(failure))
                 .map(|()| {
                     StoredTranscript::Failed(self.job(id).ok().flatten().unwrap_or(transcribing))
                 }),
@@ -358,7 +371,7 @@ impl Runtime {
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
                 final_text = ?2, replacements_applied = ?3, error_message = ?4,
-                delivery_status = 'not_attempted'
+                failure_kind = NULL, delivery_status = 'not_attempted'
             WHERE runtime_id = ?5
             "#,
             params![
@@ -408,7 +421,7 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
-                delivery_status = 'not_attempted', error_message = NULL
+                delivery_status = 'not_attempted', error_message = NULL, failure_kind = NULL
             WHERE runtime_id = ?2
             "#,
             params![timestamp(Utc::now()), id.to_string()],
@@ -456,6 +469,7 @@ impl Runtime {
             stage: JobStage::Deleted,
             updated_at: Utc::now(),
             error_message: None,
+            failure: None,
             ..current
         };
         if quarantined {
@@ -494,12 +508,13 @@ impl Runtime {
             self.connection.execute(
                 r#"
                 UPDATE dictation_jobs
-                SET updated_at = ?1, error_message = ?2
-                WHERE runtime_id = ?3
+                SET updated_at = ?1, error_message = ?2, failure_kind = ?3
+                WHERE runtime_id = ?4
                 "#,
                 params![
                     timestamp(Utc::now()),
                     format!("delivery blocked before paste: {error}"),
+                    FailureKind::PasteNotConfirmed.as_str(),
                     ready.id.to_string(),
                 ],
             )?;
@@ -535,7 +550,7 @@ impl Runtime {
                     UPDATE dictation_jobs
                     SET state = 'delivered', stage = 'delivered', updated_at = ?1,
                         copied_to_clipboard = ?2, paste_triggered = ?3,
-                        delivery_status = 'submitted', error_message = NULL
+                        delivery_status = 'submitted', error_message = NULL, failure_kind = NULL
                     WHERE runtime_id = ?4
                     "#,
                     params![
@@ -562,13 +577,15 @@ impl Runtime {
                     r#"
                     UPDATE dictation_jobs
                     SET updated_at = ?1, copied_to_clipboard = ?2,
-                        delivery_status = 'not_attempted', error_message = ?3
-                    WHERE runtime_id = ?4
+                        delivery_status = 'not_attempted', error_message = ?3,
+                        failure_kind = ?4
+                    WHERE runtime_id = ?5
                     "#,
                     params![
                         timestamp(Utc::now()),
                         copied_to_clipboard,
                         reason,
+                        FailureKind::PasteNotConfirmed.as_str(),
                         ready.id.to_string(),
                     ],
                 )?;
@@ -590,6 +607,10 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'failed', stage = 'failed', updated_at = ?1, error_message = ?2,
+                failure_kind = CASE delivery_status
+                    WHEN 'attempting' THEN 'paste_not_confirmed'
+                    ELSE 'unexpected'
+                END,
                 delivery_status = CASE delivery_status
                     WHEN 'attempting' THEN 'ambiguous'
                     ELSE delivery_status
@@ -619,7 +640,7 @@ impl Runtime {
             UPDATE dictation_jobs
             SET state = 'failed', stage = 'failed', updated_at = ?1,
                 copied_to_clipboard = ?2, delivery_status = 'ambiguous',
-                error_message = ?3
+                error_message = ?3, failure_kind = 'paste_not_confirmed'
             WHERE runtime_id = ?4
             "#,
             params![
@@ -642,7 +663,7 @@ impl Runtime {
             SELECT runtime_id, started_at, updated_at, stage, audio_path,
                    duration_seconds, transcription_model, raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
-                   delivery_status, error_message, processing_options
+                   delivery_status, error_message, processing_options, failure_kind
             FROM dictation_jobs
             WHERE state NOT IN ('delivered', 'deleted', 'no_speech')
             ORDER BY updated_at DESC, id DESC
@@ -654,23 +675,29 @@ impl Runtime {
         rows.into_iter().collect()
     }
 
+    /// Moves a job to `stage`, recording why it stopped short, or clearing
+    /// an earlier failure when `failure` is `None`.
     fn update_stage(
         &self,
         id: JobId,
         stage: JobStage,
-        error_message: Option<String>,
+        failure: Option<JobFailure>,
     ) -> Result<(), RuntimeError> {
+        let (kind, message) = failure.map_or((None, None), |failure| {
+            (Some(failure.kind.as_str()), Some(failure.message))
+        });
         self.connection.execute(
             r#"
             UPDATE dictation_jobs
-            SET state = ?1, stage = ?2, updated_at = ?3, error_message = ?4
-            WHERE runtime_id = ?5
+            SET state = ?1, stage = ?2, updated_at = ?3, error_message = ?4, failure_kind = ?5
+            WHERE runtime_id = ?6
             "#,
             params![
                 state_for_stage(stage),
                 stage_name(stage),
                 timestamp(Utc::now()),
-                error_message,
+                message,
+                kind,
                 id.to_string(),
             ],
         )?;
@@ -711,7 +738,7 @@ pub(crate) fn load_job(
             SELECT runtime_id, started_at, updated_at, stage, audio_path,
                    duration_seconds, transcription_model, raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
-                   delivery_status, error_message, processing_options
+                   delivery_status, error_message, processing_options, failure_kind
             FROM dictation_jobs
             WHERE runtime_id = ?1
             "#,
@@ -728,7 +755,8 @@ fn reconcile_ambiguous_deliveries(connection: &Connection) -> rusqlite::Result<(
         UPDATE dictation_jobs
         SET state = 'failed', stage = 'failed', delivery_status = 'ambiguous',
             updated_at = ?1,
-            error_message = 'delivery was interrupted after the attempt began'
+            error_message = 'delivery was interrupted after the attempt began',
+            failure_kind = 'paste_not_confirmed'
         WHERE delivery_status = 'attempting'
         "#,
         [timestamp(Utc::now())],
@@ -744,7 +772,8 @@ fn reconcile_interrupted_jobs(connection: &Connection) -> rusqlite::Result<()> {
             error_message = COALESCE(
                 error_message,
                 'AgentDictate stopped before this dictation completed'
-            )
+            ),
+            failure_kind = COALESCE(failure_kind, 'unexpected')
         WHERE stage IN ('starting', 'recording', 'transcribing')
         "#,
         [timestamp(Utc::now())],
