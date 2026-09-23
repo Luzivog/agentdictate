@@ -8,10 +8,6 @@ pub use agentdictate_core::{
 
 mod ipc;
 pub use ipc::{IpcClient, IpcError, IpcHandler, IpcServer};
-mod external_dictation;
-pub use external_dictation::{
-    ExternalDictationImportOutcome, ExternalDictationReceipt, ExternalDictationSource,
-};
 mod fs;
 pub use fs::write_atomic;
 mod history;

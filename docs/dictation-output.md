@@ -9,8 +9,7 @@ Each recording stores a snapshot of its options when it starts: output mode,
 language, context, vocabulary, streaming, and legacy replacement rules. API
 credentials are never stored with it. **Transcribe again** reuses that snapshot and
 any text already recognized, so a retry neither changes behavior nor pays twice.
-Older jobs without a snapshot use the current settings. Dictations imported from the
-ChatGPT desktop app skip this processing entirely.
+Older jobs without a snapshot use the current settings.
 
 ## Output modes
 

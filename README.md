@@ -88,8 +88,6 @@ in the tray menu.
 - **Delete** on a History item deletes it for good, and **Delete all history…** in
   **Settings**, **Privacy** deletes every transcript.
 - Usage numbers, such as minutes and estimated cost, are kept without text.
-- AgentDictate also imports the dictations saved by the ChatGPT desktop app into
-  History. This cannot be turned off yet.
 - Logs can contain transcript text.
 
 The [install guide](docs/INSTALL.md#local-data-and-network-use) has the details.

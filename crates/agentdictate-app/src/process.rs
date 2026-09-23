@@ -13,8 +13,7 @@ use agentdictate_runtime::{
 
 use crate::{
     AppPaths, Daemon, OverlayController, ReqwestOpenAiTransport, SystemDeliverer,
-    SystemRecordingController, TranscriptionPipeline,
-    chatgpt_dictation_import::start_chatgpt_dictation_importer, startup::LoginStartup,
+    SystemRecordingController, TranscriptionPipeline, startup::LoginStartup,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
@@ -142,12 +141,6 @@ impl AgentProcess {
                     &history_index_maintenance,
                 );
             })
-    }
-
-    /// Watches the ChatGPT desktop receipt directory and adds completed
-    /// dictations to AgentDictate's usage totals.
-    pub fn start_chatgpt_dictation_importer(&self) -> std::io::Result<std::thread::JoinHandle<()>> {
-        start_chatgpt_dictation_importer(self.database_file.clone())
     }
 
     fn snapshot_message(&self, request_id: u64) -> ServerMessage {

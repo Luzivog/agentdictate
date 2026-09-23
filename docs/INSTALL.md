@@ -126,12 +126,6 @@ that fails before OpenAI answers is sent once more.
 - Audio is deleted after the paste unless **Preserve temporary audio** is on. Each
   daemon start also deletes leftover recordings that no dictation needs.
 - Logs can contain transcript text. The newest 14 daily files are kept.
-- While the daemon runs, it imports the completed dictations that the ChatGPT desktop
-  app saves under `$CODEX_HOME/dictation-history` (default
-  `~/.codex/dictation-history`), including their transcripts, into History and the
-  usage totals. There is no setting to turn this off, and **Save history** does
-  not affect it. A deleted import stays deleted, but a new database imports every
-  source file again.
 
 The database, recordings, and logs are not encrypted; Unix permissions protect them.
 They live in these directories, which `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
@@ -208,6 +202,3 @@ rm -rf -- \
   "$agentdictate_state_home/agentdictate" \
   "$agentdictate_cache_home/agentdictate"
 ```
-
-This does not delete the ChatGPT desktop app's own files under `$CODEX_HOME`, so
-a later install imports them again.

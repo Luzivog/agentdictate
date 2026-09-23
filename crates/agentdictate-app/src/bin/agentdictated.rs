@@ -68,13 +68,6 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
             None
         }
     };
-    let _chatgpt_dictation_importer = match process.start_chatgpt_dictation_importer() {
-        Ok(thread) => Some(thread),
-        Err(error) => {
-            tracing::warn!(%error, "could not start ChatGPT dictation usage importer");
-            None
-        }
-    };
     let show_tray_icon = process.show_tray_icon();
     let process = Arc::new(Mutex::new(process));
     let shutdown_failed = Arc::new(AtomicBool::new(false));

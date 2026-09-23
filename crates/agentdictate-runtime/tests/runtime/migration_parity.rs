@@ -66,7 +66,6 @@ fn fresh_database_contains_the_complete_python_compatible_schema() {
     for table in [
         "dictation_sessions",
         "transcript_history",
-        "external_dictation_imports",
         "replacement_mappings",
         "dictation_jobs",
     ] {

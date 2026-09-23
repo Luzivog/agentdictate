@@ -103,9 +103,9 @@ app depends on runtime, linux, and ui; each of those depends only on core.
 - **agentdictate-ui**: toolkit-free view models, plus the GPUI settings window and
   overlay view behind the `desktop` feature.
 - **agentdictate-app**: composition. The daemon, the OpenAI speech transport,
-  optional live streaming, the ChatGPT desktop-history importer, the
-  overlay supervisor and helper, the tray, the service unit and login startup,
-  `setup-access`, the hotkey dispatch gate, logging, and the three binaries.
+  optional live streaming, the overlay supervisor and helper, the tray, the service
+  unit and login startup, `setup-access`, the hotkey dispatch gate, logging, and the
+  three binaries.
 
 ## Dictation pipeline
 
@@ -208,7 +208,7 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | --- | --- |
 | `~/.config/agentdictate/config.json` | Settings, including the OpenAI API key in plain text, mode 0600 |
 | `~/.local/share/systemd/user/agentdictated.service` | The daemon's user unit, written by the app when its text changes |
-| `~/.local/share/agentdictate/agentdictate.sqlite` | Jobs, History, usage, legacy replacement rules, imported ChatGPT dictations |
+| `~/.local/share/agentdictate/agentdictate.sqlite` | Jobs, History, usage, legacy replacement rules, dictations imported from ChatGPT before 2026-09-23 |
 | `~/.local/share/agentdictate/recordings/` | WAV files of in-flight, recoverable, and preserved dictations |
 | `~/.local/share/agentdictate/native-access/` | The input-access rule and guide from `install.sh`, and the helper `setup-access` writes |
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |

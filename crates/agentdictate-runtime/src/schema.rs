@@ -42,13 +42,8 @@ CREATE TABLE IF NOT EXISTS transcript_history (
     cleanup_error TEXT
 );
 
-CREATE TABLE IF NOT EXISTS external_dictation_imports (
-    source TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    imported_at TEXT NOT NULL,
-    session_id INTEGER REFERENCES dictation_sessions(id) ON DELETE SET NULL,
-    PRIMARY KEY (source, source_id)
-);
+-- Databases from before 2026-09-23 also hold an `external_dictation_imports`
+-- ledger from the retired ChatGPT desktop import. Nothing reads or writes it.
 
 CREATE TABLE IF NOT EXISTS replacement_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -46,8 +46,6 @@ pub enum RuntimeError {
         date: String,
         source: chrono::ParseError,
     },
-    #[error("invalid external dictation receipt: {0}")]
-    InvalidExternalDictation(String),
     #[error("{error}; the failure could not be recorded either: {record_error}")]
     FailureNotRecorded {
         error: Box<RuntimeError>,

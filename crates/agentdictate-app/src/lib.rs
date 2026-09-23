@@ -3,7 +3,6 @@
 use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
 mod captured_audio;
-mod chatgpt_dictation_import;
 mod daemon;
 pub mod diagnostics;
 mod hotkey_dispatch;
