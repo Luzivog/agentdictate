@@ -81,9 +81,10 @@ ephemeral full gate, not as a global configuration.
 
 Before any workspace-wide, all-target, all-feature, release, or LTO build,
 check both available filesystem space and whether another `cargo`, `rustc`, or
-linker workload is active. If another broad gate is running or free space is
-unsafe, continue non-build work and report the wait instead of starting a
-second bulk writer. Do not interrupt or stop the other task.
+linker workload is active; `scripts/dev.sh doctor` prints both. If another
+broad gate is running or free space is unsafe, continue non-build work and
+report the wait instead of starting a second bulk writer. Do not interrupt or
+stop the other task.
 
 Cargo does not automatically garbage-collect a workspace's `target/`
 directory. Never run `cargo clean`, delete target artifacts, redirect or change

@@ -26,8 +26,8 @@ GPUI links `libxkbcommon.so` and `libxkbcommon-x11.so` by their development name
 which only `libxkbcommon-dev` and `libxkbcommon-x11-dev` provide.
 `packaging/linker-runtime-fallback.sh` works around a missing package: it points
 symlinks in `target/linker-shims` at the installed runtime libraries and adds that
-directory to `LIBRARY_PATH`. `install.sh`, `run.sh`, `run-tests.sh`, and
-`scripts/dev.sh` source it for you.
+directory to `LIBRARY_PATH`. `install.sh`, `run.sh`, and `run-tests.sh` source
+it for you.
 
 Direct Cargo commands that link GPUI need it too. That means anything built with
 the `desktop` or `test-support` features of `agentdictate-ui`, including the
@@ -80,21 +80,17 @@ in `tests/`: `core`, `runtime`, `linux`, `app`, and, for the UI, `contracts`
 desktop tests drive rendered controls in a headless GPUI context; they never open a
 window or move your mouse.
 
-`scripts/dev.sh test` runs one harness and saves a log of it. It takes a crate
-suffix, `lib` or a harness name, and an optional test filter:
+Run one harness at a time with the narrow commands from
+[AGENTS.md](../AGENTS.md#development-commands), adding a test-name filter as needed:
 
 ```bash
-scripts/dev.sh test core lib textfmt
-scripts/dev.sh test runtime runtime history_usage
-scripts/dev.sh test app app daemon_flow
-scripts/dev.sh test ui desktop rendered_interactions
+cargo test --locked -p agentdictate-core --lib textfmt
+cargo test --locked -p agentdictate-runtime --test runtime history_usage
+cargo test --locked -p agentdictate-app --test app daemon_flow
+cargo test --locked -p agentdictate-ui --test desktop --features test-support rendered_interactions
 ```
 
-It adds `--locked`, enables `test-support` for the desktop harness, and writes the
-command, Git revision and status, compiler version, output, elapsed time, and exit
-status under `$XDG_STATE_HOME/agentdictate/checks` (default
-`~/.local/state/agentdictate/checks`). A compile error, a failing test, or a filter
-that matches no passing test exits nonzero.
+A filter that matches nothing still passes, with `0 passed`, so check the count.
 
 Tests that need `/dev/uinput` create and grab their own virtual keyboard, so their
 key presses never reach your desktop. Without access they print `SKIPPED` and pass,
@@ -106,7 +102,7 @@ as described in [dictation output](dictation-output.md#evaluate-a-change).
 ## Check the overlay and paste on a real compositor
 
 The automated tests cannot prove that the overlay is visible, where it appears, or
-that a paste reaches another app. `packaging/test-overlay-desktop.py` checks those
+that a paste reaches another app. `scripts/test-overlay-desktop.py` checks those
 on a private, headless GNOME Shell. It runs the production overlay helper with
 synthetic audio and workflow updates, and the production clipboard owner through
 the `selection_probe` example. It uses a private session bus and temporary XDG
@@ -121,9 +117,9 @@ for each target:
 ```bash
 cargo build --locked -p agentdictate-app --features desktop --bin agentdictate
 cargo build --locked -p agentdictate-linux --example selection_probe
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --target x11
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --scale 2 --target wayland
-/usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate \
+/usr/bin/python3 scripts/test-overlay-desktop.py target/debug/agentdictate --target x11
+/usr/bin/python3 scripts/test-overlay-desktop.py target/debug/agentdictate --scale 2 --target wayland
+/usr/bin/python3 scripts/test-overlay-desktop.py target/debug/agentdictate \
   --monitor 1920x1080 --scale 1.25 --target x11
 ```
 

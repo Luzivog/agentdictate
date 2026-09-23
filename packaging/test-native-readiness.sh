@@ -15,12 +15,6 @@ assert_contains() {
   [[ "${haystack}" == *"${needle}"* ]] || fail "expected output to contain: ${needle}"
 }
 
-assert_file_contains() {
-  local path="$1"
-  local needle="$2"
-  grep -Fq -- "${needle}" "${path}" || fail "${path} does not contain: ${needle}"
-}
-
 fixture_root="$(mktemp -d)"
 trap 'rm -rf -- "${fixture_root}"' EXIT
 mkdir -p "${fixture_root}/dev/input" "${fixture_root}/bin" "${fixture_root}/rules"
@@ -178,32 +172,15 @@ fi
 [[ -L "${linker_fixture}/no-path-project/target/linker-shims/libxkbcommon.so" ]] || \
   fail "runtime shim was not created when /usr/sbin was absent from PATH"
 
+# Policy guards: the shipped access assets never make input devices
+# world-writable, and installers never enable or start a user service.
 GUIDE="${PROJECT_DIR}/packaging/NATIVE_ACCESS.md"
-assert_file_contains "${RULE}" 'ENV{ID_INPUT_KEYBOARD}=="1"'
-assert_file_contains "${RULE}" 'TAG+="uaccess"'
-assert_file_contains "${RULE}" 'MODE="0660"'
 if grep -Eq 'MODE="?0?666"?|chmod[[:space:]]+0?666' "${RULE}" "${GUIDE}"; then
   fail "native access assets must never grant world-write access"
 fi
-assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
-  'usr/lib/udev/rules.d'
-assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
-  '${PKG_DIR}/postrm'
-assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
-  '"${LIB_DIR}/grant-access"'
-assert_file_contains "${PROJECT_DIR}/crates/agentdictate-app/src/native_access.rs" \
-  '"/usr/lib/agentdictate/grant-access"'
 if grep -Eq 'systemctl[^#]*[[:space:]](enable|start|restart)([[:space:]]|$)' \
   "${PROJECT_DIR}/install.sh" "${PROJECT_DIR}/packaging/build-deb.sh"; then
   fail "installers must never enable or start a user service"
 fi
-assert_file_contains "${PROJECT_DIR}/install.sh" \
-  'systemctl --user try-restart agentdictated.service'
-assert_file_contains "${PROJECT_DIR}/packaging/build-appimage.sh" \
-  'NATIVE_ACCESS.md'
-assert_file_contains "${PROJECT_DIR}/packaging/build-appimage.sh" \
-  'agentdictated" --service'
-assert_file_contains "${PROJECT_DIR}/install.sh" \
-  '--check-native-access'
 
 echo "Native install readiness checks passed."

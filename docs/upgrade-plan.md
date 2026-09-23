@@ -199,7 +199,7 @@ and a daemon restart. IDs refer to the lane reports.
 
 | Change | Saving |
 | --- | --- |
-| Paste while the overlay fades (D7). The helper reports `override_redirect` once per launch, and the daemon then sends Dismiss without waiting; it falls back to today's wait if the check fails. Re-run `packaging/test-overlay-desktop.py` (LAT-1 / LNX-2 / COR report) | −165 ms p50, every dictation |
+| Paste while the overlay fades (D7). The helper reports `override_redirect` once per launch, and the daemon then sends Dismiss without waiting; it falls back to today's wait if the check fails. Re-run `scripts/test-overlay-desktop.py` (LAT-1 / LNX-2 / COR report) | −165 ms p50, every dictation |
 | Start path in parallel: start the mic first and duck on the ducking thread; `pw-record --latency=20ms`; launch the overlay helper at the key press (LNX-3 / LAT-7 / LAT-8) | recording ~98 → ~50 ms; overlay ~100 ms sooner |
 | Replace the `yield_now` busy-spins in recorder and subprocess waits with a pidfd poll or short sleeps (LNX-5) | ~50 ms of pegged CPU per recording |
 | Read focus with `x11rb` instead of 4 `xdotool`/`xprop` spawns (LAT-9) | −15 ms |
@@ -207,7 +207,7 @@ and a daemon restart. IDs refer to the lane reports.
 | Esc is ignored unless recording (an atomic check, no thread or IPC per keypress) (LNX-11) | fewer threads and log lines |
 
 The result should be p50 ≈ 1.35 s. Verify with the new stage log lines and
-`packaging/test-overlay-desktop.py`.
+`scripts/test-overlay-desktop.py`.
 
 ### Phase 2: delete dead weight
 

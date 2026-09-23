@@ -1,5 +1,5 @@
 //! Drives the production selection owner for
-//! `packaging/test-overlay-desktop.py` on its private desktop. Never point
+//! `scripts/test-overlay-desktop.py` on its private desktop. Never point
 //! it at a real session: publishing takes that session's clipboard.
 //!
 //! Reads one command per line on stdin and answers each on stdout:
