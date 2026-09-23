@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
-use gpui::{AppContext, Context, Entity, ScrollHandle, Window};
+use gpui::{AppContext, Context, Entity, ScrollHandle, Task, Window};
 use gpui_component::input::{InputEvent, InputState};
 
 use crate::{
@@ -71,6 +71,17 @@ pub(super) struct RouteUiState {
     pub(super) overview_recent_expanded: bool,
     /// History rows showing their whole transcript.
     pub(super) expanded_transcripts: HashSet<i64>,
+    pub(super) copied_transcript: Option<CopiedTranscript>,
+}
+
+/// How long a Copy button reads "Copied ✓" after its copy succeeds.
+pub(super) const COPIED_FEEDBACK: Duration = Duration::from_millis(1_500);
+
+/// The transcript whose Copy button reads "Copied ✓", with the timer that
+/// resets it. Replacing it drops, and so cancels, the previous timer.
+pub(super) struct CopiedTranscript {
+    pub(super) id: i64,
+    _reset: Task<()>,
 }
 
 impl RouteUiState {
@@ -139,6 +150,7 @@ impl SettingsShell {
             pending_destructive_action: None,
             overview_recent_expanded: false,
             expanded_transcripts: HashSet::new(),
+            copied_transcript: None,
         };
 
         Self {
@@ -183,6 +195,26 @@ impl SettingsShell {
             self.routes.expanded_transcripts.insert(id);
         }
         cx.notify();
+    }
+
+    /// Shows "Copied ✓" on transcript `id`'s Copy buttons for
+    /// [`COPIED_FEEDBACK`].
+    pub(super) fn show_copied(&mut self, id: i64, cx: &mut Context<Self>) {
+        let reset = cx.spawn(async move |shell, cx| {
+            cx.background_executor().timer(COPIED_FEEDBACK).await;
+            let _ = shell.update(cx, |shell, cx| {
+                shell.routes.copied_transcript = None;
+                cx.notify();
+            });
+        });
+        self.routes.copied_transcript = Some(CopiedTranscript { id, _reset: reset });
+    }
+
+    pub(super) fn copied_transcript(&self) -> Option<i64> {
+        self.routes
+            .copied_transcript
+            .as_ref()
+            .map(|copied| copied.id)
     }
 
     pub(super) fn select_route(&mut self, route: Route, cx: &mut Context<Self>) {

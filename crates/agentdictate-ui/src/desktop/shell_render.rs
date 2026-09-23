@@ -34,6 +34,7 @@ enum RoutePageModel {
         history: HistoryViewModel,
         recent_transcripts: Vec<TranscriptViewModel>,
         recent_expanded: bool,
+        copied_transcript: Option<i64>,
     },
     History(HistoryPageModel),
     Replacements {
@@ -54,6 +55,7 @@ impl RoutePageModel {
                 history: workspace.history.clone(),
                 recent_transcripts: workspace.recent_transcripts.clone(),
                 recent_expanded: shell.routes.overview_recent_expanded,
+                copied_transcript: shell.copied_transcript(),
             },
             Route::History => Self::History(HistoryPageModel {
                 history: workspace.history.clone(),
@@ -61,6 +63,7 @@ impl RoutePageModel {
                 feedback: shell.routes.entry(Route::History).feedback.clone(),
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
                 expanded_transcripts: shell.routes.expanded_transcripts.clone(),
+                copied_transcript: shell.copied_transcript(),
             }),
             Route::Replacements => Self::Replacements {
                 replacements: workspace.replacements.clone(),
@@ -106,11 +109,13 @@ impl RoutePageModel {
                 history,
                 recent_transcripts,
                 recent_expanded,
+                copied_transcript,
             } => overview::surface(
                 usage,
                 history,
                 recent_transcripts,
                 recent_expanded,
+                copied_transcript,
                 theme,
                 cx,
             ),

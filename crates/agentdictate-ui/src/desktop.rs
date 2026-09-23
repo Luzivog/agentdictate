@@ -22,6 +22,7 @@ mod history_page;
 mod overlay_view;
 mod overview;
 mod replacements_page;
+mod row_actions;
 mod settings_actions;
 mod settings_form;
 mod settings_page;

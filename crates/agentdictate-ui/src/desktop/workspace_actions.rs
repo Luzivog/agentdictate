@@ -36,6 +36,10 @@ impl SettingsShell {
         }
         let feedback_route = self.model.active_route;
         let success_feedback = action.success_feedback();
+        let copied_transcript = match action {
+            WorkspaceAction::CopyTranscript { id } => Some(id),
+            _ => None,
+        };
         let sink = Arc::clone(&self.workspace_actions.sink);
         let closes_editor = matches!(
             action,
@@ -61,6 +65,9 @@ impl SettingsShell {
                             }
                             if closes_editor {
                                 shell.routes.replacement_editor = None;
+                            }
+                            if let Some(id) = copied_transcript {
+                                shell.show_copied(id, cx);
                             }
                         }
                         Err(error) => {

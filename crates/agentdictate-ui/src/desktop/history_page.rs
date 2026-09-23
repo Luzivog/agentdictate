@@ -15,7 +15,8 @@ use crate::{
 };
 
 use super::{
-    SettingsShell, gpui_color, shell_render::workspace_feedback, single_line::single_line_clip,
+    SettingsShell, gpui_color, row_actions::copy_button, shell_render::workspace_feedback,
+    single_line::single_line_clip,
 };
 
 const RECOVERY_ROW_HEIGHT: f32 = 58.0;
@@ -27,6 +28,7 @@ pub(super) struct HistoryPageModel {
     pub(super) feedback: Option<String>,
     pub(super) pending_destructive_action: Option<WorkspaceAction>,
     pub(super) expanded_transcripts: HashSet<i64>,
+    pub(super) copied_transcript: Option<i64>,
 }
 
 /// Renders recovery and transcript history as one dense, flat document.
@@ -44,6 +46,7 @@ pub(super) fn surface(
         feedback,
         pending_destructive_action,
         expanded_transcripts,
+        copied_transcript,
     } = model;
     let has_recoveries = history.recovery.has_items();
     let recovery_detail = history.recovery.detail.clone();
@@ -140,7 +143,8 @@ pub(super) fn surface(
                 })
                 .children(transcripts.into_iter().map(|transcript| {
                     let expanded = expanded_transcripts.contains(&transcript.id);
-                    transcript_row(transcript, expanded, theme, cx)
+                    let copied = copied_transcript == Some(transcript.id);
+                    transcript_row(transcript, expanded, copied, theme, cx)
                 }))
                 .when(has_more, |section| {
                     section.child(
@@ -315,14 +319,13 @@ fn recovery_row(
 fn transcript_row(
     transcript: TranscriptViewModel,
     expanded: bool,
+    copied: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
     let id = transcript.id;
     let row_selector = format!("history-transcript-item-{id}");
     let toggle_selector = format!("history-transcript-toggle-{id}");
-    let action = WorkspaceAction::CopyTranscript { id };
-    let action_selector = action.selector();
     let metadata = format!(
         "{} · {} words · {}",
         transcript.created_at, transcript.word_count, transcript.duration
@@ -370,14 +373,5 @@ fn transcript_row(
                         .text_color(gpui_color(theme.text_muted)),
                 ),
         )
-        .child(
-            action_button(SharedString::from(action_selector.clone()))
-                .debug_selector(move || action_selector)
-                .small()
-                .label("Copy")
-                .on_click(cx.listener(move |shell, _, _, cx| {
-                    shell.emit_workspace_action(action.clone(), cx);
-                    cx.notify();
-                })),
-        )
+        .child(copy_button(id, copied, cx))
 }

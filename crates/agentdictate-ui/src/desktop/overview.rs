@@ -11,7 +11,7 @@ use crate::{
     UsageViewModel, WorkspaceAction,
 };
 
-use super::{SettingsShell, gpui_color, single_line::single_line_clip};
+use super::{SettingsShell, gpui_color, row_actions::copy_button, single_line::single_line_clip};
 
 const CHART_HEIGHT: f32 = 280.0;
 const AXIS_GAP: f32 = 18.0;
@@ -25,6 +25,7 @@ pub(super) fn surface(
     history: HistoryViewModel,
     recent_transcripts: Vec<TranscriptViewModel>,
     recent_history_expanded: bool,
+    copied_transcript: Option<i64>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -91,6 +92,7 @@ pub(super) fn surface(
         .child(recent_history(
             recent_transcripts,
             recent_history_expanded,
+            copied_transcript,
             theme,
             cx,
         ))
@@ -381,6 +383,7 @@ fn recovery_notice(
 fn recent_history(
     transcripts: Vec<TranscriptViewModel>,
     expanded: bool,
+    copied_transcript: Option<i64>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -448,7 +451,7 @@ fn recent_history(
                 "{} · {} words · {}",
                 transcript.created_at, transcript.word_count, transcript.duration
             );
-            let action = WorkspaceAction::CopyTranscript { id: transcript.id };
+            let copied = copied_transcript == Some(transcript.id);
             h_flex()
                 .debug_selector(move || selector)
                 .h(px(48.))
@@ -468,19 +471,7 @@ fn recent_history(
                                 .text_color(gpui_color(theme.text_muted)),
                         ),
                 )
-                .child(
-                    action_button(SharedString::from(action.selector()))
-                        .debug_selector({
-                            let selector = action.selector();
-                            move || selector.clone()
-                        })
-                        .small()
-                        .label("Copy")
-                        .on_click(cx.listener(move |shell, _, _, cx| {
-                            shell.emit_workspace_action(action.clone(), cx);
-                            cx.notify();
-                        })),
-                )
+                .child(copy_button(transcript.id, copied, cx))
         }))
         .when(can_expand, |section| {
             section.child(

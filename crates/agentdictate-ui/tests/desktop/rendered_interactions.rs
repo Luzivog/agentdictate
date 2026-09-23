@@ -9,6 +9,7 @@ use std::{
     ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use agentdictate_core::{
@@ -1116,6 +1117,42 @@ fn clicking_a_transcript_expands_its_whole_text_and_clicking_again_collapses_it(
     assert!(!harness.has("history-transcript-text-41"));
     assert!(harness.has("history-transcript-title-41"));
     assert_eq!(harness.bounds("history-transcript-item-41"), collapsed);
+}
+
+#[gpui::test]
+fn a_successful_copy_says_copied_on_its_button_for_a_moment(cx: &mut TestAppContext) {
+    let (mut harness, actions) = open_history_recording_actions(
+        cx,
+        vec![
+            TranscriptViewModel::new(41, "Today 14:18", "Ship the recovery flow.", 4, "0:03"),
+            TranscriptViewModel::new(42, "Today 14:20", "And the release notes.", 4, "0:03"),
+        ],
+    );
+
+    harness.click("history-copy-transcript-41");
+
+    assert_eq!(
+        actions.lock().expect("action lock").as_slice(),
+        &[WorkspaceAction::CopyTranscript { id: 41 }]
+    );
+    assert!(harness.has("copied-history-copy-transcript-41"));
+    assert!(harness.has("history-copy-transcript-42"));
+    assert!(!harness.has("workspace-feedback"));
+
+    harness
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(1_400));
+    harness.cx.run_until_parked();
+    assert!(harness.has("copied-history-copy-transcript-41"));
+
+    harness
+        .cx
+        .executor()
+        .advance_clock(Duration::from_millis(200));
+    harness.cx.run_until_parked();
+    assert!(!harness.has("copied-history-copy-transcript-41"));
+    assert!(harness.has("history-copy-transcript-41"));
 }
 
 #[gpui::test]
