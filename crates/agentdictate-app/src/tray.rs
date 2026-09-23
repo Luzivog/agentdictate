@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc::{self, Sender},
     thread::JoinHandle,
 };
@@ -199,12 +199,52 @@ fn execute_tray_action(
 
 /// Opens the settings window, or raises the one already open.
 pub(crate) fn open_settings_window(settings_executable: &Path) -> std::io::Result<()> {
-    drop(
-        Command::new(settings_executable)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?,
-    );
+    let window = Command::new(settings_executable)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    reap_on_exit(window);
     Ok(())
+}
+
+/// Waits for `child` on its own thread, so it leaves no defunct process
+/// behind when it exits while the daemon keeps running.
+fn reap_on_exit(mut child: Child) {
+    let pid = child.id();
+    let spawned = std::thread::Builder::new()
+        .name("agentdictate-window-reaper".to_owned())
+        .spawn(move || {
+            if let Err(error) = child.wait() {
+                tracing::warn!(pid, %error, "could not wait for the settings window to exit");
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(pid, %error, "the settings window will stay defunct after it exits");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn an_exited_window_process_is_reaped() {
+        let child = Command::new("true").spawn().unwrap();
+        let stat = PathBuf::from(format!("/proc/{}/stat", child.id()));
+
+        reap_on_exit(child);
+
+        // A defunct child keeps its /proc entry, in state Z, until reaped.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while let Ok(stat_line) = std::fs::read_to_string(&stat) {
+            assert!(
+                Instant::now() < deadline,
+                "the exited child was never reaped: {stat_line}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
