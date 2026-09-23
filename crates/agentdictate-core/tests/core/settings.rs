@@ -3,24 +3,30 @@ use agentdictate_core::{
 };
 
 #[test]
-fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
+fn stored_settings_keep_their_values_and_ignore_retired_or_unknown_fields() {
     let settings: Settings = serde_json::from_str(
         r#"{
+            "hotkey": "Alt+Space",
+            "max_recording_seconds": 45,
             "transcription_model": "Custom",
             "custom_transcription_model": "my-transcriber",
-            "cleanup_enabled": true,
             "transcription_provider": "chatgpt_subscription",
-            "hotkey": "Ctrl+Space",
-            "future_python_field": "ignored"
+            "cleanup_enabled": true,
+            "transcription_prices": {},
+            "cleanup_prices": {},
+            "field_from_a_newer_version": "ignored"
         }"#,
     )
     .unwrap();
 
-    assert_eq!(settings.transcription_model, TRANSCRIPTION_MODEL);
-    assert_eq!(settings.max_recording_seconds, 300);
-    assert_eq!(settings.audio_ducking_volume_percent, 15);
-    assert_eq!(settings.audio_ducking_fade_out_ms, 600);
-    assert_eq!(settings.audio_ducking_fade_in_ms, 600);
+    assert_eq!(
+        settings,
+        Settings {
+            hotkey: "Alt+Space".into(),
+            max_recording_seconds: 45,
+            ..Settings::default()
+        }
+    );
 }
 
 #[test]

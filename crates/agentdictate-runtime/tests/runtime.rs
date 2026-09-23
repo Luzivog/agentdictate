@@ -4,8 +4,8 @@ mod durable_runtime;
 mod history_usage;
 #[path = "runtime/ipc_round_trip.rs"]
 mod ipc_round_trip;
-#[path = "runtime/migration_parity.rs"]
-mod migration_parity;
+#[path = "runtime/migrations.rs"]
+mod migrations;
 #[path = "runtime/recovery.rs"]
 mod recovery;
 #[path = "runtime/support.rs"]

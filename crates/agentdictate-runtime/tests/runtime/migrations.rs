@@ -11,30 +11,6 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 #[test]
-fn python_settings_json_keeps_values_and_ignores_retired_fields() {
-    let directory = TempDir::new().unwrap();
-    let settings_path = directory.path().join("config.json");
-    fs::write(
-        &settings_path,
-        r#"{
-  "hotkey": "Alt+Space",
-  "max_recording_seconds": 45,
-  "cleanup_enabled": false,
-  "transcription_prices": {},
-  "cleanup_prices": {},
-  "future_python_field": "ignored"
-}
-"#,
-    )
-    .unwrap();
-
-    let settings = load_settings(&settings_path).unwrap();
-
-    assert_eq!(settings.hotkey, "Alt+Space");
-    assert_eq!(settings.max_recording_seconds, 45);
-}
-
-#[test]
 fn settings_replacement_is_private_and_leaves_no_partial_file() {
     let directory = TempDir::new().unwrap();
     let settings_path = directory.path().join("config.json");
