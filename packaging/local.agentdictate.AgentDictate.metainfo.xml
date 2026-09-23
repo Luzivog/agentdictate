@@ -16,6 +16,18 @@
     </p>
   </description>
   <releases>
+    <release version="0.3.0" date="2026-09-23">
+      <description>
+        <ul>
+          <li>A first-run Setup in the window checks your OpenAI API key, tests the microphone and grants input access, and Home shows whether dictation is ready or what to fix.</li>
+          <li>Dictation is faster and sturdier: audio is encoded while you record, a dropped connection is retried once, and the app stays responsive while OpenAI transcribes.</li>
+          <li>When a dictation is not pasted, the overlay and a notification say so, and Paste last dictation in the tray, a notification or a keyboard shortcut pastes it again.</li>
+          <li>History can be searched, keeps transcripts as long as you choose, and Delete removes them for good. A new Words screen teaches AgentDictate how to spell names.</li>
+          <li>Settings apply as soon as you change them, and a recording longer than 5 seconds that you cancel with Esc waits in Recovery for a day.</li>
+          <li>The ChatGPT subscription route, the ChatGPT history import, text cleanup and Replacements are gone; Replacements moved into Words.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-08-24" />
   </releases>
   <launchable type="desktop-id">local.agentdictate.AgentDictate.desktop</launchable>
