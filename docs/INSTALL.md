@@ -8,8 +8,12 @@ install the runtime and build dependencies:
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
   libfontconfig1-dev libfreetype6-dev libvulkan1 x11-utils \
-  pipewire-bin xsel xdotool
+  pipewire-bin pulseaudio-utils xsel xdotool ffmpeg
 ```
+
+`pulseaudio-utils` provides `pactl`, which lowers other audio while you
+dictate. `ffmpeg` compresses each recording before upload; without it,
+AgentDictate uploads the raw WAV, about 8 times larger.
 
 Debian 13 uses the same package list. Paste injection is built into
 AgentDictate (an in-process uinput virtual keyboard) and needs write access to

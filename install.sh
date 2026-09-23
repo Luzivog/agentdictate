@@ -98,6 +98,9 @@ echo "Installed native AgentDictate:"
 echo "  ${BIN_DIR}/agentdictate"
 echo "  ${BIN_DIR}/agentdictated"
 echo "  ${SERVICE_TARGET}"
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "Warning: ffmpeg is missing, so recordings upload uncompressed (about 8x larger); install it with: sudo apt install ffmpeg" >&2
+fi
 
 if ! agentdictate_check_native_readiness; then
   cat >&2 <<EOF
