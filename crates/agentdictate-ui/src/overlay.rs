@@ -348,9 +348,10 @@ fn fade_progress(elapsed: Duration, span: Duration) -> f32 {
 
 /// Presentation state derived from the workflow.
 ///
-/// The transient window intentionally mirrors the previous overlay and opens
-/// only while recording, transcribing, or cleaning, then lingers up to
-/// `OVERLAY_FADE_HOLD` while it fades out. Recovery remains durable in
+/// The transient window opens at the start request, so its window is ready
+/// by the time the microphone is, and stays open while recording,
+/// transcribing, or cleaning, then lingers up to `OVERLAY_FADE_HOLD` while it
+/// fades out. Recovery remains durable in
 /// History rather than turning the overlay into a second action surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OverlayState {
@@ -374,7 +375,17 @@ impl OverlayState {
     }
 
     pub const fn is_visible(&self) -> bool {
-        matches!(self, Self::Recording | Self::Transcribing | Self::Cleaning)
+        matches!(
+            self,
+            Self::Starting | Self::Recording | Self::Transcribing | Self::Cleaning
+        )
+    }
+
+    /// Whether the overlay shows the recording card. While starting it is the
+    /// same card with flat bars and a stopped timer, so the switch to live
+    /// audio is quiet.
+    pub const fn shows_recording_card(&self) -> bool {
+        matches!(self, Self::Starting | Self::Recording)
     }
 
     pub const fn window_policy(&self) -> OverlayWindowPolicy {

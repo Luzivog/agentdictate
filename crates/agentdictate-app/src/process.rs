@@ -760,6 +760,7 @@ mod tests {
             .unwrap()
             .start_recording(
                 RecordingRequest {
+                    id: agentdictate_core::JobId::new(),
                     options: None,
                     audio_path: directory.path().join("recording.wav"),
                     started_at: chrono::Utc::now(),

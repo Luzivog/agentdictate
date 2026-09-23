@@ -136,6 +136,7 @@ pub(super) struct OverlayChild {
     child: Child,
     input: Option<ChildStdin>,
     generation: u64,
+    launched_at: Instant,
     ready: bool,
     override_redirect: bool,
 }
@@ -218,6 +219,7 @@ impl OverlayChild {
             child,
             input: Some(input),
             generation,
+            launched_at: Instant::now(),
             ready: false,
             override_redirect: false,
         })
@@ -225,6 +227,11 @@ impl OverlayChild {
 
     pub(super) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Milliseconds since the helper process was spawned, for startup logs.
+    pub(super) fn since_launch_ms(&self) -> u64 {
+        u64::try_from(self.launched_at.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     pub(super) fn mark_ready(&mut self) {

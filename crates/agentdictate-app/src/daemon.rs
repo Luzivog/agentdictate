@@ -174,10 +174,10 @@ where
         }
         fs::create_dir_all(&self.paths.recordings)?;
         let now = Utc::now();
+        let job_id = JobId::new();
         let path = self.paths.recordings.join(format!(
-            "dictation-{}-{}.wav",
+            "dictation-{}-{job_id}.wav",
             now.format("%Y%m%dT%H%M%S%.fZ"),
-            JobId::new()
         ));
         let mut recording_settings = self.settings.clone();
         recording_settings.cleanup_enabled = false;
@@ -193,13 +193,21 @@ where
             }
             recording_settings.dictation_mode = mode;
         }
+        let options = agentdictate_core::DictationOptions::from_settings(
+            &recording_settings,
+            self.runtime.replacement_rules()?,
+        );
+        // Publishing Starting before the recorder comes up lets the overlay
+        // helper open its window in parallel with the microphone.
+        self.workflow
+            .apply(WorkflowSignal::StartRequested { job_id })?;
+        self.sequence += 1;
+        self.publish_overlay_update();
         let job = match self.runtime.start_recording(
             RecordingRequest {
-                options: Some(agentdictate_core::DictationOptions::from_settings(
-                    &recording_settings,
-                    self.runtime.replacement_rules()?,
-                )),
-                audio_path: path.clone(),
+                id: job_id,
+                options: Some(options),
+                audio_path: path,
                 started_at: now,
                 transcription_provider: self.settings.transcription_provider,
                 transcription_model: self.settings.active_transcription_model().to_owned(),
@@ -208,27 +216,10 @@ where
         ) {
             Ok(job) => job,
             Err(error) => {
-                if let Some(failed) = self
-                    .runtime
-                    .recoverable_jobs()?
-                    .into_iter()
-                    .find(|job| job.audio_path == path)
-                {
-                    self.workflow
-                        .apply(WorkflowSignal::StartRequested { job_id: failed.id })?;
-                    self.settle(
-                        failed.id,
-                        WorkflowSignal::Interrupted {
-                            job_id: failed.id,
-                            at: failed.stage,
-                        },
-                    );
-                }
+                self.abandon_start(job_id);
                 return Err(error.into());
             }
         };
-        self.workflow
-            .apply(WorkflowSignal::StartRequested { job_id: job.id })?;
         self.workflow
             .apply(WorkflowSignal::FirstAudioFrameWritten { job_id: job.id })?;
         self.transcriber.begin_recording(&job);
@@ -249,6 +240,30 @@ where
             "recording ready"
         );
         Ok(job)
+    }
+
+    /// Ends a start whose recorder or checkpoint failed. A job the runtime
+    /// kept for Recovery needs attention; otherwise nothing was recorded and
+    /// the workflow returns to Ready, closing the overlay.
+    fn abandon_start(&mut self, job_id: JobId) {
+        let kept_at = match self.runtime.recoverable_jobs() {
+            Ok(jobs) => jobs
+                .into_iter()
+                .find(|job| job.id == job_id)
+                .map(|job| job.stage),
+            Err(error) => {
+                tracing::error!(%job_id, %error, "could not read the failed start's recovery state");
+                None
+            }
+        };
+        match kept_at {
+            Some(at) => self.settle(job_id, WorkflowSignal::Interrupted { job_id, at }),
+            None => {
+                self.workflow = Workflow::new();
+                self.sequence += 1;
+                self.publish_overlay_update();
+            }
+        }
     }
 
     pub fn stop_recording(&mut self) -> Result<RecordingJob, DaemonError> {

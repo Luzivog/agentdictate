@@ -80,15 +80,7 @@ fn open_recording_overlay(
     &'static mut VisualTestContext,
 ) {
     test_support::initialize(cx);
-    let audio_path = std::env::temp_dir().join(format!(
-        "agentdictate-rendered-overlay-{}-{elapsed_millis}.wav",
-        std::process::id(),
-    ));
-    let mut wav = vec![0_u8; 44];
-    for sample in std::iter::repeat_n(16_384_i16, 2_816) {
-        wav.extend_from_slice(&sample.to_le_bytes());
-    }
-    fs::write(&audio_path, wav).expect("waveform fixture writes");
+    let audio_path = loud_wav(&elapsed_millis.to_string());
 
     let job_id = JobId::new();
     let mut workflow = Workflow::new();
@@ -105,6 +97,30 @@ fn open_recording_overlay(
             started_at_unix_millis: now_unix_millis().saturating_sub(elapsed_millis),
         }),
     };
+    let (overlay, cx) = open_overlay(cx, presentation);
+    (audio_path, overlay, cx)
+}
+
+fn loud_wav(name: &str) -> PathBuf {
+    let audio_path = std::env::temp_dir().join(format!(
+        "agentdictate-rendered-overlay-{}-{name}.wav",
+        std::process::id(),
+    ));
+    let mut wav = vec![0_u8; 44];
+    for sample in std::iter::repeat_n(16_384_i16, 2_816) {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    fs::write(&audio_path, wav).expect("waveform fixture writes");
+    audio_path
+}
+
+fn open_overlay(
+    cx: &mut TestAppContext,
+    presentation: OverlayPresentation,
+) -> (
+    gpui::Entity<RecordingOverlay>,
+    &'static mut VisualTestContext,
+) {
     let overlay = cx.new(|_| RecordingOverlay::from_presentation(presentation));
     let root = overlay.clone();
     let window = cx.update(|cx| {
@@ -123,7 +139,7 @@ fn open_recording_overlay(
     let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
     cx.run_until_parked();
 
-    (audio_path, overlay, cx)
+    (overlay, cx)
 }
 
 fn assert_recording_content_fits(cx: &mut VisualTestContext) {
@@ -180,5 +196,59 @@ fn dismissal_preserves_the_rendered_card_while_it_fades(cx: &mut TestAppContext)
     assert_eq!(opacity(cx), 0.0);
     cx.debug_bounds("recording-overlay-card")
         .expect("card remains until its owner closes the window");
+    fs::remove_file(audio_path).unwrap();
+}
+
+#[gpui::test]
+fn starting_shows_a_still_recording_card_that_goes_live_with_the_microphone(
+    cx: &mut TestAppContext,
+) {
+    test_support::initialize(cx);
+    let audio_path = loud_wav("starting");
+    let job_id = JobId::new();
+    let mut workflow = Workflow::new();
+    workflow
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    let (overlay, cx) = open_overlay(
+        cx,
+        OverlayPresentation {
+            workflow: workflow.snapshot(),
+            active_recording: None,
+        },
+    );
+    let bar_height = |cx: &mut VisualTestContext| {
+        cx.debug_bounds("recording-overlay-wave-10")
+            .expect("waveform bar renders")
+            .size
+            .height
+    };
+    let still = bar_height(cx);
+    cx.debug_bounds("recording-overlay-timer")
+        .expect("the stopped timer renders");
+    assert!(
+        cx.debug_bounds("recording-overlay-busy-dot-0").is_none(),
+        "starting must not look like processing"
+    );
+
+    workflow
+        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
+        .unwrap();
+    overlay.update(cx, |overlay, cx| {
+        overlay.set_presentation(OverlayPresentation {
+            workflow: workflow.snapshot(),
+            active_recording: Some(ActiveRecordingPresentation {
+                audio_path: audio_path.clone(),
+                started_at_unix_millis: now_unix_millis(),
+            }),
+        });
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    assert!(
+        bar_height(cx) > still,
+        "the waveform follows the microphone"
+    );
     fs::remove_file(audio_path).unwrap();
 }

@@ -33,16 +33,17 @@ fn overlay_process_exists_only_while_a_status_surface_is_visible() {
     recording
         .apply(WorkflowSignal::StartRequested { job_id })
         .unwrap();
+    // The helper launches at the start request, in parallel with the recorder.
     assert_eq!(
         state.transition(&update(&recording)),
-        OverlayProcessAction::StayHeadless
+        OverlayProcessAction::Launch
     );
     recording
         .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
         .unwrap();
     assert_eq!(
         state.transition(&update(&recording)),
-        OverlayProcessAction::Launch
+        OverlayProcessAction::Update
     );
     assert_eq!(
         state.transition(&update(&Workflow::new())),

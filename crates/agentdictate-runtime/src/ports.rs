@@ -119,6 +119,9 @@ pub struct RecordingJob {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordingRequest {
+    /// Chosen by the caller, so it can show the job as starting while the
+    /// recorder is still coming up.
+    pub id: JobId,
     pub options: Option<agentdictate_core::DictationOptions>,
     pub audio_path: PathBuf,
     pub started_at: DateTime<Utc>,

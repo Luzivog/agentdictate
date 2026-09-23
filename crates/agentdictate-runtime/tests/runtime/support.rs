@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use agentdictate_core::TranscriptionProvider;
+use agentdictate_core::{JobId, TranscriptionProvider};
 use agentdictate_runtime::{ExternalError, Recorder, RecordingJob, RecordingRequest};
 use chrono::{TimeZone, Utc};
 
@@ -26,6 +26,7 @@ pub(crate) fn request_with_provider(
     transcription_model: &str,
 ) -> RecordingRequest {
     RecordingRequest {
+        id: JobId::new(),
         options: None,
         audio_path: audio_path.to_owned(),
         started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),

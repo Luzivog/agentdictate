@@ -1,4 +1,4 @@
-use agentdictate_core::AppliedReplacement;
+use agentdictate_core::{AppliedReplacement, JobId};
 use agentdictate_runtime::{
     ExternalDictationImportOutcome, ExternalDictationReceipt, ExternalDictationSource, JobStage,
     RecordingRequest, Runtime,
@@ -118,6 +118,7 @@ fn background_writer_open_does_not_reconcile_the_live_recording() {
     let job = runtime
         .start_recording(
             RecordingRequest {
+                id: JobId::new(),
                 options: None,
                 audio_path: directory.path().join("active.wav"),
                 started_at: Utc::now(),

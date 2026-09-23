@@ -71,7 +71,9 @@ retry are unaffected. Each transcription and cleanup request logs its payload
 size, encode time, and request time. Per dictation, the daemon logs the time
 from the start command to the first audio (`capture_ready_ms`), the focus,
 clipboard, and paste-chord stages of delivery, the overlay gate wait, and both
-stop-to-paste and stop-to-flow-complete times.
+stop-to-paste and stop-to-flow-complete times. The overlay helper launches at
+the start command, in parallel with the recorder, and its window-created and
+first-frame lines carry the time since launch (`since_launch_ms`).
 
 ## Daemon And Settings App Communication
 

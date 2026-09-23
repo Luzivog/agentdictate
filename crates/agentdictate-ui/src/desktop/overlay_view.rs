@@ -120,9 +120,10 @@ impl Render for RecordingOverlay {
         let label = self.state.label().to_owned();
         let stable_id = self.state.stable_id().to_owned();
         let recording = self.state == OverlayState::Recording;
+        let recording_card = self.state.shows_recording_card();
         // Processing states (transcribing, cleaning) animate a small pulsing
         // ellipsis so the helper visibly shows work in progress.
-        let busy = self.state.is_visible() && !recording;
+        let busy = self.state.is_visible() && !recording_card;
         let now = cx.background_executor().now();
         let shown_at = *self.shown_at.get_or_insert(now);
         let since_shown = now.saturating_duration_since(shown_at);
@@ -218,7 +219,7 @@ impl Render for RecordingOverlay {
                         .border_1()
                         .border_color(gpui::rgba(0xffffff1c))
                         .bg(gpui::rgba(0x111112f2))
-                        .when(recording, |card| {
+                        .when(recording_card, |card| {
                             card.children(bars.into_iter().enumerate().map(|(index, bar)| {
                                 gpui::div()
                                     .debug_selector(move || {
@@ -249,7 +250,7 @@ impl Render for RecordingOverlay {
                                     .child(timer),
                             )
                         })
-                        .when(!recording, |card| {
+                        .when(!recording_card, |card| {
                             card.child(
                                 gpui::div()
                                     .size_full()

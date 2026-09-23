@@ -172,7 +172,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc::sync_channel;
 
-    use agentdictate_core::TranscriptionProvider;
+    use agentdictate_core::{JobId, TranscriptionProvider};
     use chrono::Utc;
     use rusqlite::params;
     use tempfile::tempdir;
@@ -221,6 +221,7 @@ mod tests {
         let job = foreground
             .start_recording(
                 RecordingRequest {
+                    id: JobId::new(),
                     options: None,
                     audio_path: directory.path().join("recording.wav"),
                     started_at: Utc::now(),

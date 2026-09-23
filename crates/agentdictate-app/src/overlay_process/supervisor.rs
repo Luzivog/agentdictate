@@ -445,13 +445,18 @@ impl<'a> OverlaySupervisor<'a> {
                 tracing::info!(
                     generation,
                     override_redirect,
+                    since_launch_ms = child.since_launch_ms(),
                     "recording overlay window created; awaiting a submitted frame"
                 );
             }
             Ok(OverlayHelperStatus::FrameSubmitted) => {
                 child.mark_ready();
                 self.health.set_unavailable(false);
-                tracing::info!(generation, "recording overlay first frame submitted");
+                tracing::info!(
+                    generation,
+                    since_launch_ms = child.since_launch_ms(),
+                    "recording overlay first frame submitted"
+                );
             }
             Ok(OverlayHelperStatus::Error { message }) => {
                 tracing::warn!(generation, %message, "recording overlay helper presentation failed");

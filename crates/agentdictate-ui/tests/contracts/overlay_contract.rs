@@ -46,8 +46,9 @@ fn vendored_gpui_x11_popup_bypasses_the_window_manager() {
 }
 
 #[test]
-fn overlay_visibility_matches_the_previous_three_active_presentations() {
+fn overlay_opens_at_the_start_request_and_stays_through_processing() {
     for state in [
+        OverlayState::Starting,
         OverlayState::Recording,
         OverlayState::Transcribing,
         OverlayState::Cleaning,
@@ -60,7 +61,6 @@ fn overlay_visibility_matches_the_previous_three_active_presentations() {
     let state = OverlayState::recoverable_failure("Could not paste", "Copy again");
     for state in [
         OverlayState::Hidden,
-        OverlayState::Starting,
         OverlayState::Finishing,
         OverlayState::ReadyToDeliver,
         OverlayState::Delivering,

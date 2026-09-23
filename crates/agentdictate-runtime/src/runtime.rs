@@ -95,7 +95,7 @@ impl Runtime {
         request: RecordingRequest,
         recorder: &mut impl Recorder,
     ) -> Result<RecordingJob, RuntimeError> {
-        let id = JobId::new();
+        let id = request.id;
         let now = timestamp(Utc::now());
         self.connection.execute(
             r#"

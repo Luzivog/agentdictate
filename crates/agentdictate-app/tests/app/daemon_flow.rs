@@ -196,7 +196,7 @@ fn daemon_waits_for_an_unconfirmed_overlay_to_exit_before_delivery() {
     std::fs::write(
         &executable,
         format!(
-            "#!/bin/sh\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nwhile IFS= read -r line; do :; done\nprintf 'exited' > '{}'\n",
+            "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done\nprintf 'exited' > '{}'\n",
             received.display(),
             helper_exited.display(),
         ),
@@ -230,8 +230,19 @@ fn daemon_waits_for_an_unconfirmed_overlay_to_exit_before_delivery() {
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert!(daemon.deliverer().delivered_after_exit);
     assert_eq!(std::fs::read_to_string(helper_exited).unwrap(), "exited");
-    let encoded = std::fs::read_to_string(received).unwrap();
-    let recording: OverlayUpdate = serde_json::from_str(&encoded).unwrap();
+    let received = std::fs::read_to_string(received).unwrap();
+    let updates = received
+        .lines()
+        .map(|line| serde_json::from_str::<OverlayUpdate>(line).unwrap())
+        .collect::<Vec<_>>();
+    // The helper launches at the start request, before the microphone is ready.
+    assert_eq!(
+        updates[0].workflow.phase,
+        WorkflowPhase::Starting { job_id: started.id }
+    );
+    assert_eq!(updates[0].active_recording, None);
+    let encoded = received.lines().nth(1).unwrap();
+    let recording = &updates[1];
     assert_eq!(
         recording
             .active_recording
