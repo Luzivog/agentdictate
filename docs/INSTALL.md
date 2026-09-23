@@ -1,9 +1,17 @@
-# Install and develop AgentDictate
+# Install AgentDictate
 
 ## Requirements
 
-AgentDictate targets Linux desktop sessions on Wayland and X11. On Ubuntu 24.04,
-install the runtime and build dependencies:
+- A Linux desktop session on Wayland or X11. Wayland sessions need XWayland, which
+  AgentDictate uses for its overlay, focus reading, and clipboard. GNOME on Ubuntu
+  24.04 is the tested setup, and Debian 13 uses the same packages.
+- A running PipeWire session and a working systemd user manager.
+- An [OpenAI Platform](https://platform.openai.com/) API key. Transcription is billed
+  to that account.
+- Rust through [rustup](https://rustup.rs/), for building from source. The
+  repository pins Rust 1.95.0 in `rust-toolchain.toml`.
+
+On Ubuntu 24.04 or Debian 13, install the build and runtime packages:
 
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
@@ -11,180 +19,142 @@ sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x1
   pipewire-bin pulseaudio-utils ffmpeg
 ```
 
-`pulseaudio-utils` provides `pactl`, which lowers other audio while you
-dictate. `ffmpeg` compresses each recording before upload; without it,
-AgentDictate uploads the raw WAV, about 8 times larger.
+`pipewire-bin` provides `pw-record`, which records the microphone.
+`pulseaudio-utils` provides `pactl`, which lowers other audio while you dictate.
+`ffmpeg` compresses each recording before upload; without it, AgentDictate uploads
+the raw WAV, about 8 times larger. The clipboard and paste injection are built into
+AgentDictate and need no extra tools.
 
-Debian 13 uses the same package list. The clipboard and paste injection are
-built into AgentDictate: it serves the clipboard itself over X11 or XWayland,
-and pastes through an in-process uinput virtual keyboard, which needs write
-access to `/dev/uinput`, granted by the packaged udev rule.
+AgentDictate also has an experimental route that uses the ChatGPT account signed into
+the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) instead of an API key. It
+needs `codex login` with **Sign in with ChatGPT**.
 
-Install [Rust with rustup](https://rustup.rs/). The repository selects Rust
-1.95.0 through `rust-toolchain.toml`. Recording also requires a running
-PipeWire session and a graphical session with a working systemd user manager.
-
-For subscription STT, install the
-[Codex CLI](https://learn.chatgpt.com/docs/codex/cli), run `codex login`, and
-choose **Sign in with ChatGPT**. `codex login status` must report
-`Logged in using ChatGPT`. An API-key login cannot authenticate this route.
-
-## User-profile install
+## Install from source
 
 ```bash
-git clone https://github.com/luzivog/agentdictate.git
+git clone https://github.com/Luzivog/agentdictate.git
 cd agentdictate
 ./install.sh
 ```
 
-The installer builds the release binaries and copies the app, desktop entry,
-icon, and native-input support files into your user profile. It does not use
-`sudo` or start services.
+The installer builds the release binaries and installs, for your user only:
 
-On a fresh install, nothing runs until you open AgentDictate. The app then
-writes its `agentdictated.service` user unit, starts the daemon, and, while
-**Start on login** is on, enables the unit for later desktop logins. The daemon
-imports eligible ChatGPT desktop dictation transcripts and metadata into local
-SQLite. Before opening the app, read
-[Local data and network use](#local-data-and-network-use).
+- `agentdictate` and `agentdictated` in `~/.local/bin`;
+- the desktop entry and icon;
+- the input-access rule and its guide in `~/.local/share/agentdictate/native-access`.
 
-On a clean machine, installation can finish with exit status 2 after the files
-have been copied. This means native input still needs setup. Run
-`./install.sh --setup-native-access`: it shows the one `sudo` command it needs and
-what that command does, and asks before running it. See
-[`packaging/NATIVE_ACCESS.md`](../packaging/NATIVE_ACCESS.md) for details. After
-any logout and login, return to the cloned `agentdictate` directory. Then verify
-without rebuilding:
+It does not use `sudo`, and it never enables or starts a service. When you reinstall
+while the daemon is running, it restarts the daemon so the new build takes over. If
+the xkbcommon development packages are missing, it links against the runtime
+libraries through shims under `target/linker-shims`.
+
+The installer ends by checking native input access and exits with its status:
+
+| Exit status | Meaning | What to do |
+| --- | --- | --- |
+| 0 | Ready | Open AgentDictate. |
+| 2 | AgentDictate cannot read the keyboard or use `/dev/uinput` yet | Run `./install.sh --setup-native-access`. It shows the one `sudo` command it needs and asks first. |
+| 3 | Working, but another app's udev rule makes input devices world-accessible | AgentDictate works. The message names the rule to remove or narrow. |
+
+After granting access, you may need to log out and back in. Return to the cloned
+directory and check again without rebuilding:
 
 ```bash
 ./install.sh --check-native-access
 ```
 
-Continue when the final line is `Native input readiness: ready`. Exit status 3
-(`working, but insecure`) means AgentDictate works, but another app's udev rule
-makes input devices world-accessible; the message names that rule.
+[Native input access](../packaging/NATIVE_ACCESS.md) explains the rule and the
+manual steps.
 
-Run `agentdictate` or `~/.local/bin/agentdictate`. In **Settings**, set
-**Transcription source** to **ChatGPT subscription** and click **Save changes**.
-Press `Ctrl+Space` once to start
-recording. Before pressing it again, focus the destination app and keep it
-focused until AgentDictate submits the paste shortcut. The shortcut targets the
-app focused at paste time. AgentDictate confirms shortcut submission, not
-insertion into that app.
+## Packages
 
-Closing the settings window leaves the daemon, global shortcut, and transcript
-import running. Stop them with **Quit AgentDictate** in the tray or
-`systemctl --user stop agentdictated.service`.
+Tagged releases publish a Debian package and an AppImage on the
+[releases page](https://github.com/Luzivog/agentdictate/releases). The newest
+release can be older than `main`.
 
-**Start on login** controls the AgentDictate daemon only.
+- **Debian package.** `sudo apt install ./agentdictate_*.deb` installs the input
+  rule and applies it. You may need to log out and back in once.
+- **AppImage.** Run `./AgentDictate-*.AppImage setup-access` once to install the
+  input rule, then start the AppImage.
 
-## Run from source
-
-```bash
-./run.sh                 # isolated dev daemon plus the settings window
-./run.sh --service       # only the isolated dev daemon, in the foreground
-```
-
-Development runs keep their own data under `target/dev-home` and never touch
-the installed service. See [Run a development build](DEVELOPMENT.md#run-a-development-build).
-
-## Focused development
-
-See [Develop and verify AgentDictate](DEVELOPMENT.md) for the setup doctor,
-saved test feedback, headless desktop tests, benchmarks, debugging, and delivery.
-
-Use the narrowest command that covers the change:
-
-```bash
-cargo check --locked -p agentdictate-ui --features desktop
-cargo test --locked -p agentdictate-runtime --lib <test-filter>
-cargo test --locked -p agentdictate-ui --test contracts <test-filter>
-cargo clippy --locked -p agentdictate-ui --lib --features desktop -- -D warnings
-```
-
-After focused checks pass, `./run-tests.sh` is the one comprehensive gate. It
-tests every target and feature in the locked Rust workspace.
-
-## Build packages
+To build them yourself:
 
 ```bash
 packaging/build-deb.sh
 packaging/build-appimage.sh
 ```
 
-The Debian builder writes a package under `dist/` and requires Debian packaging
-tools such as `dpkg-dev`. The AppImage builder always creates `dist/AppDir` and
-creates an AppImage when `appimagetool` is available.
+The Debian builder writes the package to `dist/` and needs `dpkg-dev`. The AppImage
+builder always creates `dist/AppDir`, and creates the AppImage when `appimagetool` is
+on `PATH`, set in `APPIMAGETOOL`, or present in `dist/tools`. Build AppImages on the
+oldest glibc you want to support.
 
-Both formats require the native-input setup described in
-[`packaging/NATIVE_ACCESS.md`](../packaging/NATIVE_ACCESS.md). AppImages cannot
-install host udev policy. Build them on the oldest glibc version you intend to
-support.
+## Start and stop
+
+Nothing runs until you open AgentDictate from the app menu or with `agentdictate`.
+The first launch writes the `agentdictated.service` systemd user unit and starts the
+daemon. While **Start on login** is on, the daemon enables the unit so it starts with
+later desktop sessions. [The README](../README.md#first-use) covers first use.
+
+Closing the settings window leaves the daemon and the global shortcut running. Stop
+them with **Quit AgentDictate** in the tray, or with:
+
+```bash
+systemctl --user stop agentdictated.service
+```
+
+Turning **Start on login** off only affects future logins.
 
 ## Local data and network use
 
-When **ChatGPT subscription** is selected, AgentDictate uses an undocumented
-Codex App Server auth-status method to get an in-memory ChatGPT bearer token,
-derives the account ID from its claims, then sends audio and any configured
-language to an undocumented ChatGPT endpoint as `Codex Desktop`. The request
-authenticates with the bearer token and account ID. AgentDictate does not write
-the token to its own files. Codex manages its login cache separately and may
-store credentials unencrypted in `$CODEX_HOME/auth.json`. See
-[Codex credential storage](https://learn.chatgpt.com/docs/auth#credential-storage).
+**What leaves your computer.** Each dictation's audio goes to OpenAI's
+`/v1/audio/transcriptions` endpoint, with the language hint, the context text, and
+your vocabulary spellings, unless you use Literal mode, which sends only the
+language. With **Stream speech** on, audio is sent while you speak, and a failed
+stream falls back to the normal upload, which can mean paying for both. A request
+that fails before OpenAI answers is sent once more.
 
-OpenAI says ordinary Codex use in a ChatGPT Enterprise workspace follows that
-workspace's retention and residency settings. It does not document whether
-those policies or training controls cover AgentDictate's direct call, whether
-third-party clients may make it, account eligibility, allowance, or billing.
-The route may not be enabled for every account and can stop working without
-notice. It does not require an OpenAI Platform API key.
+The experimental ChatGPT subscription route sends the audio and language hint to an
+undocumented ChatGPT endpoint instead. It gets a short-lived ChatGPT token from the
+Codex CLI, keeps it in memory, and never falls back to the paid API. The endpoint is
+not a supported OpenAI API and can stop working without notice.
 
-The OpenAI API transcription route sends the recording to `gpt-transcribe` with
-any applicable language, prompt, and vocabulary text. It requires a Platform
-API key and can incur Platform charges. A connection that fails before OpenAI
-replies, or a compressed upload that OpenAI rejects, is sent once more.
+**What stays on your computer.**
 
-The Platform API key is stored unencrypted in the XDG config directory with
-user-only `0600` permissions. The SQLite database and retained WAV files are
-also unencrypted and protected by local Unix permissions. While a dictation is
-in progress, its text is kept in a SQLite job row. After the paste, AgentDictate
-deletes that row. It keeps the usage numbers (no text) and, only when **Save
-history** is on, the transcript in History. Deleting a History item, or
-clearing History, removes it, and it stays deleted after a restart. A dictation
-that fails keeps its text and recording in Recovery until you retry or delete
-it. Deleting it from Recovery removes both.
+- The OpenAI API key is stored in plain text in `~/.config/agentdictate/config.json`,
+  readable only by you.
+- While a dictation is in progress, its text and audio are kept so it can be
+  recovered. After the paste, the text is kept only in History, and only when
+  **Save history** is on. Usage numbers, such as duration, word count, model, and
+  estimated cost, are always kept, without text.
+- Deleting a History item removes its text and its usage numbers for good.
+- A failed dictation keeps its text and recording in Recovery until you retry it or
+  delete it. Deleting it removes both.
+- Audio is deleted after the paste unless **Preserve temporary audio** is on. Each
+  daemon start also deletes leftover recordings that no dictation needs.
+- Logs can contain transcript text. The newest 14 daily files are kept.
+- While the daemon runs, it imports the completed dictations that the ChatGPT desktop
+  app saves under `$CODEX_HOME/dictation-history` (default
+  `~/.codex/dictation-history`), including their transcripts, into History and the
+  usage totals. There is no setting to turn this off, and **Save history** does
+  not affect it. A deleted import stays deleted, but a new database imports every
+  source file again.
 
-While the daemon runs, AgentDictate imports existing and new completed ChatGPT
-desktop dictation records that contain a duration and a nonblank transcript.
-Other records are skipped. The source directory is
-`$CODEX_HOME/dictation-history`, defaulting to `~/.codex/dictation-history`.
-AgentDictate stores each imported record in SQLite, including the transcript,
-dictation ID, creation time, duration, derived end time, and import time. The
-transcript, derived end time, and duration appear in History. The creation date,
-word count, and duration contribute to usage totals. There is no in-app opt-out
-or purge, and **Save history** does not disable the import. Deleting
-AgentDictate's database does not delete the source metadata. The next daemon
-start imports it again.
-
-Recordings are created in the XDG data directory. Audio is normally deleted
-after paste submission. Failed or interrupted recordings remain for recovery,
-and **Preserve temporary audio** also keeps recordings after successful shortcut
-submission. Unless that setting is on, each daemon start also deletes leftover
-recordings that no dictation needs.
-The default local paths are:
+The database, recordings, and logs are not encrypted; Unix permissions protect them.
+They live in these directories, which `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_STATE_HOME`, and `XDG_CACHE_HOME` can move:
 
 - `~/.config/agentdictate/`
 - `~/.local/share/agentdictate/`
 - `~/.local/state/agentdictate/`
 - `~/.cache/agentdictate/`
 
-Set `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, or `XDG_CACHE_HOME` to
-move the corresponding directory.
+[The architecture overview](architecture.md#data-locations) lists every file.
 
 ## Uninstall
 
-Each user who ran AgentDictate must first stop the services and remove the
-per-user startup files. Package removal does not own these generated files.
+First, as each user who ran AgentDictate, stop the daemon and remove the per-user
+service files. Package removal does not own these files.
 
 ```bash
 systemctl --user disable --now agentdictated.service
@@ -193,13 +163,14 @@ agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 agentdictate_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 rm -f -- \
-  "$agentdictate_config_home/autostart/local.agentdictate.AgentDictate.desktop" \
-  "$agentdictate_data_home/systemd/user/agentdictated.service"
+  "$agentdictate_data_home/systemd/user/agentdictated.service" \
+  "$agentdictate_config_home/autostart/local.agentdictate.AgentDictate.desktop"
 systemctl --user daemon-reload
 ```
 
-For a repository user install, remove the remaining user-profile files and the
-host udev rule:
+The autostart entry exists only if an older version was installed.
+
+**Repository install.** Remove the installed files and the host udev rule:
 
 ```bash
 agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -208,9 +179,8 @@ rm -f -- \
   "$HOME/.local/bin/agentdictate" \
   "$HOME/.local/bin/agentdictated" \
   "$agentdictate_data_home/applications/local.agentdictate.AgentDictate.desktop" \
-  "$agentdictate_data_home/icons/hicolor/scalable/apps/agentdictate.svg" \
-  "$agentdictate_data_home/agentdictate/native-access/70-agentdictate-input.rules" \
-  "$agentdictate_data_home/agentdictate/native-access/NATIVE_ACCESS.md"
+  "$agentdictate_data_home/icons/hicolor/scalable/apps/agentdictate.svg"
+rm -rf -- "$agentdictate_data_home/agentdictate/native-access"
 
 sudo rm -f -- /etc/udev/rules.d/70-agentdictate-input.rules
 sudo udevadm control --reload-rules
@@ -218,24 +188,14 @@ sudo udevadm trigger --subsystem-match=input --action=change
 sudo udevadm trigger --subsystem-match=misc --sysname-match=uinput --action=change
 ```
 
-For a Debian package, run the common per-user teardown above, then use the
-package manager:
+**Debian package.** `sudo apt purge agentdictate` removes the package and its rule.
 
-```bash
-sudo apt purge agentdictate
-```
+**AppImage.** Remove the host udev rule with the `sudo` commands above, delete the
+`native-access` directory as above, and delete the AppImage file.
 
-For an AppImage, run the common teardown, remove the host udev rule with the
-commands above, and delete the AppImage file. If you used the discouraged
-`input`-group fallback, review other tools that need it before removing that
-group membership.
-
-These steps keep any saved unencrypted Platform API key, the SQLite database,
-retained recordings, logs, and cache. Delete those data directories only as a
-separate, explicit choice.
-
-To permanently delete all AgentDictate data after uninstalling, review the
-resolved targets, then remove only these application directories:
+These steps keep your settings and API key, the database, recordings, and logs. To
+delete all AgentDictate data as well, review the printed directories, then remove
+them:
 
 ```bash
 agentdictate_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -256,6 +216,5 @@ rm -rf -- \
   "$agentdictate_cache_home/agentdictate"
 ```
 
-This does not delete ChatGPT desktop metadata under `$CODEX_HOME`. Reinstalling
-or restarting AgentDictate imports that source data again unless it is removed
-separately.
+This does not delete the ChatGPT desktop app's own files under `$CODEX_HOME`, so
+a later install imports them again.
