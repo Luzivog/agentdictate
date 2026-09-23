@@ -129,6 +129,26 @@ impl WorkspaceClient {
         }
 
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        // A searched or extended History page is this client's own copy, so
+        // what a delete removed must also leave it.
+        if let WorkspaceAction::DeleteTranscript { id } = action {
+            self.send_workspace_command(ClientCommand::delete_history(request_id, id))?;
+            let mut state = self.lock_state()?;
+            if let Some(page) = state.history.as_mut() {
+                let shown = page.rows.len();
+                page.rows.retain(|row| row.id != id);
+                if page.rows.len() < shown {
+                    page.total_matches = page.total_matches.saturating_sub(1);
+                }
+            }
+            return Ok(state.view_model());
+        }
+        if matches!(action, WorkspaceAction::ClearHistory) {
+            self.send_workspace_command(ClientCommand::clear_history(request_id))?;
+            let mut state = self.lock_state()?;
+            state.history = None;
+            return Ok(state.view_model());
+        }
         let command = match action {
             WorkspaceAction::RetryRecovery { id, stage } => {
                 let job_id = id
@@ -150,7 +170,10 @@ impl WorkspaceClient {
             WorkspaceAction::CopyTranscript { id } => {
                 ClientCommand::copy_transcript(request_id, id)
             }
-            WorkspaceAction::SearchHistory { .. } | WorkspaceAction::LoadMoreHistory => {
+            WorkspaceAction::SearchHistory { .. }
+            | WorkspaceAction::LoadMoreHistory
+            | WorkspaceAction::DeleteTranscript { .. }
+            | WorkspaceAction::ClearHistory => {
                 unreachable!("handled above")
             }
             WorkspaceAction::CreateReplacement { draft } => ClientCommand::create_replacement(
@@ -1070,6 +1093,83 @@ mod tests {
         assert_eq!(workspace.history.transcripts[0].id, 100);
         assert_eq!(workspace.history.transcripts[0].text, "fresh first page");
         assert!(!workspace.history.has_more);
+        server_thread.join().unwrap();
+    }
+
+    /// Answers one search for "needle" with two rows, then deletes row 12.
+    struct DeleteFromSearchHandler;
+
+    impl IpcHandler for DeleteFromSearchHandler {
+        fn snapshot(&self, request_id: u64) -> ServerMessage {
+            HistoryHandler.snapshot(request_id)
+        }
+
+        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+            match command.kind {
+                ClientCommandKind::GetHistoryPage {
+                    request_id,
+                    request,
+                } => ServerMessage::history_page(
+                    request_id,
+                    HistoryPageSnapshot {
+                        search: request.search,
+                        total_matches: 2,
+                        cursor_restarted: false,
+                        next_cursor: None,
+                        rows: [12, 11]
+                            .into_iter()
+                            .map(|id| HistorySnapshot {
+                                id,
+                                created_at: Utc.with_ymd_and_hms(2026, 8, 18, 13, 0, 0).unwrap(),
+                                preview_text: "needle".into(),
+                                text: "needle".into(),
+                                word_count: 1,
+                                duration_seconds: 1.0,
+                            })
+                            .collect(),
+                    },
+                ),
+                ClientCommandKind::DeleteHistory { request_id, id } => {
+                    assert_eq!(id, 12);
+                    ServerMessage::workspace(request_id, WorkspaceSnapshot::default())
+                }
+                _ => panic!("history client sent an unexpected command"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_deleted_transcript_leaves_the_searched_page_at_once() {
+        let directory = tempdir().unwrap();
+        let runtime_directory = directory.path().join("runtime");
+        let server = IpcServer::bind(&runtime_directory).unwrap();
+        let server_thread = std::thread::spawn(move || {
+            for _ in 0..2 {
+                server.serve_next(&mut DeleteFromSearchHandler).unwrap();
+            }
+        });
+        let client = WorkspaceClient::new(runtime_directory, WorkspaceSnapshot::default());
+        client
+            .perform(WorkspaceAction::SearchHistory {
+                query: "needle".into(),
+            })
+            .unwrap();
+
+        let workspace = client
+            .perform(WorkspaceAction::DeleteTranscript { id: 12 })
+            .unwrap();
+
+        assert_eq!(workspace.history.search, "needle");
+        assert_eq!(workspace.history.transcript_count, 1);
+        assert_eq!(
+            workspace
+                .history
+                .transcripts
+                .iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>(),
+            vec![11]
+        );
         server_thread.join().unwrap();
     }
 

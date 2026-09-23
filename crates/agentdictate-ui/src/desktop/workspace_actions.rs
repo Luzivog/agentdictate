@@ -5,7 +5,9 @@ use gpui_component::input::InputState;
 
 use crate::{ReplacementDraft, Route, WorkspaceAction, WorkspaceViewModel};
 
-use super::{SettingsShell, settings_shell::ReplacementEditorState};
+use super::{
+    SettingsShell, row_actions::CONFIRM_DELETE_LABEL, settings_shell::ReplacementEditorState,
+};
 
 impl SettingsShell {
     /// Atomically replaces the workspace projection received from the daemon.
@@ -135,10 +137,9 @@ impl SettingsShell {
             self.emit_workspace_action(action, cx);
         } else {
             self.routes.pending_destructive_action = Some(action);
-            self.set_route_feedback(
-                "Click Confirm delete to permanently remove this item, or continue elsewhere to cancel."
-                    .to_owned(),
-            );
+            self.set_route_feedback(format!(
+                "Click {CONFIRM_DELETE_LABEL} to delete it permanently, or continue elsewhere to cancel."
+            ));
         }
     }
 

@@ -109,6 +109,11 @@ fn workspace_actions_own_stable_rendering_selectors() {
             "history-copy-transcript-41",
         ),
         (
+            WorkspaceAction::DeleteTranscript { id: 41 },
+            "history-delete-transcript-41",
+        ),
+        (WorkspaceAction::ClearHistory, "settings-delete-all-history"),
+        (
             WorkspaceAction::SearchHistory {
                 query: "database".to_owned(),
             },

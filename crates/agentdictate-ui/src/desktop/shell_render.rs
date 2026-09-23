@@ -81,6 +81,7 @@ impl RoutePageModel {
                 settings_form: shell.settings.form.clone(),
                 shortcut_capture_active: shell.settings.shortcut_capture_active,
                 shortcut_capture_error: shell.settings.shortcut_capture_error.clone(),
+                pending_destructive_action: shell.routes.pending_destructive_action.clone(),
             })),
         }
     }

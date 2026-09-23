@@ -10,6 +10,8 @@ pub enum WorkspaceAction {
     RetryRecovery { id: String, stage: RecoveryStage },
     DeleteRecovery { id: String },
     CopyTranscript { id: i64 },
+    DeleteTranscript { id: i64 },
+    ClearHistory,
     SearchHistory { query: String },
     LoadMoreHistory,
     CreateReplacement { draft: ReplacementDraft },
@@ -26,8 +28,12 @@ impl WorkspaceAction {
             // Recovery never pastes: its buttons sit in this window, which
             // has the focus, so it only copies and the user pastes.
             Self::RetryRecovery { .. } => Some("Copied — press Ctrl+V where you want it"),
+            // Deleting all history happens in Settings, which has no list
+            // to show the result.
+            Self::ClearHistory => Some("All history deleted"),
             Self::DeleteRecovery { .. }
             | Self::CopyTranscript { .. }
+            | Self::DeleteTranscript { .. }
             | Self::SearchHistory { .. }
             | Self::LoadMoreHistory
             | Self::CreateReplacement { .. }
@@ -43,6 +49,8 @@ impl WorkspaceAction {
             Self::RetryRecovery { id, .. } => format!("history-retry-recovery-{id}"),
             Self::DeleteRecovery { id } => format!("history-delete-recovery-{id}"),
             Self::CopyTranscript { id } => format!("history-copy-transcript-{id}"),
+            Self::DeleteTranscript { id } => format!("history-delete-transcript-{id}"),
+            Self::ClearHistory => "settings-delete-all-history".to_owned(),
             Self::SearchHistory { .. } => "history-search".to_owned(),
             Self::LoadMoreHistory => "history-load-more".to_owned(),
             Self::CreateReplacement { .. } => "replacement-save-new".to_owned(),

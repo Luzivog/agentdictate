@@ -15,7 +15,9 @@ use crate::{
 };
 
 use super::{
-    SettingsShell, gpui_color, row_actions::copy_button, shell_render::workspace_feedback,
+    SettingsShell, gpui_color,
+    row_actions::{copy_button, delete_button},
+    shell_render::workspace_feedback,
     single_line::single_line_clip,
 };
 
@@ -144,7 +146,14 @@ pub(super) fn surface(
                 .children(transcripts.into_iter().map(|transcript| {
                     let expanded = expanded_transcripts.contains(&transcript.id);
                     let copied = copied_transcript == Some(transcript.id);
-                    transcript_row(transcript, expanded, copied, theme, cx)
+                    transcript_row(
+                        transcript,
+                        expanded,
+                        copied,
+                        pending_destructive_action.as_ref(),
+                        theme,
+                        cx,
+                    )
                 }))
                 .when(has_more, |section| {
                     section.child(
@@ -222,13 +231,6 @@ fn recovery_row(
     let delete_action = WorkspaceAction::DeleteRecovery {
         id: item.id.clone(),
     };
-    let delete_selector = delete_action.selector();
-    let delete_pending = pending_destructive_action == Some(&delete_action);
-    let delete_button_selector = if delete_pending {
-        format!("confirm-{delete_selector}")
-    } else {
-        delete_selector
-    };
     let action_label = item.primary_action_label();
     let metadata = format!("{} · {}", item.captured_at, item.duration);
     let metadata_selector = format!("history-recovery-metadata-{}", item.id);
@@ -301,16 +303,12 @@ fn recovery_row(
                             cx.notify();
                         })),
                 )
-                .child(
-                    action_button(SharedString::from(delete_button_selector.clone()))
-                        .debug_selector(move || delete_button_selector)
-                        .small()
-                        .label(if delete_pending { "Confirm" } else { "Delete" })
-                        .on_click(cx.listener(move |shell, _, _, cx| {
-                            shell.request_destructive_action(delete_action.clone(), cx);
-                            cx.notify();
-                        })),
-                ),
+                .child(delete_button(
+                    delete_action,
+                    "Delete",
+                    pending_destructive_action,
+                    cx,
+                )),
         )
 }
 
@@ -320,6 +318,7 @@ fn transcript_row(
     transcript: TranscriptViewModel,
     expanded: bool,
     copied: bool,
+    pending_destructive_action: Option<&WorkspaceAction>,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -373,5 +372,16 @@ fn transcript_row(
                         .text_color(gpui_color(theme.text_muted)),
                 ),
         )
-        .child(copy_button(id, copied, cx))
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_1()
+                .child(copy_button(id, copied, cx))
+                .child(delete_button(
+                    WorkspaceAction::DeleteTranscript { id },
+                    "Delete",
+                    pending_destructive_action,
+                    cx,
+                )),
+        )
 }

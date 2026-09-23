@@ -1156,6 +1156,78 @@ fn a_successful_copy_says_copied_on_its_button_for_a_moment(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn deleting_a_transcript_asks_to_confirm_delete_first(cx: &mut TestAppContext) {
+    let (mut harness, actions) = open_history_recording_actions(
+        cx,
+        vec![TranscriptViewModel::new(
+            41,
+            "Today 14:18",
+            "A private note.",
+            3,
+            "0:02",
+        )],
+    );
+
+    harness.click("history-delete-transcript-41");
+
+    assert!(actions.lock().expect("action lock").is_empty());
+    assert!(harness.has("confirm-history-delete-transcript-41"));
+    let guidance = harness.shell.read_with(harness.cx, |shell, _| {
+        shell
+            .route_feedback_for_test(Route::History)
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        guidance.as_deref(),
+        Some("Click Confirm delete to delete it permanently, or continue elsewhere to cancel.")
+    );
+
+    harness.click("confirm-history-delete-transcript-41");
+
+    assert_eq!(
+        actions.lock().expect("action lock").as_slice(),
+        &[WorkspaceAction::DeleteTranscript { id: 41 }]
+    );
+    assert!(!harness.has("confirm-history-delete-transcript-41"));
+}
+
+#[gpui::test]
+fn deleting_all_history_from_settings_asks_to_confirm_delete_first(cx: &mut TestAppContext) {
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&actions);
+    let mut harness = Harness::open_model_with_actions(
+        cx,
+        size(px(1_100.), px(780.)),
+        ShellViewModel::from_snapshot(
+            Route::Settings,
+            WorkflowSnapshot {
+                phase: WorkflowPhase::Ready,
+            },
+        ),
+        Arc::new(move |action| {
+            captured.lock().expect("action lock").push(action);
+            Ok(WorkspaceViewModel::default())
+        }),
+    );
+
+    harness.scroll_to("settings-delete-all-history");
+    harness.click("settings-delete-all-history");
+    assert!(actions.lock().expect("action lock").is_empty());
+    harness.click("confirm-settings-delete-all-history");
+
+    assert_eq!(
+        actions.lock().expect("action lock").as_slice(),
+        &[WorkspaceAction::ClearHistory]
+    );
+    let feedback = harness.shell.read_with(harness.cx, |shell, _| {
+        shell
+            .route_feedback_for_test(Route::Settings)
+            .map(str::to_owned)
+    });
+    assert_eq!(feedback.as_deref(), Some("All history deleted"));
+}
+
+#[gpui::test]
 fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mut TestAppContext) {
     let model = ShellViewModel::from_snapshot(
         Route::History,

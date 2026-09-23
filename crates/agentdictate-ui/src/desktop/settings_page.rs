@@ -10,10 +10,11 @@ use gpui_component::{
 };
 
 use crate::action::action_button;
-use crate::{SettingsDraft, ThemeTokens};
+use crate::{SettingsDraft, ThemeTokens, WorkspaceAction};
 
 use super::{
     SettingsShell, gpui_color,
+    row_actions::delete_button,
     settings_form::{SettingSelectState, SettingsFormState, selected_transcription_provider},
 };
 
@@ -27,6 +28,7 @@ pub(super) struct SettingsPageModel {
     pub(super) settings_form: SettingsFormState,
     pub(super) shortcut_capture_active: bool,
     pub(super) shortcut_capture_error: Option<String>,
+    pub(super) pending_destructive_action: Option<WorkspaceAction>,
 }
 
 /// Keeps short controls compact while allowing long-form prompts to use the
@@ -77,6 +79,7 @@ pub(super) fn surface(
         settings_form,
         shortcut_capture_active,
         shortcut_capture_error,
+        pending_destructive_action,
         ..
     } = model;
     let transcription_provider = selected_transcription_provider(
@@ -128,9 +131,10 @@ pub(super) fn surface(
                 theme,
                 cx,
             ))
-            .child(delivery_storage_section(
+            .child(delivery_section(&settings, &settings_form, theme, cx))
+            .child(privacy_section(
                 &settings,
-                &settings_form,
+                pending_destructive_action.as_ref(),
                 theme,
                 cx,
             )),
@@ -500,16 +504,16 @@ fn recording_audio_section(
     ))
 }
 
-fn delivery_storage_section(
+fn delivery_section(
     settings: &SettingsDraft,
     editor: &SettingsFormState,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
     settings_section(
-        "settings-group-delivery-storage",
-        "Delivery & storage",
-        "Choose how finished dictation is pasted, retained, and started.",
+        "settings-group-delivery",
+        "Delivery",
+        "Choose how finished dictation is pasted and started.",
         true,
         theme,
     )
@@ -530,6 +534,22 @@ fn delivery_storage_section(
         cx,
         |draft| draft.start_on_login = !draft.start_on_login,
     ))
+}
+
+/// What this computer keeps, and the one control that deletes all of it.
+fn privacy_section(
+    settings: &SettingsDraft,
+    pending_destructive_action: Option<&WorkspaceAction>,
+    theme: ThemeTokens,
+    cx: &mut Context<SettingsShell>,
+) -> gpui::Div {
+    settings_section(
+        "settings-group-privacy",
+        "Privacy",
+        "Choose what AgentDictate keeps on this computer.",
+        true,
+        theme,
+    )
     .child(toggle_row(
         "Save history",
         "Keep delivered transcripts in your local database",
@@ -548,6 +568,26 @@ fn delivery_storage_section(
         cx,
         |draft| draft.preserve_temp_audio = !draft.preserve_temp_audio,
     ))
+    .child(
+        h_flex()
+            .min_h(px(52.))
+            .justify_between()
+            .gap_6()
+            .border_b_1()
+            .border_color(gpui_color(theme.border))
+            .py_2()
+            .child(setting_label(
+                "Delete all history",
+                "Permanently removes every saved transcript and its usage stats",
+                theme,
+            ))
+            .child(delete_button(
+                WorkspaceAction::ClearHistory,
+                "Delete all history…",
+                pending_destructive_action,
+                cx,
+            )),
+    )
 }
 
 fn settings_section(
