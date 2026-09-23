@@ -2,6 +2,7 @@
 //! overlay and as a desktop notification, through fake presenters.
 
 use std::{
+    collections::VecDeque,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, Sender, channel},
@@ -10,12 +11,13 @@ use std::{
 
 use agentdictate_app::{
     AppPaths, Daemon, FinishingEncode, Notification, NotificationAction, NotificationBus, Notifier,
-    OverlayController, OverlayUpdate, Transcriber, start_overlay_presenter,
+    OverlayController, OverlayUpdate, Transcriber, TranscriptionCompletion,
+    start_overlay_presenter,
 };
-use agentdictate_core::{DictationNotice, FailureKind, JobId, Settings, WorkflowPhase};
+use agentdictate_core::{DictationNotice, FailureKind, JobId, JobStage, Settings, WorkflowPhase};
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, RecordingJob, Runtime,
-    Transcript,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, ObservedFocus, RecordingJob,
+    Runtime, Transcript,
 };
 use tempfile::tempdir;
 
@@ -60,6 +62,7 @@ impl Deliverer for SubmittedDelivery {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: method == DeliveryMethod::Paste,
+            consumed: method == DeliveryMethod::Paste,
         })
     }
 }
@@ -137,10 +140,38 @@ impl FakeOverlay {
     }
 }
 
-fn daemon_with<T: Transcriber>(
+/// Reads the focus it is scripted to, one reading per call, and reports
+/// whether the target took its paste.
+struct ScriptedDelivery {
+    focus: VecDeque<ObservedFocus>,
+    consumed: bool,
+    methods: Vec<DeliveryMethod>,
+}
+
+impl Deliverer for ScriptedDelivery {
+    fn observe_focus(&mut self) -> ObservedFocus {
+        self.focus.pop_front().unwrap_or(ObservedFocus::Unknown)
+    }
+
+    fn deliver(
+        &mut self,
+        _job: &RecordingJob,
+        method: DeliveryMethod,
+    ) -> Result<DeliveryDisposition, ExternalError> {
+        self.methods.push(method);
+        Ok(DeliveryDisposition::Submitted {
+            copied_to_clipboard: true,
+            paste_triggered: method == DeliveryMethod::Paste,
+            consumed: method == DeliveryMethod::Paste && self.consumed,
+        })
+    }
+}
+
+fn daemon_with<T: Transcriber, D: Deliverer>(
     paths: &AppPaths,
     transcriber: T,
-) -> Daemon<InspectingRecorder, T, SubmittedDelivery> {
+    deliverer: D,
+) -> Daemon<InspectingRecorder, T, D> {
     std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
     Daemon::new(
         Runtime::open(&paths.database_file).unwrap(),
@@ -151,7 +182,7 @@ fn daemon_with<T: Transcriber>(
             started_after_checkpoint: false,
         },
         transcriber,
-        SubmittedDelivery,
+        deliverer,
     )
 }
 
@@ -161,7 +192,11 @@ fn a_failed_dictation_is_announced_once_and_a_retry_from_the_window_is_not() {
     let paths = AppPaths::isolated(directory.path());
     let (overlay, fake_overlay) = FakeOverlay::start(directory.path());
     let (notifier, notifications) = forwarding_notifier();
-    let mut daemon = daemon_with(&paths, FailingTranscriber(FailureKind::Offline));
+    let mut daemon = daemon_with(
+        &paths,
+        FailingTranscriber(FailureKind::Offline),
+        SubmittedDelivery,
+    );
     daemon.set_overlay_controller(overlay);
     daemon.set_notifier(notifier);
     let started = daemon.start_recording().unwrap();
@@ -187,7 +222,7 @@ fn a_quiet_recording_is_announced_as_nothing_heard() {
     let directory = tempdir().unwrap();
     let paths = AppPaths::isolated(directory.path());
     let (notifier, notifications) = forwarding_notifier();
-    let mut daemon = daemon_with(&paths, QuietTranscriber);
+    let mut daemon = daemon_with(&paths, QuietTranscriber, SubmittedDelivery);
     daemon.set_notifier(notifier);
     let started = daemon.start_recording().unwrap();
 
@@ -201,4 +236,74 @@ fn a_quiet_recording_is_announced_as_nothing_heard() {
             started.id
         )]
     );
+}
+
+/// A paste is sent once, into the window the dictation was stopped in, and
+/// only a paste its target took ends silently. Otherwise the text is on the
+/// clipboard, and the user is told to press Ctrl+V.
+#[test]
+fn a_dictation_is_pasted_once_and_says_copied_whenever_the_paste_is_not_confirmed() {
+    use ObservedFocus::X11;
+    let prompt = Duration::ZERO;
+    let late = Duration::from_secs(9);
+    for (focus, consumed, waited, method, notice) in [
+        ([X11(7), X11(7)], true, prompt, DeliveryMethod::Paste, None),
+        // The target never requested the text, so the paste may not have
+        // landed; it is never sent again.
+        (
+            [X11(7), X11(7)],
+            false,
+            prompt,
+            DeliveryMethod::Paste,
+            Some(DictationNotice::Copied),
+        ),
+        (
+            [X11(7), X11(9)],
+            true,
+            prompt,
+            DeliveryMethod::CopyOnly,
+            Some(DictationNotice::Copied),
+        ),
+        (
+            [X11(7), X11(7)],
+            true,
+            late,
+            DeliveryMethod::CopyOnly,
+            Some(DictationNotice::Copied),
+        ),
+    ] {
+        let directory = tempdir().unwrap();
+        let paths = AppPaths::isolated(directory.path());
+        let (notifier, notifications) = forwarding_notifier();
+        let mut daemon = daemon_with(
+            &paths,
+            super::support::FixedTranscriber,
+            ScriptedDelivery {
+                focus: focus.into(),
+                consumed,
+                methods: Vec::new(),
+            },
+        );
+        daemon.set_notifier(notifier);
+        let started = daemon.start_recording().unwrap();
+        let ticket = daemon.stop_recording().unwrap();
+        let completion = TranscriptionCompletion {
+            finished_at: Instant::now() + waited,
+            ..ticket.run()
+        };
+
+        let delivered = daemon.complete_transcription(completion).unwrap();
+
+        assert_eq!(delivered.stage, JobStage::Delivered);
+        assert_eq!(daemon.deliverer().methods, [method], "{focus:?} {consumed}");
+        drop(daemon);
+        assert_eq!(
+            notifications.iter().collect::<Vec<_>>(),
+            notice
+                .map(|notice| Notification::for_notice(notice, started.id))
+                .into_iter()
+                .collect::<Vec<_>>(),
+            "{focus:?} {consumed} {waited:?}"
+        );
+    }
 }

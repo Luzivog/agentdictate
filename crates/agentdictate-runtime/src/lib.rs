@@ -18,8 +18,9 @@ pub use observer::DatabaseObserver;
 mod ports;
 pub use ports::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
-    DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobFailure, Recorder, RecordingJob,
-    RecordingRequest, RuntimeError, StoredTranscript, Transcript, TranscriptionOutcome,
+    DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobFailure, ObservedFocus, Recorder,
+    RecordingJob, RecordingRequest, RuntimeError, StoredTranscript, Transcript,
+    TranscriptionOutcome,
 };
 mod recovery;
 mod retention;

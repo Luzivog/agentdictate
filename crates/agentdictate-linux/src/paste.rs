@@ -59,6 +59,11 @@ impl FocusTarget {
         &self.window_class
     }
 
+    /// The X11 window's id; `None` for a native Wayland target.
+    pub const fn x11_window(&self) -> Option<u32> {
+        self.identity
+    }
+
     fn same_focus(&self, other: &Self) -> bool {
         if self.protocol != other.protocol {
             return false;

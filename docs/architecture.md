@@ -172,8 +172,11 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    paid transcription. Vocabulary aliases then replace spoken forms with their
    spellings. The job is now
    `ready_to_deliver`.
-6. **Gate.** A result that arrives more than 8 s after the stop is copied to the
-   clipboard instead of pasted, because by then you may be in another window. For a
+6. **Gate.** A result is copied to the clipboard instead of pasted when it arrives
+   more than 8 s after the stop (plus 30 ms per second of audio), or when the focused
+   window observably changed since the stop: another X11 window, or a switch between
+   an X11 and a native Wayland window. Either way you may be somewhere else by now,
+   so the overlay and a notification say "Copied — press Ctrl+V". For a
    paste, the overlay is dismissed. If its helper confirmed an override-redirect
    window, the paste goes ahead while it fades. Otherwise the paste waits up to
    `OVERLAY_TEARDOWN_TIMEOUT` (2 s) for the helper to exit. A helper still running
@@ -182,9 +185,10 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    window, publishes the text, and reads the focus again. If the focus keeps
    changing, nothing is pasted. Otherwise it injects exactly one paste shortcut from
    its uinput keyboard, then waits up to 150 ms for an application to request the
-   text. That request is logged as `consumed`, the target's acknowledgement. The
-   delivery ends as `submitted`, `ambiguous` (the injection itself failed), or
-   `not_sent` (nothing was injected).
+   text. That request is logged as `consumed`, the target's acknowledgement. Without
+   it the paste may not have landed: it is never sent again, and the overlay and a
+   notification say "Copied — press Ctrl+V". The delivery ends as `submitted`,
+   `ambiguous` (the injection itself failed), or `not_sent` (nothing was injected).
 8. **Complete.** One transaction records the dictation, with its usage numbers always
    and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
    Then text older than **Keep transcripts** allows, Recovery items unchanged for 7

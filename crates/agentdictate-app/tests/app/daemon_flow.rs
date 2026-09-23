@@ -141,6 +141,7 @@ impl Deliverer for SubmittedDelivery {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: method == DeliveryMethod::Paste,
+            consumed: method == DeliveryMethod::Paste,
         })
     }
 }
@@ -160,6 +161,7 @@ impl Deliverer for ExitInspectingDelivery {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
+            consumed: true,
         })
     }
 }
@@ -450,6 +452,7 @@ impl Deliverer for PasteFailsCopyWorks {
             DeliveryMethod::CopyOnly => DeliveryDisposition::Submitted {
                 copied_to_clipboard: true,
                 paste_triggered: false,
+                consumed: false,
             },
         })
     }

@@ -17,7 +17,8 @@ use agentdictate_linux::{
     recorder::{PwRecordRecorder, Recording, RecordingStatus},
 };
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob,
+    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, ObservedFocus, Recorder,
+    RecordingJob,
 };
 
 use crate::opus_encoder::OpusEncoder;
@@ -26,6 +27,8 @@ use crate::{CapturedRecording, DaemonDeliverer, RecorderEvent, RecordingControll
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long reading the focused window may take outside a paste.
+const FOCUS_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long after the paste key press a target may take to request the
 /// text and still count as having taken the paste. The chord itself takes
 /// 50–75 ms of this.
@@ -478,7 +481,7 @@ impl SystemDeliverer {
         }
     }
 
-    fn observe_focus(
+    fn focus_target(
         &self,
         deadline: Instant,
     ) -> Result<agentdictate_linux::paste::FocusTarget, ExternalError> {
@@ -521,7 +524,7 @@ impl SystemDeliverer {
                         delivery.advance(DeliveryObservation::DeadlineReached)
                     } else {
                         let started = Instant::now();
-                        let observed = self.observe_focus(deadline);
+                        let observed = self.focus_target(deadline);
                         focus_time += started.elapsed();
                         match observed {
                             Ok(target) => delivery.advance(DeliveryObservation::Focus(target)),
@@ -607,6 +610,7 @@ impl SystemDeliverer {
                         None => DeliveryDisposition::Submitted {
                             copied_to_clipboard: result.copied,
                             paste_triggered: result.paste_triggered,
+                            consumed: result.consumed,
                         },
                         Some(DeliveryFailure::InjectionAmbiguous) => {
                             DeliveryDisposition::Ambiguous {
@@ -652,6 +656,15 @@ impl DaemonDeliverer for SystemDeliverer {
 }
 
 impl Deliverer for SystemDeliverer {
+    fn observe_focus(&mut self) -> ObservedFocus {
+        match self.focus_target(Instant::now() + FOCUS_OBSERVATION_TIMEOUT) {
+            Ok(target) => target
+                .x11_window()
+                .map_or(ObservedFocus::Wayland, ObservedFocus::X11),
+            Err(_) => ObservedFocus::Unknown,
+        }
+    }
+
     fn deliver(
         &mut self,
         job: &RecordingJob,
@@ -663,6 +676,7 @@ impl Deliverer for SystemDeliverer {
                 Ok(()) => DeliveryDisposition::Submitted {
                     copied_to_clipboard: true,
                     paste_triggered: false,
+                    consumed: false,
                 },
                 Err(error) => DeliveryDisposition::NotSent {
                     copied_to_clipboard: false,
@@ -826,6 +840,7 @@ mod tests {
             DeliveryDisposition::Submitted {
                 copied_to_clipboard: true,
                 paste_triggered: true,
+                consumed: true,
             }
         );
         assert_eq!(
@@ -877,6 +892,7 @@ mod tests {
             DeliveryDisposition::Submitted {
                 copied_to_clipboard: true,
                 paste_triggered: true,
+                consumed: true,
             }
         );
         assert_eq!(

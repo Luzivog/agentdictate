@@ -123,6 +123,7 @@ impl Deliverer for RecordedDelivery {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: method == DeliveryMethod::Paste,
+            consumed: method == DeliveryMethod::Paste,
         })
     }
 }

@@ -544,6 +544,7 @@ impl Runtime {
             DeliveryDisposition::Submitted {
                 copied_to_clipboard,
                 paste_triggered,
+                ..
             } => {
                 self.connection.execute(
                     r#"

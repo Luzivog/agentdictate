@@ -211,6 +211,10 @@ pub enum DeliveryDisposition {
     Submitted {
         copied_to_clipboard: bool,
         paste_triggered: bool,
+        /// Whether an application requested the text right after the paste
+        /// chord: the target's acknowledgement that the paste landed.
+        /// Always false when no chord was sent.
+        consumed: bool,
     },
     /// A paste shortcut was attempted but its outcome is unknown, so the
     /// text may already be in the focused application.
@@ -248,6 +252,37 @@ pub trait Deliverer {
         job: &RecordingJob,
         method: DeliveryMethod,
     ) -> Result<DeliveryDisposition, ExternalError>;
+
+    /// The window a paste would reach now, as far as it can be told apart
+    /// from another one.
+    fn observe_focus(&mut self) -> ObservedFocus {
+        ObservedFocus::Unknown
+    }
+}
+
+/// The focused window, as far as the desktop lets AgentDictate tell one
+/// window from another.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservedFocus {
+    /// An X11 or XWayland window, by its id.
+    X11(u32),
+    /// A native Wayland window. Wayland does not say which one.
+    Wayland,
+    /// The focus could not be read.
+    Unknown,
+}
+
+impl ObservedFocus {
+    /// Whether the focus observably moved from `self` to `now`. Two native
+    /// Wayland windows cannot be told apart, and an unknown focus proves
+    /// nothing.
+    #[must_use]
+    pub fn moved_to(self, now: Self) -> bool {
+        match (self, now) {
+            (Self::Unknown, _) | (_, Self::Unknown) | (Self::Wayland, Self::Wayland) => false,
+            (before, now) => before != now,
+        }
+    }
 }
 
 /// Confirms that transient AgentDictate UI cannot receive the upcoming paste.

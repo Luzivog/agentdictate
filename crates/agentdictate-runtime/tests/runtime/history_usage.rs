@@ -26,6 +26,7 @@ impl Deliverer for SubmittedDeliverer {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
+            consumed: true,
         })
     }
 }

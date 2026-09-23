@@ -11,8 +11,8 @@ use agentdictate_core::{
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
-    HeadlessDeliveryGate, JobFailure, Recorder, RecordingJob, RecordingRequest, Runtime,
-    RuntimeError, StoredTranscript,
+    HeadlessDeliveryGate, JobFailure, ObservedFocus, Recorder, RecordingJob, RecordingRequest,
+    Runtime, RuntimeError, StoredTranscript,
 };
 use chrono::Utc;
 use thiserror::Error;
@@ -91,33 +91,40 @@ impl DeliveryGate for OverlayDeliveryGate {
 }
 
 /// Wraps one delivery step to record when it ran, for the per-dictation
-/// timing log. The runtime calls the overlay gate, then the deliverer, whose
-/// return marks the moment the paste was submitted.
-struct Timed<'a, T> {
+/// timing log, and what it reported. The runtime calls the overlay gate,
+/// then the deliverer, whose return marks the moment the paste was
+/// submitted and tells whether the target took it.
+struct Timed<'a, T, R> {
     inner: &'a mut T,
     ran: Option<(Instant, Instant)>,
+    reported: Option<R>,
 }
 
-impl<'a, T> Timed<'a, T> {
+impl<'a, T, R: Clone> Timed<'a, T, R> {
     const fn new(inner: &'a mut T) -> Self {
-        Self { inner, ran: None }
+        Self {
+            inner,
+            ran: None,
+            reported: None,
+        }
     }
 
-    fn record<R>(&mut self, step: impl FnOnce(&mut T) -> R) -> R {
+    fn record<E>(&mut self, step: impl FnOnce(&mut T) -> Result<R, E>) -> Result<R, E> {
         let started = Instant::now();
         let result = step(self.inner);
         self.ran = Some((started, Instant::now()));
+        self.reported = result.as_ref().ok().cloned();
         result
     }
 }
 
-impl<G: DeliveryGate> DeliveryGate for Timed<'_, G> {
+impl<G: DeliveryGate> DeliveryGate for Timed<'_, G, ()> {
     fn confirm_ready(&mut self) -> Result<(), DeliveryGateError> {
         self.record(G::confirm_ready)
     }
 }
 
-impl<D: Deliverer> Deliverer for Timed<'_, D> {
+impl<D: Deliverer> Deliverer for Timed<'_, D, DeliveryDisposition> {
     fn deliver(
         &mut self,
         job: &RecordingJob,
@@ -224,6 +231,47 @@ pub(crate) fn stale_paste_after(audio_seconds: f64) -> Duration {
     STALE_PASTE_MARGIN + TRANSCRIPTION_TIME_PER_AUDIO_SECOND.mul_f64(audio_seconds.max(0.0))
 }
 
+/// Why a dictation's text is copied instead of pasted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CopyReason {
+    /// It arrived long after the stop, for its length.
+    ArrivedLate,
+    /// The focused window observably changed since the stop.
+    FocusMoved,
+}
+
+/// Whether a finished dictation is only copied instead of pasted (COR-8,
+/// D19): when it arrived late, or when the focus moved since the stop, the
+/// user may be somewhere else by now, and a paste could land in the wrong
+/// place. `focus_now` is read only for a result that is not late.
+pub(crate) fn copy_instead_of_paste(
+    waited: Duration,
+    audio_seconds: f64,
+    focus_at_stop: ObservedFocus,
+    focus_now: impl FnOnce() -> ObservedFocus,
+) -> Option<CopyReason> {
+    if waited > stale_paste_after(audio_seconds) {
+        return Some(CopyReason::ArrivedLate);
+    }
+    focus_at_stop
+        .moved_to(focus_now())
+        .then_some(CopyReason::FocusMoved)
+}
+
+/// What to tell the user after a dictation's text was delivered: nothing
+/// after a paste its target acknowledged; otherwise the text is on the
+/// clipboard, and pressing Ctrl+V is up to them. An unacknowledged paste is
+/// never sent again, since it may still have landed.
+pub(crate) const fn delivered_notice(
+    method: DeliveryMethod,
+    consumed: bool,
+) -> Option<DictationNotice> {
+    match method {
+        DeliveryMethod::Paste if consumed => None,
+        DeliveryMethod::Paste | DeliveryMethod::CopyOnly => Some(DictationNotice::Copied),
+    }
+}
+
 /// The one dictation the daemon may deliver.
 enum Activity {
     Idle,
@@ -242,6 +290,8 @@ struct ActiveProcessing {
     job_id: JobId,
     /// When the user stopped the recording or asked to transcribe it again.
     stopped_at: Instant,
+    /// The focused window when the user stopped the recording.
+    focus_at_stop: ObservedFocus,
     requester: Requester,
 }
 
@@ -409,6 +459,7 @@ where
     pub fn stop_recording(&mut self) -> Result<ProcessingTicket<T>, DaemonError> {
         let stopped_at = Instant::now();
         let id = self.recording_job()?;
+        let focus_at_stop = self.deliverer.observe_focus();
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
         tracing::info!(job_id = %id, "recording stop requested");
@@ -474,6 +525,7 @@ where
         self.activity = Activity::Processing(ActiveProcessing {
             job_id: id,
             stopped_at,
+            focus_at_stop,
             requester: Requester::Dictation,
         });
         self.advance(id, WorkflowSignal::CaptureFinalized { job_id: id });
@@ -576,15 +628,23 @@ where
         let id = ready.id;
         let waited = finished_at.saturating_duration_since(processing.stopped_at);
         let method = match processing.requester {
-            Requester::Dictation if waited > stale_paste_after(ready.duration_seconds) => {
-                tracing::info!(
-                    job_id = %id,
-                    waited_ms = millis(waited),
-                    "the transcript arrived late, so it is copied instead of pasted"
-                );
-                DeliveryMethod::CopyOnly
-            }
-            Requester::Dictation => DeliveryMethod::Paste,
+            Requester::Dictation => match copy_instead_of_paste(
+                waited,
+                ready.duration_seconds,
+                processing.focus_at_stop,
+                || self.deliverer.observe_focus(),
+            ) {
+                Some(reason) => {
+                    tracing::info!(
+                        job_id = %id,
+                        ?reason,
+                        waited_ms = millis(waited),
+                        "the transcript is copied instead of pasted"
+                    );
+                    DeliveryMethod::CopyOnly
+                }
+                None => DeliveryMethod::Paste,
+            },
             Requester::Window | Requester::Notification => DeliveryMethod::CopyOnly,
         };
         self.advance(id, WorkflowSignal::TranscriptStored { job_id: id });
@@ -610,6 +670,10 @@ where
             ),
         };
         let delivery_ran = deliverer.ran;
+        let consumed = matches!(
+            deliverer.reported,
+            Some(DeliveryDisposition::Submitted { consumed: true, .. })
+        );
         let result = match delivered {
             Ok(result) => result,
             Err(error) => {
@@ -630,7 +694,7 @@ where
             self.cleanup_completed_audio(&result);
             (
                 WorkflowSignal::DeliverySubmitted { job_id: id },
-                (method == DeliveryMethod::CopyOnly).then_some(DictationNotice::Copied),
+                delivered_notice(method, consumed),
             )
         } else {
             let end = interruption(&result, FailureKind::PasteNotConfirmed);
@@ -651,6 +715,7 @@ where
             job_id = %id,
             stage = ?result.stage,
             ?method,
+            consumed,
             gate_ms = gate_ran.map(|(started, finished)| millis(finished - started)),
             stop_to_paste_ms = delivery_ran.map(|(_, finished)| millis(finished - processing.stopped_at)),
             stop_to_flow_complete_ms = millis(processing.stopped_at.elapsed()),
@@ -816,6 +881,7 @@ where
         self.activity = Activity::Processing(ActiveProcessing {
             job_id: id,
             stopped_at: Instant::now(),
+            focus_at_stop: ObservedFocus::Unknown,
             requester,
         });
         self.advance(id, WorkflowSignal::RetryRequested { job_id: id });
@@ -1270,5 +1336,45 @@ mod tests {
         // A three-minute dictation normally takes about 5 s to transcribe, so
         // a result 9 s after stop is still pasted.
         assert!(stale_paste_after(180.0) > Duration::from_secs(13));
+    }
+
+    #[test]
+    fn a_result_is_copied_instead_of_pasted_when_late_or_after_the_focus_moved() {
+        use ObservedFocus::{Unknown, Wayland, X11};
+        let prompt = Duration::from_secs(2);
+        let late = Duration::from_secs(9);
+        for (waited, at_stop, now, expected) in [
+            (prompt, X11(7), X11(7), None),
+            (prompt, X11(7), X11(9), Some(CopyReason::FocusMoved)),
+            // The X11 window lost the focus to a native Wayland one, or the
+            // other way round.
+            (prompt, X11(7), Wayland, Some(CopyReason::FocusMoved)),
+            (prompt, Wayland, X11(7), Some(CopyReason::FocusMoved)),
+            // Two native Wayland windows look the same, and an unreadable
+            // focus proves nothing.
+            (prompt, Wayland, Wayland, None),
+            (prompt, X11(7), Unknown, None),
+            (prompt, Unknown, X11(7), None),
+            (late, X11(7), X11(7), Some(CopyReason::ArrivedLate)),
+        ] {
+            assert_eq!(
+                copy_instead_of_paste(waited, 3.0, at_stop, || now),
+                expected,
+                "{waited:?} {at_stop:?} -> {now:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_acknowledged_paste_ends_without_a_notice() {
+        assert_eq!(delivered_notice(DeliveryMethod::Paste, true), None);
+        assert_eq!(
+            delivered_notice(DeliveryMethod::Paste, false),
+            Some(DictationNotice::Copied)
+        );
+        assert_eq!(
+            delivered_notice(DeliveryMethod::CopyOnly, false),
+            Some(DictationNotice::Copied)
+        );
     }
 }

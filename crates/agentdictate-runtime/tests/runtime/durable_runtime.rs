@@ -125,6 +125,7 @@ impl Deliverer for CountingSubmittedDeliverer {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
+            consumed: true,
         })
     }
 }
@@ -183,6 +184,7 @@ impl Deliverer for InspectingDeliverer {
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: true,
+            consumed: true,
         })
     }
 }
