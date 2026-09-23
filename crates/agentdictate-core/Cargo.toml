@@ -15,7 +15,3 @@ uuid.workspace = true
 [dev-dependencies]
 proptest = "1"
 serde_json.workspace = true
-
-[[bench]]
-name = "replacements"
-harness = false

@@ -8,7 +8,6 @@ mod assets;
 mod desktop;
 mod history;
 mod overlay;
-mod replacements;
 mod route;
 mod settings;
 mod theme;
@@ -38,7 +37,6 @@ pub use overlay::{
     WaveformBar, WaveformFrame, elapsed_seconds, format_elapsed, overlay_fade_active,
     overlay_opacity, recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
-pub use replacements::{ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel};
 pub use route::Route;
 pub use settings::{SettingsDraft, SettingsDraftError};
 pub use theme::{Color, ThemeTokens};

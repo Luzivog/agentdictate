@@ -1,8 +1,7 @@
 //! Workspace view-model contracts.
 
 use agentdictate_ui::{
-    HistoryViewModel, RecoveryItemViewModel, RecoveryStage, ReplacementDraft,
-    ReplacementRuleViewModel, ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel,
+    HistoryViewModel, RecoveryItemViewModel, RecoveryStage, TranscriptViewModel, UsageDayViewModel,
     UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
 };
 
@@ -43,24 +42,6 @@ fn history_projects_recoverable_recordings_and_transcripts_without_losing_action
         history.recovery.items[0].primary_action_label(),
         "Paste again"
     );
-}
-
-#[test]
-fn replacements_expose_enabled_summary_and_exact_match_policy() {
-    let replacements = ReplacementsViewModel::new(vec![
-        ReplacementRuleViewModel::new(7, "agent dictate", "AgentDictate", true, false, true),
-        ReplacementRuleViewModel::new(8, "lead lord", "Leadlord", false, true, false),
-    ]);
-
-    assert_eq!(replacements.rule_count(), 2);
-    assert_eq!(replacements.enabled_count(), 1);
-    assert_eq!(replacements.rules[0].match_policy_label(), "Whole words");
-    assert_eq!(
-        replacements.rules[1].match_policy_label(),
-        "Case-sensitive · Anywhere"
-    );
-    assert!(ReplacementDraft::new("agent dictate", "AgentDictate").is_valid());
-    assert!(!ReplacementDraft::new("  ", "AgentDictate").is_valid());
 }
 
 #[test]
@@ -121,30 +102,6 @@ fn workspace_actions_own_stable_rendering_selectors() {
         ),
         (WorkspaceAction::LoadMoreHistory, "history-load-more"),
         (
-            WorkspaceAction::CreateReplacement {
-                draft: ReplacementDraft::new("agent dictate", "AgentDictate"),
-            },
-            "replacement-save-new",
-        ),
-        (
-            WorkspaceAction::UpdateReplacement {
-                id: 7,
-                draft: ReplacementDraft::new("agent dictate", "AgentDictate"),
-            },
-            "replacement-save-7",
-        ),
-        (
-            WorkspaceAction::SetReplacementEnabled {
-                id: 7,
-                enabled: false,
-            },
-            "replacement-toggle-7",
-        ),
-        (
-            WorkspaceAction::DeleteReplacement { id: 7 },
-            "replacement-delete-7",
-        ),
-        (
             WorkspaceAction::SelectUsagePeriod(UsagePeriod::Last7Days),
             "usage-period-7-days",
         ),
@@ -159,7 +116,6 @@ fn workspace_actions_own_stable_rendering_selectors() {
         WorkspaceViewModel {
             history: HistoryViewModel::default(),
             recent_transcripts: Vec::new(),
-            replacements: ReplacementsViewModel::default(),
             usage: UsageViewModel::default(),
             overlay_unavailable: false,
         }

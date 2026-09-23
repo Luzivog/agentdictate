@@ -1,61 +1,17 @@
 use agentdictate_core::{
-    ClientCommand, PROTOCOL_VERSION, ReplacementRule, ServerMessage, Settings, apply_replacements,
+    ClientCommand, PROTOCOL_VERSION, ServerMessage, Settings, VocabularyEntry, normalize_vocabulary,
 };
 use proptest::prelude::*;
 
-fn rule(source: &str, replacement: &str, enabled: bool) -> ReplacementRule {
-    ReplacementRule {
-        id: None,
-        source_phrase: source.to_owned(),
-        replacement_phrase: replacement.to_owned(),
-        enabled,
-        case_sensitive: false,
-        whole_word_only: false,
-    }
-}
-
 proptest! {
     #[test]
-    fn replacing_a_source_with_itself_leaves_text_untouched(
+    fn arbitrary_unicode_aliases_and_text_never_panic(
         text in any::<String>(),
-        seed in "[a-z]",
+        alias in any::<String>(),
+        spelling in any::<String>(),
     ) {
-        let full = format!("{text}{seed}{text}");
-        let mut self_rule = rule(&seed, &seed, true);
-        // Case-insensitive matching splices the replacement literally, so an
-        // identity claim requires exact-case matching.
-        self_rule.case_sensitive = true;
-        let result = apply_replacements(&full, &[self_rule]).unwrap();
-        prop_assert_eq!(result.text, full);
-        prop_assert_eq!(result.applied.len(), 1);
-    }
-
-    #[test]
-    fn disabled_and_empty_rules_never_alter_text(text in any::<String>()) {
-        let rules = [
-            rule("anything", "else", false),
-            rule("", "nothing", true),
-        ];
-        let result = apply_replacements(&text, &rules).unwrap();
-        prop_assert_eq!(result.text, text);
-        prop_assert!(result.applied.is_empty());
-    }
-
-    #[test]
-    fn applying_no_rules_is_the_identity(text in any::<String>()) {
-        let result = apply_replacements(&text, &[]).unwrap();
-        prop_assert_eq!(result.text, text);
-        prop_assert!(result.applied.is_empty());
-    }
-
-    #[test]
-    fn arbitrary_unicode_sources_and_text_never_panic(
-        text in any::<String>(),
-        source in any::<String>(),
-        replacement in any::<String>(),
-    ) {
-        let rules = [rule(&source, &replacement, true)];
-        let _ = apply_replacements(&text, &rules);
+        let vocabulary = [VocabularyEntry { spelling, aliases: vec![alias] }];
+        let _ = normalize_vocabulary(&text, &vocabulary);
     }
 
     #[test]

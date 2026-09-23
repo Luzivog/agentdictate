@@ -1,4 +1,4 @@
-use agentdictate_core::{HistoryPageRequest, ReplacementRule, Settings};
+use agentdictate_core::{DictationOptions, HistoryPageRequest, Settings, parse_vocabulary};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate, JobStage,
     RecordingJob, Runtime, Transcriber, Transcript,
@@ -36,25 +36,16 @@ impl Deliverer for SubmittedDeliverer {
 }
 
 fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
-    runtime
-        .create_replacement(ReplacementRule {
-            id: None,
-            source_phrase: "versel".to_owned(),
-            replacement_phrase: "Vercel".to_owned(),
-            enabled: true,
-            case_sensitive: false,
-            whole_word_only: true,
-        })
-        .unwrap();
-    let mut recorder = ReadyRecorder;
+    let mut request = request(
+        &directory.path().join("recordings/history.wav"),
+        TRANSCRIPTION_MODEL,
+    );
+    request.options = Some(DictationOptions::from_settings(&Settings {
+        vocabulary: parse_vocabulary("Vercel = versel").unwrap(),
+        ..Settings::default()
+    }));
     let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/history.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
+        .start_recording(request, &mut ReadyRecorder)
         .unwrap();
     runtime.capture_recording(job.id, 60.0).unwrap();
     runtime
@@ -790,56 +781,4 @@ fn active_recording_is_not_presented_as_a_recovery() {
     assert_eq!(job.stage, JobStage::Recording);
     assert!(runtime.recoveries().unwrap().is_empty());
     assert_eq!(runtime.recoverable_jobs().unwrap(), vec![job]);
-}
-
-#[test]
-fn replacement_mutations_validate_sources_and_preserve_stored_order() {
-    let directory = TempDir::new().unwrap();
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
-
-    assert!(
-        runtime
-            .create_replacement(ReplacementRule {
-                id: None,
-                source_phrase: "   ".to_owned(),
-                replacement_phrase: "ignored".to_owned(),
-                enabled: true,
-                case_sensitive: false,
-                whole_word_only: true,
-            })
-            .is_err()
-    );
-    let mut first = runtime
-        .create_replacement(ReplacementRule {
-            id: None,
-            source_phrase: "  versel  ".to_owned(),
-            replacement_phrase: "Vercel".to_owned(),
-            enabled: true,
-            case_sensitive: false,
-            whole_word_only: true,
-        })
-        .unwrap();
-    runtime
-        .create_replacement(ReplacementRule {
-            id: None,
-            source_phrase: "postgress".to_owned(),
-            replacement_phrase: "Postgres".to_owned(),
-            enabled: true,
-            case_sensitive: false,
-            whole_word_only: true,
-        })
-        .unwrap();
-
-    assert_eq!(first.source_phrase, "versel");
-    first.replacement_phrase = "Vercel Inc.".to_owned();
-    first.enabled = false;
-    let updated = runtime.update_replacement(first.clone()).unwrap();
-    assert_eq!(updated, first);
-    assert_eq!(runtime.replacement_rules().unwrap()[0], first);
-    assert!(runtime.delete_replacement(first.id.unwrap()).unwrap());
-    assert!(!runtime.delete_replacement(first.id.unwrap()).unwrap());
-    assert_eq!(
-        runtime.replacement_rules().unwrap()[0].source_phrase,
-        "postgress"
-    );
 }

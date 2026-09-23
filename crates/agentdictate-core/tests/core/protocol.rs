@@ -93,24 +93,7 @@ fn history_page_responses_round_trip_independently_from_the_workspace() {
 
 #[test]
 fn workspace_mutations_are_typed_and_round_trip() {
-    let rule = agentdictate_core::ReplacementRule {
-        id: None,
-        source_phrase: "kube cuddle".into(),
-        replacement_phrase: "kubectl".into(),
-        enabled: true,
-        case_sensitive: false,
-        whole_word_only: true,
-    };
     let commands = [
-        ClientCommand::create_replacement(20, rule.clone()),
-        ClientCommand::update_replacement(
-            21,
-            agentdictate_core::ReplacementRule {
-                id: Some(4),
-                ..rule
-            },
-        ),
-        ClientCommand::delete_replacement(22, 4),
         ClientCommand::delete_history(23, 7),
         ClientCommand::clear_history(24),
         ClientCommand::copy_transcript(25, 7),

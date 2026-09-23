@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Window};
-use gpui_component::input::InputState;
+use gpui::{AppContext, Context};
 
-use crate::{ReplacementDraft, Route, WorkspaceAction, WorkspaceViewModel};
+use crate::{Route, WorkspaceAction, WorkspaceViewModel};
 
-use super::{
-    SettingsShell, row_actions::CONFIRM_DELETE_LABEL, settings_shell::ReplacementEditorState,
-};
+use super::{SettingsShell, row_actions::CONFIRM_DELETE_LABEL};
 
 impl SettingsShell {
     /// Atomically replaces the workspace projection received from the daemon.
@@ -43,10 +40,6 @@ impl SettingsShell {
             _ => None,
         };
         let sink = Arc::clone(&self.workspace_actions.sink);
-        let closes_editor = matches!(
-            action,
-            WorkspaceAction::CreateReplacement { .. } | WorkspaceAction::UpdateReplacement { .. }
-        );
         self.routes.pending_destructive_action = None;
         self.workspace_actions.in_flight = true;
         self.clear_route_feedback_for(feedback_route);
@@ -64,9 +57,6 @@ impl SettingsShell {
                                     shell.set_route_feedback_for(feedback_route, message);
                                 }
                                 None => shell.clear_route_feedback_for(feedback_route),
-                            }
-                            if closes_editor {
-                                shell.routes.replacement_editor = None;
                             }
                             if let Some(id) = copied_transcript {
                                 shell.show_copied(id, cx);
@@ -87,7 +77,7 @@ impl SettingsShell {
     }
 
     /// History reads have their own latest-wins lane. A slow search must not
-    /// block Copy, replacement edits, or other workspace mutations, and an
+    /// block Copy or other workspace mutations, and an
     /// obsolete response must never replace a newer query.
     fn emit_history_action(&mut self, action: WorkspaceAction, cx: &mut Context<Self>) {
         if !self.workspace_actions.history_lane.schedule(&action) {
@@ -141,62 +131,6 @@ impl SettingsShell {
                 "Click {CONFIRM_DELETE_LABEL} to delete it permanently, or continue elsewhere to cancel."
             ));
         }
-    }
-
-    pub(super) fn open_replacement_editor(
-        &mut self,
-        id: Option<i64>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let draft = id
-            .and_then(|id| {
-                self.model
-                    .workspace
-                    .replacements
-                    .rules
-                    .iter()
-                    .find(|rule| rule.id == id)
-            })
-            .map(crate::ReplacementRuleViewModel::draft)
-            .unwrap_or_else(|| ReplacementDraft::new("", ""));
-        let source_value = draft.source.clone();
-        let replacement_value = draft.replacement.clone();
-        let source = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Spoken phrase")
-                .default_value(source_value)
-        });
-        let replacement = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Replacement text")
-                .default_value(replacement_value)
-        });
-        self.routes.replacement_editor = Some(ReplacementEditorState {
-            id,
-            source,
-            replacement,
-            enabled: draft.enabled,
-            case_sensitive: draft.case_sensitive,
-            whole_word_only: draft.whole_word_only,
-        });
-        self.clear_route_feedback();
-    }
-
-    pub(super) fn save_replacement(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = &self.routes.replacement_editor else {
-            return;
-        };
-        let draft = editor.draft(cx);
-        if !draft.is_valid() {
-            self.set_route_feedback("Both phrases are required");
-            return;
-        }
-        let action = match editor.id {
-            Some(id) => WorkspaceAction::UpdateReplacement { id, draft },
-            None => WorkspaceAction::CreateReplacement { draft },
-        };
-        self.emit_workspace_action(action, cx);
     }
 
     pub(super) fn set_route_feedback(&mut self, message: impl Into<String>) {

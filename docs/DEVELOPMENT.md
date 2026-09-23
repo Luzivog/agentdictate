@@ -143,16 +143,6 @@ different sizes. It prints a JSON report and fails on the first broken check:
 It does not check a panel extension such as dash-to-panel. Run it after changing the
 overlay, its placement, the clipboard, or the paste path.
 
-## Measure replacement processing
-
-`scripts/dev.sh bench` runs the release-profile benchmark of the legacy replacement
-engine: no rules, disabled rules, a miss, a short transcript, and a 30 KB
-transcript with 2,000 replacements. Each case doubles its iteration count until a
-batch takes at least 30 ms, then reports the minimum, median, and maximum of nine
-batches in nanoseconds per call. Run it before and after a change on the same idle
-host, and compare medians. It measures replacement processing only, not recording
-or network latency.
-
 ## Debug
 
 Start from a failing test, with `RUST_BACKTRACE=1` if needed. Logs are daily files in

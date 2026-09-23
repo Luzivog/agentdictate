@@ -1,8 +1,8 @@
-use std::{collections::BTreeSet, fmt, str::FromStr};
+use std::{collections::BTreeSet, fmt, str::FromStr, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AppliedReplacement, ReplacementResult, ReplacementRule, Settings};
+use crate::Settings;
 
 /// How a dictation is processed. `Literal` skips context hints and automatic
 /// vocabulary corrections.
@@ -104,11 +104,10 @@ pub struct DictationOptions {
     pub context: String,
     pub vocabulary: Vec<VocabularyEntry>,
     pub streaming: bool,
-    pub replacements: Vec<ReplacementRule>,
 }
 
 impl DictationOptions {
-    pub fn from_settings(settings: &Settings, replacements: Vec<ReplacementRule>) -> Self {
+    pub fn from_settings(settings: &Settings) -> Self {
         let mode = settings.dictation_mode;
         let mut context = settings.transcription_prompt.trim().to_owned();
         if !settings.project_context.trim().is_empty() {
@@ -129,11 +128,6 @@ impl DictationOptions {
                 settings.vocabulary.clone()
             },
             streaming: settings.streaming_enabled,
-            replacements: if mode == DictationMode::Literal {
-                Vec::new()
-            } else {
-                replacements
-            },
         }
     }
 
@@ -164,8 +158,27 @@ pub fn literal_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     LITERALS.find_iter(text).map(|m| m.range()).collect()
 }
 
+/// A vocabulary alias that normalization rewrote to its spelling, and how
+/// many times. Jobs and History store these as `replacements_applied`, under
+/// the field names of the retired Replacements feature.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VocabularyCorrection {
+    #[serde(rename = "source_phrase")]
+    pub alias: String,
+    #[serde(rename = "replacement_phrase")]
+    pub spelling: String,
+    pub count: usize,
+}
+
+/// A transcript after vocabulary normalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NormalizedText {
+    pub text: String,
+    pub corrections: Vec<VocabularyCorrection>,
+}
+
 /// A single longest-match pass. Output never becomes input to another alias.
-pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> ReplacementResult {
+pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> NormalizedText {
     let protected = literal_ranges(text);
     let mut matches = Vec::new();
     for (entry_index, entry) in vocabulary.iter().enumerate() {
@@ -182,8 +195,8 @@ pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> Repla
                 continue;
             };
             for matched in expression.find_iter(text) {
-                if crate::replacements::neighbor_is_word(text, matched.start(), true)
-                    || crate::replacements::neighbor_is_word(text, matched.end(), false)
+                if neighbor_is_word(text, matched.start(), true)
+                    || neighbor_is_word(text, matched.end(), false)
                     || protected
                         .iter()
                         .any(|r| matched.start() < r.end && matched.end() > r.start)
@@ -197,7 +210,7 @@ pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> Repla
     matches.sort_by_key(|&(start, end, e, a)| (start, std::cmp::Reverse(end - start), e, a));
     let mut output = String::new();
     let mut cursor = 0;
-    let mut applied: Vec<AppliedReplacement> = Vec::new();
+    let mut corrections: Vec<VocabularyCorrection> = Vec::new();
     for (start, end, e, a) in matches {
         if start < cursor {
             continue;
@@ -206,22 +219,38 @@ pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> Repla
         output.push_str(&text[cursor..start]);
         output.push_str(&entry.spelling);
         cursor = end;
-        if let Some(hit) = applied.iter_mut().find(|hit| {
-            hit.source_phrase == entry.aliases[a] && hit.replacement_phrase == entry.spelling
-        }) {
+        if let Some(hit) = corrections
+            .iter_mut()
+            .find(|hit| hit.alias == entry.aliases[a] && hit.spelling == entry.spelling)
+        {
             hit.count += 1;
         } else {
-            applied.push(AppliedReplacement {
-                rule_id: None,
-                source_phrase: entry.aliases[a].clone(),
-                replacement_phrase: entry.spelling.clone(),
+            corrections.push(VocabularyCorrection {
+                alias: entry.aliases[a].clone(),
+                spelling: entry.spelling.clone(),
                 count: 1,
             });
         }
     }
     output.push_str(&text[cursor..]);
-    ReplacementResult {
+    NormalizedText {
         text: output,
-        applied,
+        corrections,
     }
+}
+
+/// True when the character next to `byte_index` (before it, or after it) is
+/// a Unicode word character, so an alias match there is part of a longer word.
+fn neighbor_is_word(text: &str, byte_index: usize, before: bool) -> bool {
+    static WORD_CHARACTER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\w$").expect("word-character expression is valid"));
+    let neighbor = if before {
+        text[..byte_index].chars().next_back()
+    } else {
+        text[byte_index..].chars().next()
+    };
+    neighbor.is_some_and(|character| {
+        let mut encoded = [0; 4];
+        WORD_CHARACTER.is_match(character.encode_utf8(&mut encoded))
+    })
 }

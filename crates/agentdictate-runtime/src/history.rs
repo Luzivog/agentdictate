@@ -1,6 +1,6 @@
 use agentdictate_core::{
-    AppliedReplacement, HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, JobId,
-    JobStage, Settings, count_words_ascii_history, transcription_price_per_minute,
+    HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, JobId, JobStage, Settings,
+    count_words_ascii_history, transcription_price_per_minute,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -201,12 +201,11 @@ fn record_session(
     job: &RecordingJob,
     settings: &Settings,
 ) -> Result<(), RuntimeError> {
-    let replacements_json: String = transaction.query_row(
+    let corrections: String = transaction.query_row(
         "SELECT replacements_applied FROM dictation_jobs WHERE runtime_id = ?1",
         [job.id.to_string()],
         |row| row.get(0),
     )?;
-    let replacements_applied = deserialize_replacements(&replacements_json)?;
     // Priced once, at today's price: that is what these minutes cost.
     let cost = job.duration_seconds.max(0.0) / 60.0
         * transcription_price_per_minute(&job.transcription_model);
@@ -245,7 +244,7 @@ fn record_session(
                 timestamp(job.updated_at),
                 job.raw_transcript,
                 job.final_text,
-                serialize_replacements(&replacements_applied)?,
+                corrections,
                 job.copied_to_clipboard,
                 job.paste_triggered,
             ],
@@ -277,43 +276,4 @@ pub(crate) fn row_to_history(
         word_count,
         duration_seconds,
     }))
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct StoredReplacement {
-    #[serde(alias = "rule_id")]
-    id: Option<i64>,
-    source_phrase: String,
-    replacement_phrase: String,
-    count: usize,
-}
-
-pub(crate) fn serialize_replacements(
-    replacements: &[AppliedReplacement],
-) -> Result<String, serde_json::Error> {
-    serde_json::to_string(
-        &replacements
-            .iter()
-            .map(|replacement| StoredReplacement {
-                id: replacement.rule_id,
-                source_phrase: replacement.source_phrase.clone(),
-                replacement_phrase: replacement.replacement_phrase.clone(),
-                count: replacement.count,
-            })
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn deserialize_replacements(value: &str) -> Result<Vec<AppliedReplacement>, serde_json::Error> {
-    serde_json::from_str::<Vec<StoredReplacement>>(value).map(|stored| {
-        stored
-            .into_iter()
-            .map(|replacement| AppliedReplacement {
-                rule_id: replacement.id.filter(|id| *id != 0),
-                source_phrase: replacement.source_phrase,
-                replacement_phrase: replacement.replacement_phrase,
-                count: replacement.count,
-            })
-            .collect()
-    })
 }

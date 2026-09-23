@@ -266,9 +266,10 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
                 model: job.transcription_model.clone(),
             });
         }
-        let options = job.options.clone().unwrap_or_else(|| {
-            agentdictate_core::DictationOptions::from_settings(&self.settings, Vec::new())
-        });
+        let options = job
+            .options
+            .clone()
+            .unwrap_or_else(|| agentdictate_core::DictationOptions::from_settings(&self.settings));
         let keywords = options.keywords();
         let text = match self.speech.transcribe_audio(TranscriptionRequest {
             keywords: &keywords,

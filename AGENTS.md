@@ -23,8 +23,8 @@ AgentDictate is a Rust workspace for a native Linux dictation app. The workspace
 uses the Rust toolchain pinned in `rust-toolchain.toml` and is split by
 responsibility:
 
-- `crates/agentdictate-core`: domain types, settings, vocabulary and legacy
-  replacements, workflow, and protocol logic.
+- `crates/agentdictate-core`: domain types, settings, vocabulary, workflow, and
+  protocol logic.
 - `crates/agentdictate-runtime`: SQLite jobs, history, recovery, usage, and the
   IPC server and client.
 - `crates/agentdictate-linux`: Linux recording, hotkey, focus, clipboard, and

@@ -90,7 +90,7 @@ app depends on runtime, linux, and ui; each of those depends only on core.
 - **agentdictate-core**: platform-independent types. Settings and their validation,
   the IPC protocol (`PROTOCOL_VERSION` in `crates/agentdictate-core/src/protocol.rs`),
   the workflow state machine and job stages, dictation options, vocabulary parsing and
-  alias normalization, the legacy replacement engine, and the per-minute price table.
+  alias normalization, and the per-minute price table.
 - **agentdictate-runtime**: durable state. The SQLite job table with its checkpoints,
   Recovery, History with full-text search, usage queries, startup cleanup, settings
   load and save, the IPC server and client, and the port traits (`Transcriber`,
@@ -114,8 +114,8 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 
 1. **Start.** The hotkey, the tray, or `agentdictate start` creates a `starting` job.
    The job stores a snapshot of its dictation options, so a later retry uses the
-   same ones: mode, language, context, vocabulary, streaming, and legacy replacement
-   rules, never credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
+   same ones: mode, language, context, vocabulary, and streaming, never
+   credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
    node latency) writing a WAV under `recordings/`, lowers other audio on a separate
    thread, and launches the overlay helper.
 2. **Stream (optional).** With **Stream speech** on, a Realtime session tails the
@@ -135,8 +135,8 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    job is removed and nothing is pasted or kept in History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.
 6. **Normalize.** The raw text is saved first, so a later failure never needs a second
-   paid transcription. Legacy replacement rules run in stored order, then vocabulary
-   aliases replace spoken forms with their spellings. The job is now
+   paid transcription. Vocabulary aliases then replace spoken forms with their
+   spellings. The job is now
    `ready_to_deliver`.
 7. **Gate.** The overlay is dismissed. If its helper confirmed an override-redirect
    window, the paste goes ahead while it fades. Otherwise the paste waits up to
@@ -208,7 +208,7 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | --- | --- |
 | `~/.config/agentdictate/config.json` | Settings, including the OpenAI API key in plain text, mode 0600 |
 | `~/.local/share/systemd/user/agentdictated.service` | The daemon's user unit, written by the app when its text changes |
-| `~/.local/share/agentdictate/agentdictate.sqlite` | Jobs, History, usage, legacy replacement rules, dictations imported from ChatGPT before 2026-09-23 |
+| `~/.local/share/agentdictate/agentdictate.sqlite` | Jobs, History, usage, and the disabled rules of the retired Replacements feature |
 | `~/.local/share/agentdictate/recordings/` | WAV files of in-flight, recoverable, and preserved dictations |
 | `~/.local/share/agentdictate/native-access/` | The input-access rule and guide from `install.sh`, and the helper `setup-access` writes |
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |
@@ -251,6 +251,3 @@ replaces those defaults. Logs can contain transcript text.
   lacked working vocabulary hints, and needed 1.5 to 2 GB of RAM.
 - **No noise suppression or gain control.** Enhancement front-ends tend to make
   modern speech recognition worse.
-- **Legacy replacements splice text literally.** Unlike the removed Python version,
-  a `$1` in a replacement phrase is inserted as typed, whole-word matching checks the
-  neighboring characters, and applied rules are reported as `rule_id`.

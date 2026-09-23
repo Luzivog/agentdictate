@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use agentdictate_core::{
@@ -43,9 +43,10 @@ pub struct AgentProcess {
 impl AgentProcess {
     pub fn open(paths: AppPaths) -> anyhow::Result<Self> {
         paths.ensure_directories()?;
-        let settings = load_settings(&paths.config_file)?;
+        let mut settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
         runtime.reconcile_recovery_deletions(&paths.recordings)?;
+        retire_replacement_rules(&runtime, &mut settings, &paths.config_file);
         let transcriber = TranscriptionPipeline::new(
             settings.clone(),
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
@@ -255,6 +256,24 @@ impl AgentProcess {
     }
 }
 
+/// Moves the retired Replacements feature's enabled rules into vocabulary
+/// and logs each one. A failure is logged and never stops the daemon.
+fn retire_replacement_rules(runtime: &Runtime, settings: &mut Settings, config_file: &Path) {
+    match runtime.retire_replacement_rules(settings, config_file) {
+        Ok(retired) => {
+            for rule in retired {
+                tracing::info!(
+                    source_phrase = %rule.source_phrase,
+                    replacement_phrase = %rule.replacement_phrase,
+                    outcome = ?rule.outcome,
+                    "retired a Replacements rule"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not move Replacements rules into vocabulary"),
+    }
+}
+
 fn run_post_listener_maintenance(
     settings: &Settings,
     login_startup: &LoginStartup,
@@ -311,9 +330,6 @@ impl IpcHandler for AgentProcess {
                 | ClientCommandTag::RetryTranscription
                 | ClientCommandTag::RetryDelivery
                 | ClientCommandTag::DeleteRecovery
-                | ClientCommandTag::CreateReplacement
-                | ClientCommandTag::UpdateReplacement
-                | ClientCommandTag::DeleteReplacement
                 | ClientCommandTag::DeleteHistory
                 | ClientCommandTag::ClearHistory
                 | ClientCommandTag::CopyTranscript
@@ -355,25 +371,6 @@ impl IpcHandler for AgentProcess {
                 .delete_recovery(job_id)
                 .map(|_| ())
                 .map_err(Into::into),
-            ClientCommandKind::CreateReplacement { rule, .. } => self
-                .daemon
-                .create_replacement(rule)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::UpdateReplacement { rule, .. } => self
-                .daemon
-                .update_replacement(rule)
-                .map(|_| ())
-                .map_err(Into::into),
-            ClientCommandKind::DeleteReplacement { id, .. } => self
-                .daemon
-                .delete_replacement(id)
-                .map_err(anyhow::Error::from)
-                .and_then(|deleted| {
-                    deleted
-                        .then_some(())
-                        .ok_or_else(|| anyhow::anyhow!("replacement {id} was not found"))
-                }),
             ClientCommandKind::DeleteHistory { id, .. } => self
                 .daemon
                 .delete_history(id)
@@ -446,9 +443,6 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
         | ClientCommandKind::RetryTranscription { request_id, .. }
         | ClientCommandKind::RetryDelivery { request_id, .. }
         | ClientCommandKind::DeleteRecovery { request_id, .. }
-        | ClientCommandKind::CreateReplacement { request_id, .. }
-        | ClientCommandKind::UpdateReplacement { request_id, .. }
-        | ClientCommandKind::DeleteReplacement { request_id, .. }
         | ClientCommandKind::DeleteHistory { request_id, .. }
         | ClientCommandKind::ClearHistory { request_id }
         | ClientCommandKind::CopyTranscript { request_id, .. }

@@ -21,7 +21,6 @@ mod history_action_lane;
 mod history_page;
 mod overlay_view;
 mod overview;
-mod replacements_page;
 mod row_actions;
 mod settings_actions;
 mod settings_form;
@@ -285,8 +284,4 @@ pub struct SettingsShell {
     workspace_actions: WorkspaceActionState,
     routes: RouteUiState,
     _subscriptions: Vec<Subscription>,
-}
-
-const fn enabled_label(enabled: bool) -> &'static str {
-    if enabled { "On" } else { "Off" }
 }

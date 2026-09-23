@@ -122,7 +122,7 @@ pub struct NavigationItemViewModel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellViewModel {
     pub active_route: Route,
-    pub navigation: [NavigationItemViewModel; 4],
+    pub navigation: [NavigationItemViewModel; Route::ALL.len()],
     pub status: StatusViewModel,
     pub hotkey: HotkeyViewModel,
     pub workspace: WorkspaceViewModel,

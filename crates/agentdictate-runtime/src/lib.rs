@@ -1,9 +1,8 @@
 //! Durable dictation orchestration, persistence, networking, and IPC.
 
 pub use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, JobId, JobStage,
-    ReplacementRule, ServerMessage, ServerMessageKind, Settings, Workflow, WorkflowPhase,
-    WorkflowSignal,
+    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, JobId, JobStage, ServerMessage,
+    ServerMessageKind, Settings, Workflow, WorkflowPhase, WorkflowSignal,
 };
 
 mod ipc;
@@ -12,6 +11,8 @@ mod fs;
 pub use fs::write_atomic;
 mod history;
 mod history_search;
+mod legacy_replacements;
+pub use legacy_replacements::{RetiredReplacement, RetiredReplacementOutcome};
 mod maintenance_priority;
 pub use maintenance_priority::{HistoryIndexMaintenance, RecordingPriorityGuard};
 mod ports;

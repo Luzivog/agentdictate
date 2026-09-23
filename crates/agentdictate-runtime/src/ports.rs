@@ -14,12 +14,6 @@ pub enum RuntimeError {
     InvalidHistoryCursor(String),
     #[error("dictation job {0} was not found")]
     JobNotFound(JobId),
-    #[error("replacement mapping {0} was not found")]
-    ReplacementNotFound(i64),
-    #[error("replacement mapping id is required for updates")]
-    MissingReplacementId,
-    #[error("replacement source phrase cannot be blank")]
-    InvalidReplacementSource,
     #[error("dictation job {job_id} is {actual:?}, expected {expected:?}")]
     InvalidStage {
         job_id: JobId,

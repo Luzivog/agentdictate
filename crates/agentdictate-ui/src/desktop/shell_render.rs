@@ -2,22 +2,22 @@ use gpui::{Context, IntoElement, Render, ScrollHandle, Window, prelude::*, px};
 use gpui_component::{scroll::Scrollbar, v_flex};
 
 use crate::{
-    HistoryViewModel, NavigationItemViewModel, ReplacementsViewModel, Route, ThemeTokens,
-    TranscriptViewModel, UsageViewModel, WorkspaceAction,
+    HistoryViewModel, NavigationItemViewModel, Route, ThemeTokens, TranscriptViewModel,
+    UsageViewModel,
 };
 
 use super::{
     ROUTE_SCROLLBAR_WIDTH, SettingsShell, gpui_color,
     history_page::{self, HistoryPageModel},
-    overview, replacements_page,
+    overview,
     settings_page::{self, SettingsPageModel},
-    settings_shell::{ReplacementEditorState, route_index},
+    settings_shell::route_index,
     shell_chrome::{shell_title_bar, sidebar_view},
 };
 
 #[derive(Clone, Copy)]
 struct ShellChromeModel {
-    navigation: [NavigationItemViewModel; 4],
+    navigation: [NavigationItemViewModel; Route::ALL.len()],
     theme: ThemeTokens,
 }
 
@@ -37,12 +37,6 @@ enum RoutePageModel {
         copied_transcript: Option<i64>,
     },
     History(HistoryPageModel),
-    Replacements {
-        replacements: ReplacementsViewModel,
-        editor: Option<ReplacementEditorState>,
-        feedback: Option<String>,
-        pending_destructive_action: Option<WorkspaceAction>,
-    },
     Settings(Box<SettingsPageModel>),
 }
 
@@ -65,12 +59,6 @@ impl RoutePageModel {
                 expanded_transcripts: shell.routes.expanded_transcripts.clone(),
                 copied_transcript: shell.copied_transcript(),
             }),
-            Route::Replacements => Self::Replacements {
-                replacements: workspace.replacements.clone(),
-                editor: shell.routes.replacement_editor.clone(),
-                feedback: shell.routes.entry(Route::Replacements).feedback.clone(),
-                pending_destructive_action: shell.routes.pending_destructive_action.clone(),
-            },
             Route::Settings => Self::Settings(Box::new(SettingsPageModel {
                 draft: shell.settings.form.snapshot(cx),
                 settings_dirty: shell.settings.dirty,
@@ -90,7 +78,6 @@ impl RoutePageModel {
         match self {
             Self::Overview { .. } => Route::Overview,
             Self::History(_) => Route::History,
-            Self::Replacements { .. } => Route::Replacements,
             Self::Settings(_) => Route::Settings,
         }
     }
@@ -98,7 +85,6 @@ impl RoutePageModel {
     fn embeds_feedback(&self) -> bool {
         match self {
             Self::Settings(_) | Self::History(_) => true,
-            Self::Replacements { editor, .. } => editor.is_some(),
             Self::Overview { .. } => false,
         }
     }
@@ -121,19 +107,6 @@ impl RoutePageModel {
                 cx,
             ),
             Self::History(history) => history_page::surface(history, theme, cx),
-            Self::Replacements {
-                replacements,
-                editor,
-                feedback,
-                pending_destructive_action,
-            } => replacements_page::surface(
-                replacements,
-                editor,
-                feedback,
-                pending_destructive_action,
-                theme,
-                cx,
-            ),
             Self::Settings(settings) => settings_page::surface(*settings, theme, cx),
         }
     }

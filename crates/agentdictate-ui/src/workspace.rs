@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use crate::{
-    HistoryViewModel, RecoveryStage, ReplacementDraft, ReplacementsViewModel, TranscriptViewModel,
-    UsagePeriod, UsageViewModel,
-};
+use crate::{HistoryViewModel, RecoveryStage, TranscriptViewModel, UsagePeriod, UsageViewModel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceAction {
@@ -14,10 +11,6 @@ pub enum WorkspaceAction {
     ClearHistory,
     SearchHistory { query: String },
     LoadMoreHistory,
-    CreateReplacement { draft: ReplacementDraft },
-    UpdateReplacement { id: i64, draft: ReplacementDraft },
-    SetReplacementEnabled { id: i64, enabled: bool },
-    DeleteReplacement { id: i64 },
     SelectUsagePeriod(UsagePeriod),
 }
 
@@ -36,10 +29,6 @@ impl WorkspaceAction {
             | Self::DeleteTranscript { .. }
             | Self::SearchHistory { .. }
             | Self::LoadMoreHistory
-            | Self::CreateReplacement { .. }
-            | Self::UpdateReplacement { .. }
-            | Self::SetReplacementEnabled { .. }
-            | Self::DeleteReplacement { .. }
             | Self::SelectUsagePeriod(_) => None,
         }
     }
@@ -53,10 +42,6 @@ impl WorkspaceAction {
             Self::ClearHistory => "settings-delete-all-history".to_owned(),
             Self::SearchHistory { .. } => "history-search".to_owned(),
             Self::LoadMoreHistory => "history-load-more".to_owned(),
-            Self::CreateReplacement { .. } => "replacement-save-new".to_owned(),
-            Self::UpdateReplacement { id, .. } => format!("replacement-save-{id}"),
-            Self::SetReplacementEnabled { id, .. } => format!("replacement-toggle-{id}"),
-            Self::DeleteReplacement { id } => format!("replacement-delete-{id}"),
             Self::SelectUsagePeriod(period) => format!("usage-period-{}", period.slug()),
         }
     }
@@ -67,7 +52,6 @@ pub struct WorkspaceViewModel {
     pub overlay_unavailable: bool,
     pub history: HistoryViewModel,
     pub recent_transcripts: Vec<TranscriptViewModel>,
-    pub replacements: ReplacementsViewModel,
     pub usage: UsageViewModel,
 }
 
@@ -82,14 +66,12 @@ impl WorkspaceViewModel {
     pub fn new(
         history: HistoryViewModel,
         recent_transcripts: Vec<TranscriptViewModel>,
-        replacements: ReplacementsViewModel,
         usage: UsageViewModel,
     ) -> Self {
         Self {
             overlay_unavailable: false,
             history,
             recent_transcripts,
-            replacements,
             usage,
         }
     }

@@ -43,18 +43,9 @@ CREATE TABLE IF NOT EXISTS transcript_history (
 );
 
 -- Databases from before 2026-09-23 also hold an `external_dictation_imports`
--- ledger from the retired ChatGPT desktop import. Nothing reads or writes it.
-
-CREATE TABLE IF NOT EXISTS replacement_mappings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_phrase TEXT NOT NULL,
-    replacement_phrase TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    case_sensitive INTEGER NOT NULL DEFAULT 0,
-    whole_word_only INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
+-- ledger from the retired ChatGPT desktop import, which nothing reads, and the
+-- `replacement_mappings` rules of the retired Replacements feature, which
+-- `Runtime::retire_replacement_rules` moves into vocabulary once.
 
 -- Caches that usage and pricing no longer keep.
 DROP TABLE IF EXISTS daily_stats;

@@ -54,7 +54,7 @@ fn main() -> anyhow::Result<()> {
             .contains(&pair[0].as_str())),
         "unknown or incomplete argument"
     );
-    let options = DictationOptions::from_settings(&settings, Vec::new());
+    let options = DictationOptions::from_settings(&settings);
     let keywords = options.keywords();
     let mut transport = ReqwestOpenAiTransport::new(&settings.openai_api_key);
     let input = fs::read_to_string(&cases)?;

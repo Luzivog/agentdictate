@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::replacements::ReplacementRule;
 use crate::settings::{SecretString, Settings, SettingsSnapshot};
 use crate::snapshots::{
     HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, WorkspaceSnapshot,
@@ -99,21 +98,6 @@ impl ClientCommand {
     }
 
     #[must_use]
-    pub fn create_replacement(request_id: u64, rule: ReplacementRule) -> Self {
-        Self::with_kind(ClientCommandKind::CreateReplacement { request_id, rule })
-    }
-
-    #[must_use]
-    pub fn update_replacement(request_id: u64, rule: ReplacementRule) -> Self {
-        Self::with_kind(ClientCommandKind::UpdateReplacement { request_id, rule })
-    }
-
-    #[must_use]
-    pub const fn delete_replacement(request_id: u64, id: i64) -> Self {
-        Self::with_kind(ClientCommandKind::DeleteReplacement { request_id, id })
-    }
-
-    #[must_use]
     pub const fn delete_history(request_id: u64, id: i64) -> Self {
         Self::with_kind(ClientCommandKind::DeleteHistory { request_id, id })
     }
@@ -172,9 +156,6 @@ impl ClientCommand {
             ClientCommandKind::RetryTranscription { .. } => ClientCommandTag::RetryTranscription,
             ClientCommandKind::RetryDelivery { .. } => ClientCommandTag::RetryDelivery,
             ClientCommandKind::DeleteRecovery { .. } => ClientCommandTag::DeleteRecovery,
-            ClientCommandKind::CreateReplacement { .. } => ClientCommandTag::CreateReplacement,
-            ClientCommandKind::UpdateReplacement { .. } => ClientCommandTag::UpdateReplacement,
-            ClientCommandKind::DeleteReplacement { .. } => ClientCommandTag::DeleteReplacement,
             ClientCommandKind::DeleteHistory { .. } => ClientCommandTag::DeleteHistory,
             ClientCommandKind::ClearHistory { .. } => ClientCommandTag::ClearHistory,
             ClientCommandKind::CopyTranscript { .. } => ClientCommandTag::CopyTranscript,
@@ -203,9 +184,6 @@ pub enum ClientCommandTag {
     RetryTranscription,
     RetryDelivery,
     DeleteRecovery,
-    CreateReplacement,
-    UpdateReplacement,
-    DeleteReplacement,
     DeleteHistory,
     ClearHistory,
     CopyTranscript,
@@ -228,9 +206,6 @@ impl ClientCommandTag {
         Self::RetryTranscription,
         Self::RetryDelivery,
         Self::DeleteRecovery,
-        Self::CreateReplacement,
-        Self::UpdateReplacement,
-        Self::DeleteReplacement,
         Self::DeleteHistory,
         Self::ClearHistory,
         Self::CopyTranscript,
@@ -281,18 +256,6 @@ pub enum ClientCommandKind {
         request_id: u64,
         job_id: JobId,
     },
-    CreateReplacement {
-        request_id: u64,
-        rule: ReplacementRule,
-    },
-    UpdateReplacement {
-        request_id: u64,
-        rule: ReplacementRule,
-    },
-    DeleteReplacement {
-        request_id: u64,
-        id: i64,
-    },
     DeleteHistory {
         request_id: u64,
         id: i64,
@@ -339,16 +302,13 @@ mod tests {
             ClientCommandTag::RetryTranscription => 7,
             ClientCommandTag::RetryDelivery => 8,
             ClientCommandTag::DeleteRecovery => 9,
-            ClientCommandTag::CreateReplacement => 10,
-            ClientCommandTag::UpdateReplacement => 11,
-            ClientCommandTag::DeleteReplacement => 12,
-            ClientCommandTag::DeleteHistory => 13,
-            ClientCommandTag::ClearHistory => 14,
-            ClientCommandTag::CopyTranscript => 15,
-            ClientCommandTag::UpdateSettings => 16,
-            ClientCommandTag::SetApiKey => 17,
-            ClientCommandTag::HotkeyStatusChanged => 18,
-            ClientCommandTag::Quit => 19,
+            ClientCommandTag::DeleteHistory => 10,
+            ClientCommandTag::ClearHistory => 11,
+            ClientCommandTag::CopyTranscript => 12,
+            ClientCommandTag::UpdateSettings => 13,
+            ClientCommandTag::SetApiKey => 14,
+            ClientCommandTag::HotkeyStatusChanged => 15,
+            ClientCommandTag::Quit => 16,
         }
     }
 

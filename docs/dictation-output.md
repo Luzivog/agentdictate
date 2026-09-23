@@ -6,16 +6,16 @@ fails, and how to measure a change with `agentdictate-evaluate`. For the full
 pipeline, see [the architecture overview](architecture.md#dictation-pipeline).
 
 Each recording stores a snapshot of its options when it starts: output mode,
-language, context, vocabulary, streaming, and legacy replacement rules. API
-credentials are never stored with it. **Transcribe again** reuses that snapshot and
-any text already recognized, so a retry neither changes behavior nor pays twice.
+language, context, vocabulary, and streaming. API credentials are never stored with
+it. **Transcribe again** reuses that snapshot and any text already recognized, so a
+retry neither changes behavior nor pays twice.
 Older jobs without a snapshot use the current settings.
 
 ## Output modes
 
 - **Dictate**, the default, sends the context and vocabulary hints with the audio,
-  then applies legacy replacements and vocabulary aliases to the result.
-- **Literal** sends only the language hint and applies no replacements or aliases.
+  then applies vocabulary aliases to the result.
+- **Literal** sends only the language hint and applies no aliases.
   Use it for exact strings whose spelling you cannot predict. Speech recognition
   still cannot guarantee exact characters.
 
@@ -48,7 +48,7 @@ GitHub Actions
   only a hint.
 - Aliases are automatic corrections. After recognition, each alias is replaced by
   its spelling. Matching ignores case and needs whole words. At any position the
-  longest alias wins, and the pass runs once, so a replacement never feeds another
+  longest alias wins, and the pass runs once, so a correction never feeds another
   alias.
 - Aliases never change protected spans: text in backticks or code fences, text in
   double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
@@ -62,10 +62,9 @@ that spoken form should always mean the spelling. An alias such as `Rust = rest`
 would also rewrite every real "rest". To reproduce a failure, copy the transcript
 from History; AgentDictate never watches what you type in other apps.
 
-The **Replacements** screen holds legacy rules. They run before the aliases, one
-rule after another in stored order, so one rule's output can trigger the next. Each
-rule has its own case and whole-word options, and none of them respects protected
-spans. Avoid defining the same correction in both places.
+The retired **Replacements** screen is gone. On the first daemon start after the
+upgrade, each enabled whole-word rule became an alias of its replacement's spelling,
+and the daemon log lists every rule it moved or could not express as vocabulary.
 
 ## Context and language
 
@@ -160,7 +159,7 @@ target/debug/agentdictate-evaluate \
 The tool writes one JSON line per case, with the output, the checks, and the options
 used, to a new file with mode 0600. It refuses to overwrite an existing file, so use
 a new path per run. It prints how many cases passed and exits with an error if any
-check or request failed, keeping the results. Legacy replacements are not applied.
+check or request failed, keeping the results.
 
 The other modes call OpenAI and cost money. They need a configuration with an
 OpenAI API key.

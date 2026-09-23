@@ -16,16 +16,16 @@ use std::{
 
 use agentdictate_core::{
     ClientCommand, DEFAULT_HISTORY_PAGE_SIZE, HISTORY_CONTINUATION_PAGE_SIZE, HistoryPageCursor,
-    HistoryPageSnapshot, JobId, ReplacementRule, ServerMessageKind, UsageSnapshot,
-    UsageTotalsSnapshot, WorkspaceSnapshot, format_duration_clock,
+    HistoryPageSnapshot, JobId, ServerMessageKind, UsageSnapshot, UsageTotalsSnapshot,
+    WorkspaceSnapshot, format_duration_clock,
 };
 use agentdictate_runtime::IpcClient;
 use thiserror::Error;
 
 use agentdictate_ui::{
-    HistoryViewModel, RecoveryItemViewModel, RecoveryStage, ReplacementRuleViewModel,
-    ReplacementsViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals,
-    UsageViewModel, WorkspaceAction, WorkspaceViewModel, format_history_time,
+    HistoryViewModel, RecoveryItemViewModel, RecoveryStage, TranscriptViewModel, UsageDayViewModel,
+    UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel,
+    format_history_time,
 };
 use chrono::{DateTime, Local};
 
@@ -37,8 +37,6 @@ pub enum WorkspaceError {
     RequestStateUnavailable,
     #[error("invalid recovery id {id}")]
     InvalidRecoveryId { id: String },
-    #[error("replacement {id} was not found")]
-    ReplacementNotFound { id: i64 },
     #[error(transparent)]
     Ipc(#[from] agentdictate_runtime::IpcError),
     #[error("{message}")]
@@ -175,43 +173,6 @@ impl WorkspaceClient {
             | WorkspaceAction::DeleteTranscript { .. }
             | WorkspaceAction::ClearHistory => {
                 unreachable!("handled above")
-            }
-            WorkspaceAction::CreateReplacement { draft } => ClientCommand::create_replacement(
-                request_id,
-                ReplacementRule {
-                    id: None,
-                    source_phrase: draft.source,
-                    replacement_phrase: draft.replacement,
-                    enabled: draft.enabled,
-                    case_sensitive: draft.case_sensitive,
-                    whole_word_only: draft.whole_word_only,
-                },
-            ),
-            WorkspaceAction::UpdateReplacement { id, draft } => ClientCommand::update_replacement(
-                request_id,
-                ReplacementRule {
-                    id: Some(id),
-                    source_phrase: draft.source,
-                    replacement_phrase: draft.replacement,
-                    enabled: draft.enabled,
-                    case_sensitive: draft.case_sensitive,
-                    whole_word_only: draft.whole_word_only,
-                },
-            ),
-            WorkspaceAction::SetReplacementEnabled { id, enabled } => {
-                let state = self.lock_state()?;
-                let mut rule = state
-                    .snapshot
-                    .replacements
-                    .iter()
-                    .find(|rule| rule.id == Some(id))
-                    .cloned()
-                    .ok_or(WorkspaceError::ReplacementNotFound { id })?;
-                rule.enabled = enabled;
-                ClientCommand::update_replacement(request_id, rule)
-            }
-            WorkspaceAction::DeleteReplacement { id } => {
-                ClientCommand::delete_replacement(request_id, id)
             }
             WorkspaceAction::SelectUsagePeriod(_) => unreachable!("handled above"),
         };
@@ -550,20 +511,6 @@ fn workspace_view_model(
         .iter()
         .map(|entry| transcript_view_model(entry, &now))
         .collect();
-    let replacements = snapshot
-        .replacements
-        .iter()
-        .filter_map(|rule| {
-            Some(ReplacementRuleViewModel::new(
-                rule.id?,
-                rule.source_phrase.clone(),
-                rule.replacement_phrase.clone(),
-                rule.enabled,
-                rule.case_sensitive,
-                rule.whole_word_only,
-            ))
-        })
-        .collect();
     WorkspaceViewModel::new(
         HistoryViewModel::from_page(
             recoveries,
@@ -573,7 +520,6 @@ fn workspace_view_model(
             history.next_cursor.is_some(),
         ),
         recent_transcripts,
-        ReplacementsViewModel::new(replacements),
         usage_view_model(&snapshot.usage, period),
     )
     .with_overlay_unavailable(snapshot.overlay_unavailable)

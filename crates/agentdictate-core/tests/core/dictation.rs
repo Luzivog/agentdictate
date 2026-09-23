@@ -11,7 +11,7 @@ fn vocabulary_uses_longest_original_spans_and_preserves_literals() {
         result.text,
         "Beta then Alpha. `agent` \"agent\" https://host/agent /agent --agent"
     );
-    assert_eq!(result.applied.iter().map(|a| a.count).sum::<usize>(), 2);
+    assert_eq!(result.corrections.iter().map(|a| a.count).sum::<usize>(), 2);
     assert_eq!(
         normalize_vocabulary("éagent agent_name agent\u{301}", &terms).text,
         "éagent agent_name agent\u{301}"
@@ -37,19 +37,9 @@ fn literal_options_never_include_automatic_corrections() {
         vocabulary: parse_vocabulary("Codex = codecs").unwrap(),
         ..Settings::default()
     };
-    let options = DictationOptions::from_settings(
-        &settings,
-        vec![ReplacementRule {
-            id: None,
-            source_phrase: "hello".into(),
-            replacement_phrase: "changed".into(),
-            enabled: true,
-            case_sensitive: false,
-            whole_word_only: true,
-        }],
-    );
+    let options = DictationOptions::from_settings(&settings);
     assert!(options.keywords().is_empty());
-    assert!(options.replacements.is_empty());
+    assert!(options.vocabulary.is_empty());
     assert!(options.context.is_empty());
 }
 
@@ -61,7 +51,7 @@ fn configuration_is_credential_free() {
         language: "en,fr".into(),
         ..Settings::default()
     };
-    let options = DictationOptions::from_settings(&settings, Vec::new());
+    let options = DictationOptions::from_settings(&settings);
     let json = serde_json::to_string(&options).unwrap();
     assert!(!json.contains("never-snapshot-this"));
     assert_eq!(options.languages(), ["en", "fr"]);

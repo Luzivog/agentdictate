@@ -1,7 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::replacements::ReplacementRule;
 use crate::workflow::{JobId, JobStage};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -137,6 +136,5 @@ pub struct WorkspaceSnapshot {
     pub recoveries: Vec<RecoverySnapshot>,
     /// The newest transcripts, unfiltered.
     pub history: HistoryPageSnapshot,
-    pub replacements: Vec<ReplacementRule>,
     pub usage: UsageSnapshot,
 }

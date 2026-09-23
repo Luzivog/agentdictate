@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageRequest, HistoryPageSnapshot, HotkeyReadiness, JobId, JobStage,
-    ReplacementRule, Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal,
-    WorkspaceSnapshot,
+    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
@@ -186,10 +185,7 @@ where
         if let Some(mode) = mode {
             recording_settings.dictation_mode = mode;
         }
-        let options = agentdictate_core::DictationOptions::from_settings(
-            &recording_settings,
-            self.runtime.replacement_rules()?,
-        );
+        let options = agentdictate_core::DictationOptions::from_settings(&recording_settings);
         // Publishing Starting before the recorder comes up lets the overlay
         // helper open its window in parallel with the microphone.
         self.workflow
@@ -505,7 +501,6 @@ where
             overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
             recoveries: self.runtime.recoveries()?,
             history: self.runtime.history_page(&HistoryPageRequest::default())?,
-            replacements: self.runtime.replacement_rules()?,
             usage: self.runtime.usage()?,
         })
     }
@@ -515,24 +510,6 @@ where
         request: &HistoryPageRequest,
     ) -> Result<HistoryPageSnapshot, RuntimeError> {
         self.runtime.history_page(request)
-    }
-
-    pub fn create_replacement(
-        &mut self,
-        rule: ReplacementRule,
-    ) -> Result<ReplacementRule, RuntimeError> {
-        self.runtime.create_replacement(rule)
-    }
-
-    pub fn update_replacement(
-        &mut self,
-        rule: ReplacementRule,
-    ) -> Result<ReplacementRule, RuntimeError> {
-        self.runtime.update_replacement(rule)
-    }
-
-    pub fn delete_replacement(&mut self, id: i64) -> Result<bool, RuntimeError> {
-        self.runtime.delete_replacement(id)
     }
 
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {

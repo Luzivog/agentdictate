@@ -63,12 +63,7 @@ fn fresh_database_contains_the_complete_python_compatible_schema() {
     drop(Runtime::open(&database_path).unwrap());
     let connection = Connection::open(&database_path).unwrap();
 
-    for table in [
-        "dictation_sessions",
-        "transcript_history",
-        "replacement_mappings",
-        "dictation_jobs",
-    ] {
+    for table in ["dictation_sessions", "transcript_history", "dictation_jobs"] {
         let exists = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",

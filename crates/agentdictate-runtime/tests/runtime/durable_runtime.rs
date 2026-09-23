@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agentdictate_core::ReplacementRule;
+use agentdictate_core::{DictationOptions, Settings, parse_vocabulary};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob,
@@ -27,14 +27,12 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
     let db = directory.path().join("history.sqlite3");
     let mut runtime = Runtime::open(&db).unwrap();
     let mut request = request(&directory.path().join("audio.wav"), TRANSCRIPTION_MODEL);
-    let options = agentdictate_core::DictationOptions::from_settings(
-        &agentdictate_core::Settings {
+    let options =
+        agentdictate_core::DictationOptions::from_settings(&agentdictate_core::Settings {
             project_context: "Original project".into(),
             openai_api_key: "must-not-persist".into(),
             ..Default::default()
-        },
-        vec![],
-    );
+        });
     request.options = Some(options.clone());
     let job = runtime
         .start_recording(request, &mut crate::support::ReadyRecorder)
@@ -1252,33 +1250,23 @@ fn startup_removes_audio_left_in_quarantine_by_a_committed_delete() {
 }
 
 #[test]
-fn enabled_replacements_are_applied_before_delivery() {
+fn vocabulary_aliases_are_corrected_before_delivery() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime
-        .create_replacement(ReplacementRule {
-            id: None,
-            source_phrase: "durable final words".into(),
-            replacement_phrase: "AgentDictate".into(),
-            enabled: true,
-            case_sensitive: false,
-            whole_word_only: true,
-        })
-        .unwrap();
     let mut recorder = InspectingRecorder {
         database_path,
         saw_durable_starting_job: false,
     };
-    let job = runtime
-        .start_recording(
-            request(
-                &directory.path().join("recordings/replacements.wav"),
-                TRANSCRIPTION_MODEL,
-            ),
-            &mut recorder,
-        )
-        .unwrap();
+    let mut request = request(
+        &directory.path().join("recordings/vocabulary.wav"),
+        TRANSCRIPTION_MODEL,
+    );
+    request.options = Some(DictationOptions::from_settings(&Settings {
+        vocabulary: parse_vocabulary("AgentDictate = durable final words").unwrap(),
+        ..Settings::default()
+    }));
+    let job = runtime.start_recording(request, &mut recorder).unwrap();
     runtime.capture_recording(job.id, 4.0).unwrap();
     let mut transcriber = FixedTranscriber;
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };

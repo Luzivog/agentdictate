@@ -3,18 +3,16 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use agentdictate_core::apply_replacements;
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-use crate::history::serialize_replacements;
 use crate::history_search;
 use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, RecordingRequest,
-    ReplacementRule, RuntimeError, Transcriber,
+    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, RecordingRequest, RuntimeError,
+    Transcriber,
 };
 
 pub struct Runtime {
@@ -36,7 +34,6 @@ impl Runtime {
         {
             return Err(error);
         }
-        remove_blank_replacements(&connection)?;
         rename_committed_deliveries(&connection)?;
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
@@ -299,23 +296,13 @@ impl Runtime {
                 id.to_string()
             ],
         )?;
-        let replacement_rules = match &transcribing.options {
-            Some(options) => options.replacements.clone(),
-            None => self.replacement_rules()?,
-        };
-        let mut replacement_result = apply_replacements(&transcript.text, &replacement_rules)
-            .map_err(|error| {
-                ExternalError::new(format!("replacement processing failed: {error}"))
-            })?;
-        if let Some(options) = &transcribing.options {
-            let normalized = agentdictate_core::normalize_vocabulary(
-                &replacement_result.text,
-                &options.vocabulary,
-            );
-            replacement_result.text = normalized.text;
-            replacement_result.applied.extend(normalized.applied);
-        }
-        let replacements_applied = serialize_replacements(&replacement_result.applied)?;
+        // Jobs from before options were stored have no vocabulary to apply.
+        let vocabulary = transcribing
+            .options
+            .as_ref()
+            .map_or(&[][..], |options| &options.vocabulary[..]);
+        let normalized = agentdictate_core::normalize_vocabulary(&transcript.text, vocabulary);
+        let corrections = serde_json::to_string(&normalized.corrections)?;
 
         self.connection.execute(
             r#"
@@ -327,105 +314,14 @@ impl Runtime {
             "#,
             params![
                 timestamp(Utc::now()),
-                replacement_result.text,
-                replacements_applied,
+                normalized.text,
+                corrections,
                 id.to_string(),
             ],
         )?;
         let ready = self.job(id)?.expect("updated job must be readable");
 
         self.deliver_ready(ready, method, delivery_gate, deliverer)
-    }
-
-    pub fn replacement_rules(&self) -> Result<Vec<ReplacementRule>, RuntimeError> {
-        let mut statement = self.connection.prepare(
-            r#"
-            SELECT id, source_phrase, replacement_phrase, enabled,
-                   case_sensitive, whole_word_only
-            FROM replacement_mappings
-            ORDER BY id ASC
-            "#,
-        )?;
-        Ok(statement
-            .query_map([], |row| {
-                Ok(ReplacementRule {
-                    id: Some(row.get(0)?),
-                    source_phrase: row.get(1)?,
-                    replacement_phrase: row.get(2)?,
-                    enabled: row.get(3)?,
-                    case_sensitive: row.get(4)?,
-                    whole_word_only: row.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    pub fn create_replacement(
-        &mut self,
-        mut rule: ReplacementRule,
-    ) -> Result<ReplacementRule, RuntimeError> {
-        rule.source_phrase = rule.source_phrase.trim().to_owned();
-        if rule.source_phrase.is_empty() {
-            return Err(RuntimeError::InvalidReplacementSource);
-        }
-        let now = timestamp(Utc::now());
-        self.connection.execute(
-            r#"
-            INSERT INTO replacement_mappings (
-                source_phrase, replacement_phrase, enabled, case_sensitive,
-                whole_word_only, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-            "#,
-            params![
-                rule.source_phrase,
-                rule.replacement_phrase,
-                rule.enabled,
-                rule.case_sensitive,
-                rule.whole_word_only,
-                now,
-            ],
-        )?;
-        rule.id = Some(self.connection.last_insert_rowid());
-        Ok(rule)
-    }
-
-    pub fn update_replacement(
-        &mut self,
-        mut rule: ReplacementRule,
-    ) -> Result<ReplacementRule, RuntimeError> {
-        let id = rule.id.ok_or(RuntimeError::MissingReplacementId)?;
-        rule.source_phrase = rule.source_phrase.trim().to_owned();
-        if rule.source_phrase.is_empty() {
-            return Err(RuntimeError::InvalidReplacementSource);
-        }
-        let updated = self.connection.execute(
-            r#"
-            UPDATE replacement_mappings
-            SET source_phrase = ?1, replacement_phrase = ?2, enabled = ?3,
-                case_sensitive = ?4, whole_word_only = ?5, updated_at = ?6
-            WHERE id = ?7
-            "#,
-            params![
-                rule.source_phrase,
-                rule.replacement_phrase,
-                rule.enabled,
-                rule.case_sensitive,
-                rule.whole_word_only,
-                timestamp(Utc::now()),
-                id,
-            ],
-        )?;
-        if updated == 0 {
-            return Err(RuntimeError::ReplacementNotFound(id));
-        }
-        Ok(rule)
-    }
-
-    pub fn delete_replacement(&mut self, id: i64) -> Result<bool, RuntimeError> {
-        Ok(self
-            .connection
-            .execute("DELETE FROM replacement_mappings WHERE id = ?1", [id])?
-            > 0)
     }
 
     /// Transcribes a Recovery item again after an explicit user action and
@@ -866,14 +762,6 @@ fn add_missing_columns(connection: &Connection) -> rusqlite::Result<()> {
             )?;
         }
     }
-    Ok(())
-}
-
-fn remove_blank_replacements(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute(
-        "DELETE FROM replacement_mappings WHERE trim(source_phrase) = ''",
-        [],
-    )?;
     Ok(())
 }
 

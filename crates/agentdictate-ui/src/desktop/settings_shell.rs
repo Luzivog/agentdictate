@@ -3,9 +3,7 @@ use std::{collections::HashSet, time::Duration};
 use gpui::{AppContext, Context, Entity, ScrollHandle, Task, Window};
 use gpui_component::input::{InputEvent, InputState};
 
-use crate::{
-    ReplacementDraft, Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink,
-};
+use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink};
 
 use super::{
     CommandSink, SettingsShell, history_action_lane::HistoryActionLane,
@@ -35,28 +33,6 @@ pub(super) struct WorkspaceActionState {
     pub(super) history_lane: HistoryActionLane,
 }
 
-#[derive(Clone)]
-pub(super) struct ReplacementEditorState {
-    pub(super) id: Option<i64>,
-    pub(super) source: Entity<InputState>,
-    pub(super) replacement: Entity<InputState>,
-    pub(super) enabled: bool,
-    pub(super) case_sensitive: bool,
-    pub(super) whole_word_only: bool,
-}
-
-impl ReplacementEditorState {
-    pub(super) fn draft(&self, cx: &Context<SettingsShell>) -> ReplacementDraft {
-        ReplacementDraft {
-            source: self.source.read(cx).value().trim().to_owned(),
-            replacement: self.replacement.read(cx).value().trim().to_owned(),
-            enabled: self.enabled,
-            case_sensitive: self.case_sensitive,
-            whole_word_only: self.whole_word_only,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub(super) struct RouteUiEntry {
     pub(super) feedback: Option<String>,
@@ -66,7 +42,6 @@ pub(super) struct RouteUiEntry {
 pub(super) struct RouteUiState {
     pub(super) entries: [RouteUiEntry; Route::ALL.len()],
     pub(super) history_search_input: Entity<InputState>,
-    pub(super) replacement_editor: Option<ReplacementEditorState>,
     pub(super) pending_destructive_action: Option<WorkspaceAction>,
     pub(super) overview_recent_expanded: bool,
     /// History rows showing their whole transcript.
@@ -98,8 +73,7 @@ pub(super) const fn route_index(route: Route) -> usize {
     match route {
         Route::Overview => 0,
         Route::History => 1,
-        Route::Replacements => 2,
-        Route::Settings => 3,
+        Route::Settings => 2,
     }
 }
 
@@ -146,7 +120,6 @@ impl SettingsShell {
         let routes = RouteUiState {
             entries: std::array::from_fn(|_| RouteUiEntry::default()),
             history_search_input,
-            replacement_editor: None,
             pending_destructive_action: None,
             overview_recent_expanded: false,
             expanded_transcripts: HashSet::new(),

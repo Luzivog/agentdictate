@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${PROJECT_DIR}"
 
 usage() {
-  echo "Usage: scripts/dev.sh doctor | test <core|runtime|linux|ui|app> <lib|harness> [filter] | bench" >&2
+  echo "Usage: scripts/dev.sh doctor | test <core|runtime|linux|ui|app> <lib|harness> [filter]" >&2
   exit 64
 }
 
@@ -57,10 +57,6 @@ case "${1:-}" in
       command_args+=(--features test-support)
     fi
     [[ $# == 3 ]] || command_args+=("$4")
-    ;;
-  bench)
-    [[ $# == 1 ]] || usage
-    command_args=(cargo bench --locked -p agentdictate-core --bench replacements)
     ;;
   *) usage ;;
 esac

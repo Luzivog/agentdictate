@@ -326,8 +326,7 @@ mod tests {
                 ws.send(Message::text(event.to_string())).unwrap();
             }
         });
-        let options =
-            DictationOptions::from_settings(&agentdictate_core::Settings::default(), vec![]);
+        let options = DictationOptions::from_settings(&agentdictate_core::Settings::default());
         let live = LiveTranscription::start(
             JobId::new(),
             path,
