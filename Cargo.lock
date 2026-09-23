@@ -79,6 +79,9 @@ dependencies = [
  "evdev",
  "libc",
  "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
  "x11rb",
 ]

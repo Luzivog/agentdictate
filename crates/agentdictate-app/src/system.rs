@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use agentdictate_core::TranscriptionProvider;
 use agentdictate_core::{ClientCommand, JobId, ServerMessageKind, Settings};
 use agentdictate_linux::{
-    audio_ducking::PlaybackDucker,
+    audio_ducking::{PlaybackDucker, SystemPactl},
     clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
     command::{PlatformCommandError, SystemCommandRunner},
     focus::X11FocusObserver,
@@ -196,22 +196,34 @@ fn recorder_owner_loop(recorder: PwRecordRecorder, commands: &Receiver<RecorderO
 }
 
 impl SystemRecordingController {
+    /// Creates the daemon's recorder. Opening the ducker restores an output
+    /// volume that a previous daemon left ducked when it died.
     #[must_use]
-    pub fn for_system(settings: &Settings, runtime_directory: &Path) -> Self {
-        Self::new(settings, runtime_directory, "pw-record")
+    pub fn for_system(
+        settings: &Settings,
+        runtime_directory: &Path,
+        ducking_state_file: &Path,
+    ) -> Self {
+        Self::new(
+            settings,
+            runtime_directory,
+            "pw-record",
+            PlaybackDucker::open(SystemPactl::discover(), ducking_state_file),
+        )
     }
 
     fn new(
         settings: &Settings,
         runtime_directory: &Path,
         recorder_program: impl Into<PathBuf>,
+        ducker: PlaybackDucker,
     ) -> Self {
         Self {
             recorder: RecorderOwner::start(PwRecordRecorder::new(
                 SystemCommandRunner,
                 recorder_program,
             )),
-            ducker: PlaybackDucker::default(),
+            ducker,
             settings: settings.clone(),
             runtime_directory: runtime_directory.to_owned(),
         }
@@ -219,7 +231,15 @@ impl SystemRecordingController {
 
     #[cfg(test)]
     fn for_program(settings: &Settings, runtime_directory: &Path, recorder_program: &Path) -> Self {
-        Self::new(settings, runtime_directory, recorder_program)
+        Self::new(
+            settings,
+            runtime_directory,
+            recorder_program,
+            PlaybackDucker::open(
+                SystemPactl::discover(),
+                runtime_directory.join("ducking.json"),
+            ),
+        )
     }
 
     pub fn update_settings(&mut self, settings: &Settings) {

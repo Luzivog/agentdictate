@@ -13,8 +13,11 @@ native-hotkey = []
 agentdictate-core.workspace = true
 evdev = "0.13.2"
 libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 x11rb = { version = "0.13.2", features = ["randr"] }
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3.23"

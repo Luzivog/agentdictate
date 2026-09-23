@@ -126,6 +126,10 @@ Runtime data lives under XDG directories, each created with mode 0700:
 - `~/.local/share/agentdictate/` — SQLite history database (`agentdictate.sqlite`)
   and retained audio under `recordings/`.
 - `~/.local/state/agentdictate/logs/` — logs.
+- `~/.local/state/agentdictate/ducking.json` — present only while audio ducking
+  has lowered an output: the sink, its original volume, and the volume
+  AgentDictate set. If the daemon dies mid-recording, the next start restores
+  the original volume unless the user has changed it since.
 - `~/.cache/agentdictate/` — model catalog cache (`model-catalog.json`).
 - `$XDG_RUNTIME_DIR/agentdictate/` — IPC socket and singleton lock; not durable.
 

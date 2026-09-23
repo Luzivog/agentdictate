@@ -62,7 +62,11 @@ impl AgentProcess {
         );
         let cleanup = ReqwestOpenAiTransport::new(&settings.openai_api_key);
         let transcriber = TranscriptionPipeline::new(settings.clone(), speech, cleanup);
-        let recorder = SystemRecordingController::for_system(&settings, &paths.runtime);
+        let recorder = SystemRecordingController::for_system(
+            &settings,
+            &paths.runtime,
+            &paths.ducking_state_file,
+        );
         let deliverer = SystemDeliverer::for_environment(&settings.paste_shortcut);
         let history_index_maintenance = HistoryIndexMaintenance::new();
         Ok(Self {

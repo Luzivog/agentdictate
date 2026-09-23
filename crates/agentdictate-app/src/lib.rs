@@ -55,6 +55,8 @@ pub struct AppPaths {
     pub database_file: PathBuf,
     pub recordings: PathBuf,
     pub logs: PathBuf,
+    /// Record of an output volume reduced by audio ducking; see `PlaybackDucker`.
+    pub ducking_state_file: PathBuf,
     pub cache: PathBuf,
     pub runtime: PathBuf,
 }
@@ -128,6 +130,7 @@ impl AppPaths {
             database_file: data.join("agentdictate.sqlite"),
             recordings: data.join("recordings"),
             logs: state.join("logs"),
+            ducking_state_file: state.join("ducking.json"),
             cache,
             runtime,
         }

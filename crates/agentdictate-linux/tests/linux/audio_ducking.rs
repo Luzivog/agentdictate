@@ -20,10 +20,10 @@ fn a_hung_pactl_skips_ducking_within_its_deadline() {
             calls.display()
         ),
     );
-    let mut ducker = PlaybackDucker::new(SystemPactl::at(PlatformExecutable::at(
-        PlatformTool::Pactl,
-        pactl,
-    )));
+    let mut ducker = PlaybackDucker::open(
+        SystemPactl::at(PlatformExecutable::at(PlatformTool::Pactl, pactl)),
+        directory.path().join("ducking.json"),
+    );
     let started = Instant::now();
 
     ducker.duck(&Settings {

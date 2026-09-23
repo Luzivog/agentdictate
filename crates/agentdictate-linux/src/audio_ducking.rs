@@ -1,12 +1,16 @@
 use std::{
     ffi::OsString,
-    io,
+    fs,
+    io::{self, Write},
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
     sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
 use agentdictate_core::Settings;
+use serde::{Deserialize, Serialize};
 
 use crate::command::{PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner};
 
@@ -95,11 +99,77 @@ fn parse_volume(output: &str) -> io::Result<Vec<u32>> {
     volumes.ok_or_else(|| io::Error::other("pactl returned an invalid output volume"))
 }
 
-#[derive(Clone)]
+/// The output being ducked: its volume before ducking and the volume
+/// AgentDictate last wrote. It is mirrored to disk while the volume is
+/// reduced, so a daemon that dies mid-recording can put it back at its next
+/// start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SavedOutput {
+    #[serde(rename = "sink")]
     name: String,
+    #[serde(rename = "original_volume")]
     original: Vec<u32>,
+    #[serde(rename = "applied_volume")]
     applied: Vec<u32>,
+}
+
+/// Volume control plus the durable record of the ducked output. Fade
+/// workers share it with their ducker.
+struct VolumeControl<P> {
+    pactl: P,
+    state_file: PathBuf,
+}
+
+impl<P> VolumeControl<P> {
+    /// Reads a record left by an earlier run. A corrupt record is removed:
+    /// it can restore nothing and would otherwise block ducking forever.
+    fn load(&self) -> Option<SavedOutput> {
+        let bytes = match fs::read(&self.state_file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(%error, "could not read the saved audio ducking state");
+                return None;
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(saved) => Some(saved),
+            Err(error) => {
+                tracing::warn!(%error, "discarding corrupt audio ducking state");
+                self.forget();
+                None
+            }
+        }
+    }
+
+    /// Replaces the record atomically (temporary file, then rename). The
+    /// file is private because sink names identify the user's devices.
+    fn persist(&self, saved: &SavedOutput) -> io::Result<()> {
+        let parent = self
+            .state_file
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let temporary = self.state_file.with_extension("json.tmp");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(&serde_json::to_vec(saved).map_err(io::Error::other)?)?;
+        drop(file);
+        fs::rename(&temporary, &self.state_file)
+    }
+
+    fn forget(&self) {
+        match fs::remove_file(&self.state_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%error, "could not remove the audio ducking state"),
+        }
+    }
 }
 
 /// A running fade. It owns the saved output until it is stopped, so exactly
@@ -114,20 +184,36 @@ struct RampWorker {
 /// never changed: replacing a tab cannot inherit or compound a ducked baseline.
 /// Restore that same output even if the default changes in the meantime.
 pub struct PlaybackDucker<P: Pactl + Send + Sync + 'static = SystemPactl> {
-    pactl: Arc<P>,
+    control: Arc<VolumeControl<P>>,
     saved: Option<SavedOutput>,
     fade_in_ms: u32,
     worker: Option<RampWorker>,
 }
 
 impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
-    pub fn new(pactl: P) -> Self {
-        Self {
-            pactl: Arc::new(pactl),
-            saved: None,
+    /// Creates the daemon's ducker, recording ducked volumes at `state_file`.
+    /// A record left by a daemon that died while ducking is settled now: the
+    /// original volume comes back if the output still has the volume
+    /// AgentDictate set, and a later user change is kept. If the output
+    /// cannot be read yet, the record stays and the next recording retries
+    /// it before ducking again.
+    pub fn open(pactl: P, state_file: impl Into<PathBuf>) -> Self {
+        let control = VolumeControl {
+            pactl,
+            state_file: state_file.into(),
+        };
+        let saved = control.load();
+        let mut ducker = Self {
+            control: Arc::new(control),
+            saved,
             fade_in_ms: 0,
             worker: None,
+        };
+        if let Some(saved) = &ducker.saved {
+            tracing::info!(sink = %saved.name, "audio ducking state found from an earlier run");
+            ducker.restore_with_fade(0);
         }
+        ducker
     }
 
     pub fn duck(&mut self, settings: &Settings) {
@@ -137,9 +223,10 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
         if !settings.audio_ducking_enabled || self.saved.is_some() {
             return;
         }
+        let pactl = &self.control.pactl;
         let snapshot = (|| {
-            let name = self.pactl.default_sink()?;
-            let original = self.pactl.sink_volume(&name)?;
+            let name = pactl.default_sink()?;
+            let original = pactl.sink_volume(&name)?;
             Ok::<_, io::Error>(SavedOutput {
                 name,
                 applied: original.clone(),
@@ -153,6 +240,11 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
                 return;
             }
         };
+        // Without a durable record, a crash could leave the output ducked.
+        if let Err(error) = self.control.persist(&saved) {
+            tracing::warn!(%error, "audio ducking skipped: could not save the volume to restore");
+            return;
+        }
         let target = ducking_target_volumes(&saved.original, settings.audio_ducking_volume_percent);
         tracing::info!(sink = %saved.name, original = ?saved.original, ?target, "audio output ducking started");
         self.fade_in_ms = settings.audio_ducking_fade_in_ms;
@@ -167,11 +259,12 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
     fn restore_with_fade(&mut self, fade_ms: u32) {
         self.stop_worker();
         let Some(output) = &self.saved else { return };
-        match self.pactl.sink_volume(&output.name) {
+        match self.control.pactl.sink_volume(&output.name) {
             Ok(current) if current != output.applied => {
                 // A volume key or mixer change is the user's new preference.
                 tracing::info!(sink = %output.name, ?current, "audio ducking preserved external volume change");
                 self.saved = None;
+                self.control.forget();
                 return;
             }
             Ok(_) => {}
@@ -191,10 +284,10 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
             return;
         };
         drop(cancel);
-        match handle.join() {
-            Ok(saved) => self.saved = saved,
-            Err(_) => tracing::error!("audio ducking fade worker panicked"),
-        }
+        self.saved = handle.join().unwrap_or_else(|_| {
+            tracing::error!("audio ducking fade worker panicked");
+            self.control.load()
+        });
     }
 
     // One ramp implementation owns writes in both directions.
@@ -206,13 +299,13 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
             let steps = ramp_plan(&saved.applied, &target, fade_ms);
             let step_delay = Duration::from_millis(u64::from(fade_ms.div_ceil(steps.len() as u32)));
             let (cancel, cancelled) = mpsc::channel();
-            let pactl = Arc::clone(&self.pactl);
+            let control = Arc::clone(&self.control);
             let owned = saved.clone();
             match thread::Builder::new()
                 .name("agentdictate-audio-ducking".into())
                 .spawn(move || {
                     let started_at = Instant::now();
-                    apply_ramp(&*pactl, owned, &steps, restoring, |step| {
+                    apply_ramp(&control, owned, &steps, restoring, |step| {
                         wait_unless_cancelled(&cancelled, started_at + step_delay * step)
                     })
                 }) {
@@ -225,13 +318,7 @@ impl<P: Pactl + Send + Sync + 'static> PlaybackDucker<P> {
                 }
             }
         }
-        self.saved = apply_ramp(&*self.pactl, saved, &[target], restoring, |_| true);
-    }
-}
-
-impl Default for PlaybackDucker<SystemPactl> {
-    fn default() -> Self {
-        Self::new(SystemPactl::discover())
+        self.saved = apply_ramp(&self.control, saved, &[target], restoring, |_| true);
     }
 }
 
@@ -242,10 +329,11 @@ impl<P: Pactl + Send + Sync + 'static> Drop for PlaybackDucker<P> {
 }
 
 /// Writes `steps` in order, calling `wait` with the 1-based step number
-/// before each write. Returns the output that still needs restoring, or
-/// `None` once a restore has written the original volume back.
+/// before each write, and keeps the durable record in step. Returns the
+/// output that still needs restoring, or `None` once a restore has written
+/// the original volume back.
 fn apply_ramp<P: Pactl>(
-    pactl: &P,
+    control: &VolumeControl<P>,
     mut saved: SavedOutput,
     steps: &[Vec<u32>],
     restoring: bool,
@@ -255,15 +343,20 @@ fn apply_ramp<P: Pactl>(
         if !wait(step) {
             return Some(saved);
         }
-        if let Err(error) = pactl.set_sink_volume(&saved.name, volumes) {
+        if let Err(error) = control.pactl.set_sink_volume(&saved.name, volumes) {
             tracing::warn!(sink = %saved.name, ?volumes, %error, "audio ducking volume write failed");
             return Some(saved);
         }
         saved.applied.clone_from(volumes);
+        let restored = restoring && step as usize == steps.len();
+        if !restored && let Err(error) = control.persist(&saved) {
+            tracing::warn!(%error, "could not save the audio ducking state");
+        }
     }
     if !restoring {
         return Some(saved);
     }
+    control.forget();
     tracing::info!(sink = %saved.name, volumes = ?saved.applied, "audio output volume restored");
     None
 }
@@ -361,7 +454,10 @@ mod tests {
         }
     }
 
-    fn fixture() -> (PlaybackDucker<FakePactl>, FakePactl) {
+    /// A ducker over a fake output plus the directory holding its durable
+    /// record. Bind the directory first so it outlives the ducker.
+    fn fixture() -> (tempfile::TempDir, PlaybackDucker<FakePactl>, FakePactl) {
+        let directory = tempfile::tempdir().unwrap();
         let pactl = FakePactl(Arc::new(Mutex::new(FakeState {
             default: "headphones".into(),
             volumes: HashMap::from([
@@ -371,7 +467,12 @@ mod tests {
             writes: Vec::new(),
             fail_write: None,
         })));
-        (PlaybackDucker::new(pactl.clone()), pactl)
+        let ducker = PlaybackDucker::open(pactl.clone(), state_file(&directory));
+        (directory, ducker, pactl)
+    }
+
+    fn state_file(directory: &tempfile::TempDir) -> PathBuf {
+        directory.path().join("ducking.json")
     }
 
     fn settings(fade_out_ms: u32, fade_in_ms: u32) -> Settings {
@@ -406,7 +507,7 @@ mod tests {
     #[test]
     fn repeated_recordings_restore_exact_channel_volumes_with_or_without_fades() {
         for fade_ms in [0, 100] {
-            let (mut ducker, pactl) = fixture();
+            let (_directory, mut ducker, pactl) = fixture();
             for _ in 0..3 {
                 ducker.duck(&settings(fade_ms, fade_ms));
                 finish_fade(&mut ducker);
@@ -421,7 +522,7 @@ mod tests {
 
     #[test]
     fn default_output_change_does_not_redirect_restoration() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
         pactl.state().default = "speakers".into();
         ducker.restore();
@@ -439,7 +540,7 @@ mod tests {
 
     #[test]
     fn failed_restore_never_becomes_a_new_ducking_baseline() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
         pactl.state().fail_write = Some(vec![65_536, 32_768]);
         ducker.restore();
@@ -457,7 +558,7 @@ mod tests {
 
     #[test]
     fn disappeared_output_keeps_its_original_without_touching_another_device() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
         let disconnected = {
             let mut state = pactl.state();
@@ -477,7 +578,7 @@ mod tests {
 
     #[test]
     fn user_volume_change_is_preserved_on_stop() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 0));
         pactl
             .state()
@@ -490,7 +591,7 @@ mod tests {
 
     #[test]
     fn new_recording_cancels_a_restore_fade_before_it_can_overwrite_ducking() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 100));
         ducker.restore();
         ducker.duck(&settings(0, 0));
@@ -502,7 +603,7 @@ mod tests {
 
     #[test]
     fn stop_during_fade_out_cancels_all_later_ducking_writes() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(100, 0));
         ducker.restore();
         thread::sleep(Duration::from_millis(150));
@@ -511,7 +612,7 @@ mod tests {
 
     #[test]
     fn failed_fade_restoration_retains_original_for_retry() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&settings(0, 100));
         pactl.state().fail_write = Some(vec![65_536, 32_768]);
         ducker.restore();
@@ -524,12 +625,54 @@ mod tests {
 
     #[test]
     fn disabled_ducking_leaves_output_untouched() {
-        let (mut ducker, pactl) = fixture();
+        let (_directory, mut ducker, pactl) = fixture();
         ducker.duck(&Settings {
             audio_ducking_enabled: false,
             ..settings(0, 0)
         });
         assert!(pactl.state().writes.is_empty());
+    }
+
+    #[test]
+    fn a_daemon_that_died_while_ducking_restores_the_volume_at_its_next_start() {
+        let (directory, mut ducker, pactl) = fixture();
+        ducker.duck(&settings(0, 0));
+        let record = fs::metadata(state_file(&directory)).unwrap();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&record.permissions()) & 0o777,
+            0o600
+        );
+        // Skipping Drop stands in for SIGKILL: nothing restores in-process.
+        std::mem::forget(ducker);
+        assert_eq!(pactl.state().volumes["headphones"], vec![34_821, 17_411]);
+
+        let mut ducker = PlaybackDucker::open(pactl.clone(), state_file(&directory));
+
+        assert_eq!(pactl.state().volumes["headphones"], vec![65_536, 32_768]);
+        assert!(!state_file(&directory).exists());
+        // The next recording ducks from the real volume, not the ducked one.
+        ducker.duck(&settings(0, 0));
+        assert_eq!(pactl.state().volumes["headphones"], vec![34_821, 17_411]);
+        ducker.restore();
+        assert_eq!(pactl.state().volumes["headphones"], vec![65_536, 32_768]);
+    }
+
+    #[test]
+    fn a_volume_changed_after_a_crash_is_kept_and_its_record_dropped() {
+        let (directory, mut ducker, pactl) = fixture();
+        ducker.duck(&settings(0, 0));
+        std::mem::forget(ducker);
+        pactl
+            .state()
+            .volumes
+            .insert("headphones".into(), vec![20_000, 10_000]);
+        let writes = pactl.state().writes.len();
+
+        let _ducker = PlaybackDucker::open(pactl.clone(), state_file(&directory));
+
+        assert_eq!(pactl.state().volumes["headphones"], vec![20_000, 10_000]);
+        assert_eq!(pactl.state().writes.len(), writes);
+        assert!(!state_file(&directory).exists());
     }
 
     #[test]

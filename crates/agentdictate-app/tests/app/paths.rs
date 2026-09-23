@@ -26,6 +26,10 @@ fn app_paths_preserve_the_existing_xdg_layout() {
         PathBuf::from("/tmp/data/agentdictate/recordings")
     );
     assert_eq!(paths.logs, PathBuf::from("/tmp/state/agentdictate/logs"));
+    assert_eq!(
+        paths.ducking_state_file,
+        PathBuf::from("/tmp/state/agentdictate/ducking.json")
+    );
     assert_eq!(paths.cache, PathBuf::from("/tmp/cache/agentdictate"));
     assert_eq!(paths.runtime, PathBuf::from("/tmp/runtime/agentdictate"));
     assert_eq!(
