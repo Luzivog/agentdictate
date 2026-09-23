@@ -1,5 +1,3 @@
-#![cfg(feature = "test-support")]
-
 //! Headless contracts for the window-level pointer focus policy.
 
 use super::support::DesktopHarness;

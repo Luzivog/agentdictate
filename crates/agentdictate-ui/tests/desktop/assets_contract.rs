@@ -1,5 +1,3 @@
-#![cfg(feature = "test-support")]
-
 use agentdictate_ui::AgentDictateAssets;
 use gpui::AssetSource;
 

@@ -47,7 +47,6 @@ fn disconnected_keyboard_releases_its_state_and_reconnected_device_works() {
     );
 }
 
-#[cfg(feature = "native-hotkey")]
 #[test]
 fn native_evdev_key_events_are_translated_without_losing_repeat_or_release() {
     use agentdictate_linux::native_hotkey::evdev_key_input;

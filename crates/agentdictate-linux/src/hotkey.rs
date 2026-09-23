@@ -2,11 +2,9 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     error::Error,
     fmt,
+    path::{Path, PathBuf},
     str::FromStr,
 };
-
-#[cfg(feature = "native-hotkey")]
-use std::path::{Path, PathBuf};
 
 pub type KeyCode = u16;
 
@@ -138,7 +136,6 @@ fn is_event_handler(handler: &str) -> bool {
 ///
 /// Opening and polling the returned evdev nodes remains the runtime's concern;
 /// this adapter only performs repeatable eligibility and virtual-device checks.
-#[cfg(feature = "native-hotkey")]
 pub fn keyboard_event_paths(hotkey: &HotkeySpec) -> std::io::Result<Vec<PathBuf>> {
     let proc_devices = std::fs::read_to_string("/proc/bus/input/devices")?;
     Ok(discover_keyboard_devices(&proc_devices, |handler| {
@@ -150,7 +147,6 @@ pub fn keyboard_event_paths(hotkey: &HotkeySpec) -> std::io::Result<Vec<PathBuf>
     .collect())
 }
 
-#[cfg(feature = "native-hotkey")]
 fn native_device_facts(handler: &str, hotkey: &HotkeySpec) -> DeviceFacts {
     let sysfs_device = Path::new("/sys/class/input").join(handler).join("device");
     let canonical = std::fs::canonicalize(&sysfs_device).ok();

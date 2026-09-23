@@ -11,7 +11,7 @@ desktop = ["agentdictate-ui/desktop"]
 
 [dependencies]
 agentdictate-core.workspace = true
-agentdictate-linux = { workspace = true, features = ["native-hotkey"] }
+agentdictate-linux.workspace = true
 agentdictate-runtime.workspace = true
 agentdictate-ui.workspace = true
 anyhow.workspace = true

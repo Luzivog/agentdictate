@@ -1,5 +1,3 @@
-#![cfg(feature = "test-support")]
-
 //! Headless shell interaction contracts.
 
 use super::support::{self, DesktopHarness};

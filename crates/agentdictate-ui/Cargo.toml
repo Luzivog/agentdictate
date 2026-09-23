@@ -36,3 +36,9 @@ gpui-component = { version = "=0.6.6", optional = true }
 # dlopen, and gpui-pre links it instead, which would make fontconfig's -dev
 # package a build requirement. The .deb already depends on libfontconfig1.
 font-kit = { package = "zed-font-kit", version = "=0.14.1-zed", optional = true, features = ["source-fontconfig-dlopen"] }
+
+# Headless GPUI tests. Without the feature Cargo refuses the target instead of
+# running zero tests.
+[[test]]
+name = "desktop"
+required-features = ["test-support"]

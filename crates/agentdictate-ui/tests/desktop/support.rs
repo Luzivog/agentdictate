@@ -1,5 +1,3 @@
-#![cfg(feature = "test-support")]
-
 use gpui::{
     Bounds, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, VisualTestContext,
     point, px,

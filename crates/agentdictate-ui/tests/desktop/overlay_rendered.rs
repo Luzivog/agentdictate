@@ -1,5 +1,3 @@
-#![cfg(feature = "test-support")]
-
 //! Headless overlay rendering contracts.
 
 use std::{
