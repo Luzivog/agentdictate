@@ -104,58 +104,6 @@ pub struct UsageSnapshot {
     pub weekly_activity: Vec<UsageDaySnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    Default,
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-impl ReasoningEffort {
-    #[must_use]
-    pub const fn settings_value(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-        }
-    }
-
-    #[must_use]
-    pub const fn openai_value(self) -> Option<&'static str> {
-        match self {
-            Self::Default => None,
-            effort => Some(effort.settings_value()),
-        }
-    }
-
-    #[must_use]
-    pub fn from_settings_value(value: &str) -> Option<Self> {
-        match value {
-            "default" => Some(Self::Default),
-            "none" => Some(Self::None),
-            "minimal" => Some(Self::Minimal),
-            "low" => Some(Self::Low),
-            "medium" => Some(Self::Medium),
-            "high" => Some(Self::High),
-            "xhigh" => Some(Self::Xhigh),
-            "max" => Some(Self::Max),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
     #[serde(default)]

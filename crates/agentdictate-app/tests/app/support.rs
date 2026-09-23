@@ -36,10 +36,8 @@ pub(crate) struct FixedTranscriber;
 impl Transcriber for FixedTranscriber {
     fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
         Ok(Transcript {
-            raw: "raw transcript".into(),
-            final_text: "Final transcript.".into(),
-            cleaned_text: Some("Final transcript.".into()),
-            cleanup_error: None,
+            text: "Final transcript.".into(),
+            model: "gpt-transcribe".into(),
         })
     }
 }

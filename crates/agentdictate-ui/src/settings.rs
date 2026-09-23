@@ -215,7 +215,6 @@ macro_rules! define_settings_draft {
                 $(updated.$number_field = apply_settings_field!(self, $number_field, $number_apply_kind($number_apply));)*
                 $(updated.$draft_only_field = apply_settings_field!(self, $draft_only_field, $draft_only_apply_kind($draft_only_apply));)*
                 $(updated.$shortcut_field = apply_settings_field!(self, $shortcut_field, $shortcut_apply_kind($shortcut_apply));)*
-                updated.cleanup_enabled = false;
                 Ok(updated)
             }
         }

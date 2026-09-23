@@ -1,41 +1,12 @@
 use agentdictate_core::{Settings, SettingsSnapshot, TRANSCRIPTION_MODEL, TranscriptionProvider};
 
 #[test]
-fn reasoning_effort_has_one_exhaustive_settings_and_openai_mapping() {
-    use agentdictate_core::ReasoningEffort::{
-        Default, High, Low, Max, Medium, Minimal, None, Xhigh,
-    };
-
-    for (effort, settings_value, openai_value) in [
-        (Default, "default", Option::<&str>::None),
-        (None, "none", Some("none")),
-        (Minimal, "minimal", Some("minimal")),
-        (Low, "low", Some("low")),
-        (Medium, "medium", Some("medium")),
-        (High, "high", Some("high")),
-        (Xhigh, "xhigh", Some("xhigh")),
-        (Max, "max", Some("max")),
-    ] {
-        assert_eq!(effort.settings_value(), settings_value);
-        assert_eq!(effort.openai_value(), openai_value);
-        assert_eq!(
-            agentdictate_core::ReasoningEffort::from_settings_value(settings_value),
-            Some(effort)
-        );
-    }
-    assert_eq!(
-        agentdictate_core::ReasoningEffort::from_settings_value("unsupported"),
-        Option::None
-    );
-}
-
-#[test]
 fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
     let settings: Settings = serde_json::from_str(
         r#"{
             "transcription_model": "Custom",
             "custom_transcription_model": "my-transcriber",
-            "cleanup_enabled": false,
+            "cleanup_enabled": true,
             "hotkey": "Ctrl+Space",
             "future_python_field": "ignored"
         }"#,
@@ -47,7 +18,6 @@ fn existing_python_settings_load_with_new_defaults_and_ignore_unknown_fields() {
         settings.transcription_provider,
         TranscriptionProvider::OpenAiApi
     );
-    assert!(!settings.cleanup_enabled);
     assert_eq!(settings.max_recording_seconds, 300);
     assert_eq!(settings.audio_ducking_volume_percent, 15);
     assert_eq!(settings.audio_ducking_fade_out_ms, 600);

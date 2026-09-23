@@ -321,10 +321,10 @@ fn fade_progress(elapsed: Duration, span: Duration) -> f32 {
 /// Presentation state derived from the workflow.
 ///
 /// The transient window opens at the start request, so its window is ready
-/// by the time the microphone is, and stays open while recording,
-/// transcribing, or cleaning, then lingers up to `OVERLAY_FADE_HOLD` while it
-/// fades out. Recovery remains durable in
-/// History rather than turning the overlay into a second action surface.
+/// by the time the microphone is, and stays open while recording and
+/// transcribing, then lingers up to `OVERLAY_FADE_HOLD` while it fades out.
+/// Recovery remains durable in History rather than turning the overlay into
+/// a second action surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OverlayState {
     Hidden,
@@ -332,7 +332,6 @@ pub enum OverlayState {
     Recording,
     Finishing,
     Transcribing,
-    Cleaning,
     ReadyToDeliver,
     Delivering,
     RecoverableFailure { message: String, action: String },
@@ -347,10 +346,7 @@ impl OverlayState {
     }
 
     pub const fn is_visible(&self) -> bool {
-        matches!(
-            self,
-            Self::Starting | Self::Recording | Self::Transcribing | Self::Cleaning
-        )
+        matches!(self, Self::Starting | Self::Recording | Self::Transcribing)
     }
 
     /// Whether the overlay shows the recording card. While starting it is the
@@ -368,7 +364,6 @@ impl OverlayState {
             Self::Recording => "recording-overlay-recording",
             Self::Finishing => "recording-overlay-finishing",
             Self::Transcribing => "recording-overlay-transcribing",
-            Self::Cleaning => "recording-overlay-cleaning",
             Self::ReadyToDeliver => "recording-overlay-ready-to-deliver",
             Self::Delivering => "recording-overlay-delivering",
             Self::RecoverableFailure { .. } => "recording-overlay-recoverable-failure",
@@ -382,7 +377,6 @@ impl OverlayState {
             Self::Recording => "Listening…",
             Self::Finishing => "Securing recording…",
             Self::Transcribing => "Transcribing",
-            Self::Cleaning => "Cleaning up...",
             Self::ReadyToDeliver => "Ready to paste",
             Self::Delivering => "Pasting…",
             Self::RecoverableFailure { message, .. } => message,
@@ -394,7 +388,7 @@ impl OverlayState {
             Self::Hidden => StatusTone::Neutral,
             Self::Starting => StatusTone::Starting,
             Self::Recording => StatusTone::Recording,
-            Self::Finishing | Self::Transcribing | Self::Cleaning => StatusTone::Processing,
+            Self::Finishing | Self::Transcribing => StatusTone::Processing,
             Self::ReadyToDeliver | Self::Delivering => StatusTone::Success,
             Self::RecoverableFailure { .. } => StatusTone::Danger,
         }
@@ -413,7 +407,6 @@ impl From<WorkflowSnapshot> for OverlayState {
             WorkflowPhase::Stopping { .. } => Self::Transcribing,
             WorkflowPhase::Processing { stage, .. } => match stage {
                 ProcessingStage::Transcribing => Self::Transcribing,
-                ProcessingStage::Cleaning => Self::Cleaning,
                 ProcessingStage::ReadyToDeliver => Self::ReadyToDeliver,
                 ProcessingStage::Delivering => Self::Delivering,
             },

@@ -186,17 +186,7 @@ where
             now.format("%Y%m%dT%H%M%S%.fZ"),
         ));
         let mut recording_settings = self.settings.clone();
-        recording_settings.cleanup_enabled = false;
-        if recording_settings.dictation_mode == agentdictate_core::DictationMode::Organize {
-            recording_settings.dictation_mode = agentdictate_core::DictationMode::Dictate;
-        }
         if let Some(mode) = mode {
-            if mode == agentdictate_core::DictationMode::Organize {
-                return Err(ExternalError::new(
-                    "Organize has been removed; use Dictate or Literal",
-                )
-                .into());
-            }
             recording_settings.dictation_mode = mode;
         }
         let options = agentdictate_core::DictationOptions::from_settings(

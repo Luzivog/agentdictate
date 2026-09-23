@@ -45,7 +45,6 @@ pub enum JobStage {
     Recording,
     Captured,
     Transcribing,
-    Cleaning,
     ReadyToDeliver,
     Delivering,
     Delivered,
@@ -60,7 +59,6 @@ pub enum JobStage {
 #[serde(rename_all = "snake_case")]
 pub enum ProcessingStage {
     Transcribing,
-    Cleaning,
     ReadyToDeliver,
     Delivering,
 }
@@ -124,12 +122,6 @@ pub enum WorkflowSignal {
     TranscriptStored {
         job_id: JobId,
     },
-    TranscriptStoredForCleanup {
-        job_id: JobId,
-    },
-    CleanupStored {
-        job_id: JobId,
-    },
     DeliveryStarted {
         job_id: JobId,
     },
@@ -155,8 +147,6 @@ impl WorkflowSignal {
             | Self::CaptureFinalized { job_id }
             | Self::NoSpeechDetected { job_id }
             | Self::TranscriptStored { job_id }
-            | Self::TranscriptStoredForCleanup { job_id }
-            | Self::CleanupStored { job_id }
             | Self::DeliveryStarted { job_id }
             | Self::DeliverySubmitted { job_id }
             | Self::Interrupted { job_id, .. }
@@ -254,26 +244,6 @@ impl Workflow {
                     stage: ProcessingStage::Transcribing,
                 },
                 WorkflowSignal::TranscriptStored { job_id },
-            ) if expected == job_id => WorkflowPhase::Processing {
-                job_id,
-                stage: ProcessingStage::ReadyToDeliver,
-            },
-            (
-                WorkflowPhase::Processing {
-                    job_id: expected,
-                    stage: ProcessingStage::Transcribing,
-                },
-                WorkflowSignal::TranscriptStoredForCleanup { job_id },
-            ) if expected == job_id => WorkflowPhase::Processing {
-                job_id,
-                stage: ProcessingStage::Cleaning,
-            },
-            (
-                WorkflowPhase::Processing {
-                    job_id: expected,
-                    stage: ProcessingStage::Cleaning,
-                },
-                WorkflowSignal::CleanupStored { job_id },
             ) if expected == job_id => WorkflowPhase::Processing {
                 job_id,
                 stage: ProcessingStage::ReadyToDeliver,

@@ -91,8 +91,8 @@ impl Render for RecordingOverlay {
         let stable_id = self.state.stable_id().to_owned();
         let recording = self.state == OverlayState::Recording;
         let recording_card = self.state.shows_recording_card();
-        // Processing states (transcribing, cleaning) animate a small pulsing
-        // ellipsis so the helper visibly shows work in progress.
+        // The transcribing state animates a small pulsing ellipsis so the
+        // helper visibly shows work in progress.
         let busy = self.state.is_visible() && !recording_card;
         let now = cx.background_executor().now();
         let shown_at = *self.shown_at.get_or_insert(now);

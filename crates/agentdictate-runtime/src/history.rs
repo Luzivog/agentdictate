@@ -327,39 +327,12 @@ fn record_session(
     job: &RecordingJob,
     settings: &Settings,
 ) -> Result<(), RuntimeError> {
-    let (stored_cleaned, replacements_json, cleanup_error): (
-        Option<String>,
-        String,
-        Option<String>,
-    ) = transaction.query_row(
-        r#"
-        SELECT cleaned_transcript, replacements_applied, cleanup_error
-        FROM dictation_jobs
-        WHERE runtime_id = ?1
-        "#,
+    let replacements_json: String = transaction.query_row(
+        "SELECT replacements_applied FROM dictation_jobs WHERE runtime_id = ?1",
         [job.id.to_string()],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| row.get(0),
     )?;
     let replacements_applied = deserialize_replacements(&replacements_json)?;
-    let cleanup_enabled = job
-        .options
-        .as_ref()
-        .map_or(settings.cleanup_enabled, |o| o.cleanup_enabled)
-        && stored_cleaned.is_some();
-    let cleaned_transcript = cleanup_enabled.then_some(stored_cleaned).flatten();
-    let cleanup_model = cleanup_enabled
-        .then(|| {
-            job.options.as_ref().map_or_else(
-                || settings.active_cleanup_model().to_owned(),
-                |o| o.cleanup_model.clone(),
-            )
-        })
-        .filter(|model| !model.is_empty());
-    let cleanup_style = cleanup_enabled.then(|| {
-        job.options
-            .as_ref()
-            .map_or_else(|| settings.cleanup_style.clone(), |o| o.mode.to_string())
-    });
     let api_transcription_price = settings
         .transcription_prices
         .get(&job.transcription_model)
@@ -367,30 +340,25 @@ fn record_session(
     let transcription_price = job
         .transcription_provider
         .marginal_price_per_audio_minute(api_transcription_price);
-    let cleanup_price = cleanup_model
-        .as_ref()
-        .and_then(|model| settings.cleanup_prices.get(model));
     let cost = estimate_session_cost(
         job.duration_seconds,
         &job.raw_transcript,
-        cleaned_transcript.as_deref(),
-        cleanup_enabled,
+        None,
+        false,
         transcription_price,
-        cleanup_price.map_or(0.0, |price| price.input_price_per_1m_tokens),
-        cleanup_price.map_or(0.0, |price| price.output_price_per_1m_tokens),
+        0.0,
+        0.0,
     );
     transaction.execute(
         r#"
         INSERT INTO dictation_sessions (
             started_at, ended_at, duration_seconds, transcription_model,
-            transcription_provider,
-            cleanup_enabled, cleanup_model, cleanup_style, raw_word_count,
+            transcription_provider, raw_word_count,
             final_word_count, final_character_count,
             estimated_transcription_cost, estimated_cleanup_cost,
             estimated_total_cost, success, error_message, runtime_job_id
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-            ?14, 1, NULL, ?15
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, NULL, ?12
         )
         "#,
         params![
@@ -399,9 +367,6 @@ fn record_session(
             job.duration_seconds,
             job.transcription_model,
             job.transcription_provider.as_str(),
-            cleanup_enabled,
-            cleanup_model,
-            cleanup_style,
             count_words_ascii_history(&job.raw_transcript),
             count_words_ascii_history(&job.final_text),
             job.final_text.chars().count() as u64,
@@ -416,21 +381,18 @@ fn record_session(
         transaction.execute(
             r#"
             INSERT INTO transcript_history (
-                session_id, created_at, raw_transcript, cleaned_transcript,
-                final_text, replacements_applied, copied_to_clipboard,
-                paste_triggered, cleanup_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                session_id, created_at, raw_transcript, final_text,
+                replacements_applied, copied_to_clipboard, paste_triggered
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
             params![
                 session_id,
                 timestamp(job.updated_at),
                 job.raw_transcript,
-                cleaned_transcript,
                 job.final_text,
                 serialize_replacements(&replacements_applied)?,
                 job.copied_to_clipboard,
                 job.paste_triggered,
-                cleanup_error,
             ],
         )?;
     }

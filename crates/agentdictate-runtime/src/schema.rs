@@ -126,7 +126,7 @@ pub(crate) fn row_to_job(
     Ok((|| {
         Ok(RecordingJob {
             options: row
-                .get::<_, Option<String>>(16)?
+                .get::<_, Option<String>>(15)?
                 .map(|s| serde_json::from_str(&s))
                 .transpose()?,
             id: JobId::from_str(&runtime_id)
@@ -148,7 +148,6 @@ pub(crate) fn row_to_job(
             paste_triggered: row.get(12)?,
             delivery_status: parse_delivery_status(&row.get::<_, String>(13)?)?,
             error_message: row.get(14)?,
-            cleanup_error: row.get(15)?,
         })
     })())
 }
@@ -181,7 +180,6 @@ pub(crate) fn stage_name(stage: JobStage) -> &'static str {
         JobStage::Recording => "recording",
         JobStage::Captured => "captured",
         JobStage::Transcribing => "transcribing",
-        JobStage::Cleaning => "cleaning",
         JobStage::ReadyToDeliver => "ready_to_deliver",
         JobStage::Delivering => "delivering",
         JobStage::Delivered => "delivered",
@@ -198,8 +196,8 @@ fn parse_stage(value: &str) -> Result<JobStage, RuntimeError> {
         "starting" => Ok(JobStage::Starting),
         "recording" => Ok(JobStage::Recording),
         "captured" => Ok(JobStage::Captured),
-        "transcribing" => Ok(JobStage::Transcribing),
-        "cleaning" => Ok(JobStage::Cleaning),
+        // The retired cleanup step was part of processing, like transcribing.
+        "transcribing" | "cleaning" => Ok(JobStage::Transcribing),
         "ready_to_deliver" => Ok(JobStage::ReadyToDeliver),
         "delivering" => Ok(JobStage::Delivering),
         "delivered" => Ok(JobStage::Delivered),

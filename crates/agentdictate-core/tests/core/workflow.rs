@@ -23,7 +23,6 @@ fn durable_job_stages_have_stable_protocol_names() {
         (JobStage::Recording, "\"recording\""),
         (JobStage::Captured, "\"captured\""),
         (JobStage::Transcribing, "\"transcribing\""),
-        (JobStage::Cleaning, "\"cleaning\""),
         (JobStage::ReadyToDeliver, "\"ready_to_deliver\""),
         (JobStage::Delivering, "\"delivering\""),
         (JobStage::Delivered, "\"delivered\""),
@@ -116,44 +115,6 @@ fn stale_recorder_events_cannot_change_the_active_job() {
         agentdictate_core::WorkflowError::JobMismatch {
             expected: active_job,
             received: error_job,
-        }
-    );
-}
-
-#[test]
-fn cleanup_is_an_explicit_stage_before_delivery() {
-    let mut workflow = Workflow::new();
-    let job_id = JobId::new();
-    workflow
-        .apply(WorkflowSignal::StartRequested { job_id })
-        .unwrap();
-    workflow
-        .apply(WorkflowSignal::FirstAudioFrameWritten { job_id })
-        .unwrap();
-    workflow.apply(WorkflowSignal::StopRequested).unwrap();
-    workflow
-        .apply(WorkflowSignal::CaptureFinalized { job_id })
-        .unwrap();
-
-    let cleaning = workflow
-        .apply(WorkflowSignal::TranscriptStoredForCleanup { job_id })
-        .unwrap();
-    assert_eq!(
-        cleaning.phase,
-        WorkflowPhase::Processing {
-            job_id,
-            stage: agentdictate_core::ProcessingStage::Cleaning,
-        }
-    );
-
-    let deliverable = workflow
-        .apply(WorkflowSignal::CleanupStored { job_id })
-        .unwrap();
-    assert_eq!(
-        deliverable.phase,
-        WorkflowPhase::Processing {
-            job_id,
-            stage: agentdictate_core::ProcessingStage::ReadyToDeliver,
         }
     );
 }

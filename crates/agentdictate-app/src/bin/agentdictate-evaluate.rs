@@ -1,9 +1,6 @@
 //! Explicit replay tool. It never captures a microphone or delivers text to another application.
-use agentdictate_app::{
-    AppPaths, CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechTransport,
-    TranscriptionRequest,
-};
-use agentdictate_core::{DictationOptions, Settings, normalize_vocabulary, validate_cleanup};
+use agentdictate_app::{AppPaths, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
+use agentdictate_core::{DictationOptions, Settings, normalize_vocabulary};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -30,11 +27,11 @@ struct Case {
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let get = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
-    let cases = get("--cases").ok_or_else(|| anyhow::anyhow!("Usage: agentdictate-evaluate --cases cases.jsonl --output results.jsonl [--mode offline|cleanup|speech|live] [--config config.json] [--model ID] [--effort low]"))?;
+    let cases = get("--cases").ok_or_else(|| anyhow::anyhow!("Usage: agentdictate-evaluate --cases cases.jsonl --output results.jsonl [--mode offline|speech|live] [--config config.json] [--model ID]"))?;
     let output = get("--output").ok_or_else(|| anyhow::anyhow!("--output is required"))?;
     let mode = get("--mode").unwrap_or_else(|| "offline".into());
     anyhow::ensure!(
-        ["offline", "cleanup", "speech", "live"].contains(&mode.as_str()),
+        ["offline", "speech", "live"].contains(&mode.as_str()),
         "unsupported mode"
     );
     let config_path = get("--config")
@@ -47,19 +44,12 @@ fn main() -> anyhow::Result<()> {
         Settings::default()
     };
     if let Some(model) = get("--model") {
-        if mode == "cleanup" {
-            settings.cleanup_model = model;
-        } else {
-            settings.transcription_model = model;
-        }
-    }
-    if let Some(effort) = get("--effort") {
-        settings.cleanup_reasoning_effort = effort;
+        settings.transcription_model = model;
     }
     anyhow::ensure!(
         args.len() % 2 == 0
             && args.chunks_exact(2).all(|pair| [
-                "--cases", "--output", "--mode", "--config", "--model", "--effort"
+                "--cases", "--output", "--mode", "--config", "--model"
             ]
             .contains(&pair[0].as_str())),
         "unknown or incomplete argument"
@@ -92,16 +82,6 @@ fn main() -> anyhow::Result<()> {
         let start = Instant::now();
         let mut stop_ms = None;
         let result = match mode.as_str() {
-            "cleanup" => transport.cleanup_text(CleanupRequest {
-                timeout: Duration::from_millis(u64::from(options.cleanup_timeout_ms)),
-                transcript: &case.text,
-                model: &options.cleanup_model,
-                instruction: &options.cleanup_instruction,
-                reasoning_effort: agentdictate_core::ReasoningEffort::from_settings_value(
-                    &options.cleanup_effort,
-                )
-                .and_then(agentdictate_core::ReasoningEffort::openai_value),
-            }),
             "live" => {
                 let audio = case
                     .audio
@@ -131,15 +111,7 @@ fn main() -> anyhow::Result<()> {
         let elapsed_ms = start.elapsed().as_millis();
         let error = result.as_ref().err().map(ToString::to_string);
         let candidate = result.unwrap_or_else(|_| case.text.clone());
-        let guard_error = (mode == "cleanup")
-            .then(|| validate_cleanup(&case.text, &candidate).err())
-            .flatten();
-        let delivered = if guard_error.is_some() {
-            &case.text
-        } else {
-            &candidate
-        };
-        let normalized = normalize_vocabulary(delivered, &options.vocabulary);
+        let normalized = normalize_vocabulary(&candidate, &options.vocabulary);
         let protected_ok = case.preserve.iter().all(|part| {
             normalized
                 .text
@@ -156,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(
             file,
             "{}",
-            json!({"id":case.id,"mode":mode,"model":if mode=="cleanup" { &options.cleanup_model } else {&settings.transcription_model},"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":transport.actual_model(),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"guard_fallback":guard_error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
+            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":transport.actual_model(),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
         )?;
     }
     println!(
@@ -259,7 +231,6 @@ fn replay_live(
         paste_triggered: false,
         delivery_status: agentdictate_runtime::DeliveryStatus::NotAttempted,
         error_message: None,
-        cleanup_error: None,
     };
     transport.begin_recording(&job, &live_options);
     let started = Instant::now();

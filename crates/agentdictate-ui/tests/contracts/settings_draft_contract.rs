@@ -132,7 +132,6 @@ fn settings_draft_reports_unsaved_text_and_toggle_changes() {
 fn discarding_changes_restores_the_entire_persisted_form() {
     let persisted = Settings {
         language: "en".to_owned(),
-        cleanup_enabled: true,
         start_on_login: false,
         ..Settings::default()
     };
@@ -151,7 +150,6 @@ fn applying_a_draft_preserves_settings_that_the_form_does_not_expose() {
     let original = Settings {
         openai_api_key: "secret".to_owned(),
         transcription_model: "private-transcriber".to_owned(),
-        custom_cleanup_model: "private-cleaner".to_owned(),
         sound_feedback: true,
         start_sound: true,
         stop_sound: true,

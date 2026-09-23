@@ -14,18 +14,13 @@ const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
 #[test]
 fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
-    struct CheckpointThenFail;
-    impl Transcriber for CheckpointThenFail {
+    struct LiveTranscriber;
+    impl Transcriber for LiveTranscriber {
         fn transcribe(&mut self, _: &RecordingJob) -> Result<Transcript, ExternalError> {
-            unreachable!()
-        }
-        fn transcribe_checkpointed(
-            &mut self,
-            _: &RecordingJob,
-            checkpoint: &mut agentdictate_runtime::TranscriptCheckpoint<'_>,
-        ) -> Result<Transcript, ExternalError> {
-            checkpoint("Do not push.", Some("gpt-live-transcribe"))?;
-            Err(ExternalError::new("process failed after speech"))
+            Ok(Transcript {
+                text: "Do not push.".into(),
+                model: "gpt-live-transcribe".into(),
+            })
         }
     }
     let directory = TempDir::new().unwrap();
@@ -35,7 +30,6 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
     let options = agentdictate_core::DictationOptions::from_settings(
         &agentdictate_core::Settings {
             project_context: "Original project".into(),
-            cleanup_timeout_ms: 1234,
             openai_api_key: "must-not-persist".into(),
             ..Default::default()
         },
@@ -46,12 +40,25 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
         .start_recording(request, &mut crate::support::ReadyRecorder)
         .unwrap();
     runtime.capture_recording(job.id, 2.0).unwrap();
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            r#"
+            CREATE TRIGGER reject_ready_checkpoint
+            BEFORE UPDATE OF stage ON dictation_jobs
+            WHEN NEW.stage = 'ready_to_deliver'
+            BEGIN
+                SELECT RAISE(FAIL, 'ready checkpoint unavailable');
+            END;
+            "#,
+        )
+        .unwrap();
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     assert!(
         runtime
             .process_captured(
                 job.id,
-                &mut CheckpointThenFail,
+                &mut LiveTranscriber,
                 &mut HeadlessDeliveryGate,
                 &mut deliverer
             )
@@ -125,10 +132,8 @@ struct FixedTranscriber;
 impl Transcriber for FixedTranscriber {
     fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
         Ok(Transcript {
-            raw: "durable raw words".to_owned(),
-            final_text: "Durable final words.".to_owned(),
-            cleaned_text: Some("Durable final words.".to_owned()),
-            cleanup_error: None,
+            text: "Durable final words.".to_owned(),
+            model: TRANSCRIPTION_MODEL.to_owned(),
         })
     }
 }
@@ -145,10 +150,8 @@ impl Transcriber for InspectingTranscriber {
             .job(job.id)?
             .is_some_and(|persisted| persisted.stage == JobStage::Transcribing);
         Ok(Transcript {
-            raw: "network result".to_owned(),
-            final_text: "Network result.".to_owned(),
-            cleaned_text: Some("Network result.".to_owned()),
-            cleanup_error: None,
+            text: "Network result.".to_owned(),
+            model: TRANSCRIPTION_MODEL.to_owned(),
         })
     }
 }
@@ -172,10 +175,8 @@ impl Transcriber for CountingTranscriber {
     fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
         self.attempts += 1;
         Ok(Transcript {
-            raw: "only once".to_owned(),
-            final_text: "Only once.".to_owned(),
-            cleaned_text: Some("Only once.".to_owned()),
-            cleanup_error: None,
+            text: "Only once.".to_owned(),
+            model: TRANSCRIPTION_MODEL.to_owned(),
         })
     }
 }
@@ -243,7 +244,7 @@ impl Deliverer for InspectingDeliverer {
         let reader = Runtime::open_observer(&self.database_path)?;
         self.saw_persisted_transcript = reader.job(job.id)?.is_some_and(|persisted| {
             persisted.stage == JobStage::ReadyToDeliver
-                && persisted.raw_transcript == "durable raw words"
+                && persisted.raw_transcript == "Durable final words."
                 && persisted.final_text == "Durable final words."
         });
         self.saw_durable_delivery_attempt = reader
@@ -1287,7 +1288,7 @@ fn startup_removes_audio_left_in_quarantine_by_a_committed_delete() {
 }
 
 #[test]
-fn enabled_replacements_are_applied_after_cleanup_and_before_delivery() {
+fn enabled_replacements_are_applied_before_delivery() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
@@ -1327,6 +1328,6 @@ fn enabled_replacements_are_applied_after_cleanup_and_before_delivery() {
         )
         .unwrap();
 
-    assert_eq!(delivered.raw_transcript, "durable raw words");
+    assert_eq!(delivered.raw_transcript, "Durable final words.");
     assert_eq!(delivered.final_text, "AgentDictate.");
 }

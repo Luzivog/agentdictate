@@ -2,13 +2,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{JobId, ReasoningEffort, Settings, TranscriptionProvider};
+use agentdictate_core::{JobId, Settings, TranscriptionProvider};
 use agentdictate_linux::command::{
     PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool, SystemCommandRunner,
 };
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
 use reqwest::StatusCode;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// 32 kbps Opus reduces the 256 kbps PCM payload by roughly 8x before container
 /// overhead. Recognition quality still depends on the audio and selected model.
@@ -198,10 +198,6 @@ fn failed_before_status(error: &reqwest::Error) -> bool {
     (error.is_request() || error.is_body()) && (error.is_connect() || !error.is_timeout())
 }
 
-fn cleanup_reasoning_effort(value: &str) -> Option<&str> {
-    ReasoningEffort::from_settings_value(value).and_then(ReasoningEffort::openai_value)
-}
-
 pub struct TranscriptionRequest<'a> {
     pub keywords: &'a [String],
     pub audio_path: &'a Path,
@@ -210,14 +206,6 @@ pub struct TranscriptionRequest<'a> {
     pub language: &'a str,
     pub prompt: &'a str,
     pub duration_seconds: f64,
-}
-
-pub struct CleanupRequest<'a> {
-    pub timeout: Duration,
-    pub transcript: &'a str,
-    pub model: &'a str,
-    pub instruction: &'a str,
-    pub reasoning_effort: Option<&'a str>,
 }
 
 pub trait SpeechTransport {
@@ -236,10 +224,6 @@ pub trait SpeechTransport {
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError>;
-}
-
-pub trait CleanupTransport {
-    fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError>;
 }
 
 pub struct SpeechRouter<A, C> {
@@ -286,28 +270,17 @@ impl<A: SpeechTransport, C: SpeechTransport> SpeechTransport for SpeechRouter<A,
     }
 }
 
-pub struct TranscriptionPipeline<S, C> {
+/// The production `Transcriber`: sends the recording to the speech transport
+/// with the options stored on its job.
+pub struct TranscriptionPipeline<S> {
     settings: Settings,
     speech: S,
-    cleanup: C,
-    /// Called with the job id right before the cleanup model runs, so the UI
-    /// can show the cleaning phase while `transcribe` is still blocking.
-    cleanup_started_observer: Option<Box<dyn Fn(JobId) + Send>>,
 }
 
-impl<S, C> TranscriptionPipeline<S, C> {
+impl<S> TranscriptionPipeline<S> {
     #[must_use]
-    pub fn new(settings: Settings, speech: S, cleanup: C) -> Self {
-        Self {
-            settings,
-            speech,
-            cleanup,
-            cleanup_started_observer: None,
-        }
-    }
-
-    pub fn set_cleanup_started_observer(&mut self, observer: impl Fn(JobId) + Send + 'static) {
-        self.cleanup_started_observer = Some(Box::new(observer));
+    pub const fn new(settings: Settings, speech: S) -> Self {
+        Self { settings, speech }
     }
 
     pub fn update_settings(&mut self, settings: Settings) {
@@ -317,13 +290,9 @@ impl<S, C> TranscriptionPipeline<S, C> {
     pub const fn speech_mut(&mut self) -> &mut S {
         &mut self.speech
     }
-
-    pub const fn cleanup_mut(&mut self) -> &mut C {
-        &mut self.cleanup
-    }
 }
 
-impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipeline<S, C> {
+impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
     fn begin_recording(&mut self, job: &RecordingJob) {
         if let Some(options) = &job.options {
             self.speech.begin_recording(job, options);
@@ -333,92 +302,51 @@ impl<S: SpeechTransport, C: CleanupTransport> Transcriber for TranscriptionPipel
         self.speech.cancel_recording(id);
     }
 
+    /// Reuses a transcript an earlier attempt already stored, so retrying a
+    /// job that failed after transcription is not charged again.
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        self.transcribe_checkpointed(job, &mut |_, _| Ok(()))
-    }
-
-    fn transcribe_checkpointed(
-        &mut self,
-        job: &RecordingJob,
-        checkpoint: &mut agentdictate_runtime::TranscriptCheckpoint<'_>,
-    ) -> Result<Transcript, ExternalError> {
+        if !job.raw_transcript.trim().is_empty() {
+            return Ok(Transcript {
+                text: job.raw_transcript.clone(),
+                model: job.transcription_model.clone(),
+            });
+        }
         let options = job.options.clone().unwrap_or_else(|| {
             agentdictate_core::DictationOptions::from_settings(&self.settings, Vec::new())
         });
         let keywords = options.keywords();
-        let raw = if !job.raw_transcript.trim().is_empty() {
-            job.raw_transcript.clone()
-        } else {
-            match self.speech.transcribe_audio(TranscriptionRequest {
-                keywords: &keywords,
-                audio_path: &job.audio_path,
-                provider: job.transcription_provider,
-                model: &job.transcription_model,
-                language: &options.language,
-                prompt: &options.context,
-                duration_seconds: job.duration_seconds,
-            }) {
-                Err(ExternalError::NoSpeech)
-                    if !crate::captured_audio::is_near_silent(&job.audio_path) =>
-                {
-                    return Err(ExternalError::new(
-                        "No speech was recognized. Audio is saved for another attempt.",
-                    ));
-                }
-                result => result?,
+        let text = match self.speech.transcribe_audio(TranscriptionRequest {
+            keywords: &keywords,
+            audio_path: &job.audio_path,
+            provider: job.transcription_provider,
+            model: &job.transcription_model,
+            language: &options.language,
+            prompt: &options.context,
+            duration_seconds: job.duration_seconds,
+        }) {
+            Err(ExternalError::NoSpeech)
+                if !crate::captured_audio::is_near_silent(&job.audio_path) =>
+            {
+                return Err(ExternalError::new(
+                    "No speech was recognized. Audio is saved for another attempt.",
+                ));
             }
+            result => result?,
         };
-        if raw.trim().is_empty() {
+        if text.trim().is_empty() {
             return Err(if crate::captured_audio::is_near_silent(&job.audio_path) {
                 ExternalError::NoSpeech
             } else {
                 ExternalError::new("Transcription returned an empty result; audio is saved")
             });
         }
-        checkpoint(
-            &raw,
-            if job.raw_transcript.is_empty()
-                && job.transcription_provider == TranscriptionProvider::OpenAiApi
-            {
-                self.speech.actual_model()
-            } else {
-                None
-            },
-        )?;
-        let (final_text, cleaned_text, cleanup_error) = if options.cleanup_enabled {
-            if let Some(observer) = &self.cleanup_started_observer {
-                observer(job.id);
-            }
-            let cleaned = self
-                .cleanup
-                .cleanup_text(CleanupRequest {
-                    timeout: Duration::from_millis(u64::from(options.cleanup_timeout_ms)),
-                    transcript: &raw,
-                    model: &options.cleanup_model,
-                    instruction: &options.cleanup_instruction,
-                    reasoning_effort: cleanup_reasoning_effort(&options.cleanup_effort),
-                })
-                .and_then(|cleaned| {
-                    agentdictate_core::validate_cleanup(&raw, &cleaned)
-                        .map_err(ExternalError::new)?;
-                    Ok(cleaned)
-                });
-            match cleaned {
-                Ok(cleaned) => (cleaned.clone(), Some(cleaned), None),
-                Err(error) => {
-                    tracing::warn!(%error, "cleanup failed; using checkpointed raw transcript");
-                    (raw.clone(), None, Some(error.to_string()))
-                }
-            }
-        } else {
-            (raw.clone(), None, None)
-        };
-        Ok(Transcript {
-            raw,
-            final_text,
-            cleaned_text,
-            cleanup_error,
-        })
+        let model = match job.transcription_provider {
+            TranscriptionProvider::OpenAiApi => self.speech.actual_model(),
+            TranscriptionProvider::ChatGptSubscription => None,
+        }
+        .unwrap_or(&job.transcription_model)
+        .to_owned();
+        Ok(Transcript { text, model })
     }
 }
 
@@ -661,94 +589,6 @@ impl SpeechTransport for ReqwestOpenAiTransport {
     }
 }
 
-impl CleanupTransport for ReqwestOpenAiTransport {
-    fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError> {
-        if request.model.trim().is_empty() {
-            return Err(ExternalError::new(
-                "The selected cleanup model could not be used. Choose another model or check the custom model name.",
-            ));
-        }
-        let mut payload = json!({
-            "model": request.model,
-            "instructions": request.instruction,
-            "input": request.transcript,
-            "text": {"format": {"type": "text"}},
-        });
-        if let Some(effort) = request.reasoning_effort {
-            payload["reasoning"] = json!({"effort": effort});
-        }
-        let request_started = Instant::now();
-        let response = self
-            .client
-            .post(format!("{}/responses", self.api_base))
-            .timeout(request.timeout)
-            .header("Authorization", self.authorization()?)
-            .json(&payload)
-            .send()
-            .map_err(|error| ExternalError::new(format!("Could not reach OpenAI: {error}")))?;
-        let status = response.status();
-        let body = response.text().map_err(|error| {
-            ExternalError::new(format!("Could not read OpenAI's response: {error}"))
-        })?;
-        let request_ms = request_started.elapsed().as_millis() as u64;
-        if !status.is_success() {
-            return Err(Self::response_error(status, &body));
-        }
-        let payload: Value = serde_json::from_str(&body)
-            .map_err(|_| ExternalError::new("OpenAI returned an invalid cleanup response."))?;
-        if payload.get("status").and_then(Value::as_str) != Some("completed") {
-            return Err(ExternalError::new(
-                "Cleanup did not complete; using the transcript",
-            ));
-        }
-        if payload
-            .get("output")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.get("content").and_then(Value::as_array))
-            .flatten()
-            .any(|part| part.get("type").and_then(Value::as_str) == Some("refusal"))
-        {
-            return Err(ExternalError::new(
-                "Cleanup refused the edit; using the transcript",
-            ));
-        }
-        let text = payload
-            .get("output")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.get("content").and_then(Value::as_array))
-            .flatten()
-            .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
-            .filter_map(|content| content.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("")
-            .trim()
-            .to_owned();
-        let input_tokens = payload
-            .pointer("/usage/input_tokens")
-            .and_then(Value::as_u64);
-        let output_tokens = payload
-            .pointer("/usage/output_tokens")
-            .and_then(Value::as_u64);
-        tracing::info!(
-            model = request.model,
-            effort = request.reasoning_effort,
-            request_ms,
-            input_tokens,
-            output_tokens,
-            output_chars = text.chars().count(),
-            "cleanup request completed"
-        );
-        if text.is_empty() {
-            return Err(ExternalError::new("Cleanup returned an empty response."));
-        }
-        Ok(text)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -756,7 +596,7 @@ mod tests {
 
     use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
 
-    use super::{UploadFormat, cleanup_reasoning_effort, encode_webm_opus, prepare_upload_audio};
+    use super::{UploadFormat, encode_webm_opus, prepare_upload_audio};
 
     #[test]
     fn a_valid_wav_encodes_to_a_webm_opus_payload() {
@@ -821,14 +661,5 @@ mod tests {
         bytes.extend_from_slice(&data_len.to_le_bytes());
         bytes.resize(bytes.len() + data_len as usize, 0);
         bytes
-    }
-
-    #[test]
-    fn every_reasoning_effort_exposed_by_the_catalog_is_forwarded() {
-        for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
-            assert_eq!(cleanup_reasoning_effort(effort), Some(effort));
-        }
-        assert_eq!(cleanup_reasoning_effort("default"), None);
-        assert_eq!(cleanup_reasoning_effort("unsupported"), None);
     }
 }

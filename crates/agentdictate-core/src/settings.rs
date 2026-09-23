@@ -3,8 +3,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_CLEANUP_PROMPT: &str = crate::FAITHFUL_CLEANUP_INSTRUCTION;
-
 /// The OpenAI model every dictation uses. `Settings::transcription_model` can
 /// override it from config.json to try a newer model; the app has no picker.
 pub const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
@@ -112,13 +110,6 @@ pub struct Settings {
     pub project_context: String,
     pub dictation_mode: crate::DictationMode,
     pub streaming_enabled: bool,
-    pub cleanup_timeout_ms: u32,
-    pub cleanup_enabled: bool,
-    pub cleanup_model: String,
-    pub custom_cleanup_model: String,
-    pub cleanup_reasoning_effort: String,
-    pub cleanup_style: String,
-    pub cleanup_prompt: String,
     pub hotkey: String,
     pub recording_mode: String,
     pub max_recording_seconds: u32,
@@ -144,15 +135,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    #[must_use]
-    pub fn active_cleanup_model(&self) -> &str {
-        if self.cleanup_model == "Custom" {
-            self.custom_cleanup_model.trim()
-        } else {
-            &self.cleanup_model
-        }
-    }
-
     /// Repairs the historical all-zero pricing file while preserving any
     /// deliberate non-zero customizations and unknown future models.
     pub fn repair_pricing_defaults(&mut self) -> bool {
@@ -212,13 +194,6 @@ impl Default for Settings {
             project_context: String::new(),
             dictation_mode: crate::DictationMode::Dictate,
             streaming_enabled: false,
-            cleanup_timeout_ms: 3000,
-            cleanup_enabled: false,
-            cleanup_model: "gpt-5.4-nano".into(),
-            custom_cleanup_model: String::new(),
-            cleanup_reasoning_effort: "default".into(),
-            cleanup_style: "Light cleanup".into(),
-            cleanup_prompt: DEFAULT_CLEANUP_PROMPT.into(),
             hotkey: "Ctrl+Space".into(),
             recording_mode: "toggle".into(),
             max_recording_seconds: 300,

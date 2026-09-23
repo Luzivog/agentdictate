@@ -32,7 +32,6 @@ fn python_settings_json_keeps_values_and_repairs_missing_pricing() {
 
     assert_eq!(settings.hotkey, "Alt+Space");
     assert_eq!(settings.max_recording_seconds, 45);
-    assert!(!settings.cleanup_enabled);
     assert_eq!(
         settings.transcription_prices["gpt-transcribe"].price_per_audio_minute,
         0.0045

@@ -24,8 +24,8 @@ pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
 pub use openai::{
-    CleanupRequest, CleanupTransport, ReqwestOpenAiTransport, SpeechRouter, SpeechTransport,
-    TranscriptionPipeline, TranscriptionRequest,
+    ReqwestOpenAiTransport, SpeechRouter, SpeechTransport, TranscriptionPipeline,
+    TranscriptionRequest,
 };
 #[cfg(feature = "desktop")]
 pub use overlay_process::run_overlay_helper;

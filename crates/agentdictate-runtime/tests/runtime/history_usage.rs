@@ -12,15 +12,13 @@ use crate::support::{ReadyRecorder, request, request_with_provider};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-4o-transcribe";
 
-struct CleaningTranscriber;
+struct FixedTranscriber;
 
-impl Transcriber for CleaningTranscriber {
+impl Transcriber for FixedTranscriber {
     fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
         Ok(Transcript {
-            raw: "fix the versel deploy".to_owned(),
-            final_text: "Fix the versel deploy.".to_owned(),
-            cleaned_text: Some("Fix the versel deploy.".to_owned()),
-            cleanup_error: None,
+            text: "fix the versel deploy".to_owned(),
+            model: TRANSCRIPTION_MODEL.to_owned(),
         })
     }
 }
@@ -74,7 +72,7 @@ fn delivered_job_with_provider(
     runtime
         .process_captured(
             job.id,
-            &mut CleaningTranscriber,
+            &mut FixedTranscriber,
             &mut HeadlessDeliveryGate,
             &mut SubmittedDeliverer,
         )
@@ -97,13 +95,7 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         TranscriptionProvider::ChatGptSubscription
     );
     let recorded = runtime
-        .complete_delivered(
-            delivered.id,
-            &Settings {
-                cleanup_enabled: true,
-                ..Settings::default()
-            },
-        )
+        .complete_delivered(delivered.id, &Settings::default())
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -111,7 +103,6 @@ fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost
         TranscriptionProvider::ChatGptSubscription
     );
     assert_eq!(recorded.estimated_transcription_cost, 0.0);
-    assert!(recorded.estimated_cleanup_cost > 0.0);
 
     let mut repriced = Settings::default();
     repriced
@@ -140,12 +131,7 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     let directory = TempDir::new().unwrap();
     let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
-    let settings = Settings {
-        cleanup_enabled: true,
-        cleanup_model: "gpt-5.4-nano".to_owned(),
-        cleanup_style: "Light cleanup".to_owned(),
-        ..Settings::default()
-    };
+    let settings = Settings::default();
 
     let first = runtime
         .complete_delivered(delivered.id, &settings)
@@ -159,19 +145,14 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
     assert_eq!(first.id, duplicate.id);
     assert_eq!(first.job_id, Some(delivered.id));
     assert_eq!(first.raw_transcript, "fix the versel deploy");
-    assert_eq!(
-        first.cleaned_transcript.as_deref(),
-        Some("Fix the versel deploy.")
-    );
-    assert_eq!(first.final_text, "Fix the Vercel deploy.");
+    assert_eq!(first.final_text, "fix the Vercel deploy");
     assert_eq!(first.replacements_applied.len(), 1);
     assert_eq!(first.replacements_applied[0].source_phrase, "versel");
     assert_eq!(first.replacements_applied[0].count, 1);
     assert_eq!(first.raw_word_count, 4);
     assert_eq!(first.final_word_count, 4);
-    assert_eq!(first.final_character_count, 22);
+    assert_eq!(first.final_character_count, 21);
     assert!((first.estimated_transcription_cost - 0.006).abs() < f64::EPSILON);
-    assert!(first.estimated_cleanup_cost > 0.0);
     assert!(first.copied_to_clipboard);
     assert!(first.paste_triggered);
     assert!(first.success);
@@ -188,11 +169,6 @@ fn delivered_session_history_is_idempotent_and_feeds_usage() {
         usage.most_used_transcription_model.as_deref(),
         Some("gpt-4o-transcribe")
     );
-    assert_eq!(
-        usage.most_used_cleanup_model.as_deref(),
-        Some("gpt-5.4-nano")
-    );
-    assert_eq!(usage.cleanup_mode_usage_count, 1);
 
     let series = runtime.usage_series(1, UsageMetric::Words).unwrap();
     assert_eq!(series.len(), 1);
@@ -964,13 +940,7 @@ fn pricing_sync_reprices_existing_history_and_usage() {
     let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
     let delivered = delivered_job(&mut runtime, &directory);
     runtime
-        .complete_delivered(
-            delivered.id,
-            &Settings {
-                cleanup_enabled: true,
-                ..Settings::default()
-            },
-        )
+        .complete_delivered(delivered.id, &Settings::default())
         .unwrap();
     let mut repriced = Settings::default();
     repriced
@@ -978,11 +948,6 @@ fn pricing_sync_reprices_existing_history_and_usage() {
         .get_mut("gpt-4o-transcribe")
         .unwrap()
         .price_per_audio_minute = 0.012;
-    repriced
-        .cleanup_prices
-        .get_mut("gpt-5.4-nano")
-        .unwrap()
-        .input_price_per_1m_tokens = 10.0;
 
     runtime.sync_pricing(&repriced).unwrap();
 
@@ -991,7 +956,6 @@ fn pricing_sync_reprices_existing_history_and_usage() {
         .unwrap()
         .remove(0);
     assert!((entry.estimated_transcription_cost - 0.012).abs() < f64::EPSILON);
-    assert!(entry.estimated_cleanup_cost > 0.000_01);
     let usage = runtime.usage_summary().unwrap();
     assert!(
         (usage.all_time.estimated_total_cost - entry.estimated_total_cost).abs() < f64::EPSILON

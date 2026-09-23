@@ -226,7 +226,7 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     let delivered = daemon.stop_recording().unwrap();
 
     assert_eq!(delivered.stage, JobStage::Delivered);
-    assert_eq!(delivered.raw_transcript, "raw transcript");
+    assert_eq!(delivered.raw_transcript, "Final transcript.");
     assert_eq!(delivered.final_text, "Final transcript.");
     assert!(!delivered.audio_path.exists());
     assert_eq!(daemon.deliverer().attempts, 1);
@@ -516,7 +516,7 @@ fn failure_after_transcription_keeps_the_raw_transcript_in_recovery_and_the_next
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
     let failed = observer.job(started.id).unwrap().unwrap();
     assert_eq!(failed.stage, JobStage::Failed);
-    assert_eq!(failed.raw_transcript, "raw transcript");
+    assert_eq!(failed.raw_transcript, "Final transcript.");
     assert!(
         observer
             .recovery_entries()

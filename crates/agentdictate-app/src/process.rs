@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ProcessingStage,
-    ServerMessage, Settings, WorkflowPhase, WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, ServerMessage, Settings,
+    WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
@@ -12,16 +12,13 @@ use agentdictate_runtime::{
 };
 
 use crate::{
-    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, OverlayUpdate,
-    ReqwestOpenAiTransport, SpeechRouter, SystemDeliverer, SystemRecordingController,
-    TranscriptionPipeline, chatgpt_dictation_import::start_chatgpt_dictation_importer,
-    sync_startup_with_systemctl,
+    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
+    SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
+    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_startup_with_systemctl,
 };
 
-pub type ProductionTranscriber = TranscriptionPipeline<
-    SpeechRouter<ReqwestOpenAiTransport, CodexSubscriptionTransport>,
-    ReqwestOpenAiTransport,
->;
+pub type ProductionTranscriber =
+    TranscriptionPipeline<SpeechRouter<ReqwestOpenAiTransport, CodexSubscriptionTransport>>;
 pub type ProductionDaemon =
     Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
@@ -57,8 +54,7 @@ impl AgentProcess {
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
             CodexSubscriptionTransport::new(),
         );
-        let cleanup = ReqwestOpenAiTransport::new(&settings.openai_api_key);
-        let transcriber = TranscriptionPipeline::new(settings.clone(), speech, cleanup);
+        let transcriber = TranscriptionPipeline::new(settings.clone(), speech);
         let recorder = SystemRecordingController::for_system(
             &settings,
             &paths.runtime,
@@ -115,24 +111,6 @@ impl AgentProcess {
     }
 
     pub fn set_overlay_controller(&mut self, controller: OverlayController) {
-        // The transcription pipeline blocks the daemon while it transcribes
-        // and cleans, so the workflow cannot signal the cleaning stage from
-        // there. Push the overlay presentation for it directly instead; the
-        // daemon's next publish after the pipeline returns supersedes it.
-        let overlay = controller.clone();
-        self.daemon
-            .transcriber_mut()
-            .set_cleanup_started_observer(move |job_id| {
-                overlay.update(OverlayUpdate {
-                    workflow: WorkflowSnapshot {
-                        phase: WorkflowPhase::Processing {
-                            job_id,
-                            stage: ProcessingStage::Cleaning,
-                        },
-                    },
-                    active_recording: None,
-                });
-            });
         self.daemon.set_overlay_controller(controller);
     }
 
@@ -290,9 +268,6 @@ impl AgentProcess {
         transcriber
             .speech_mut()
             .openai_mut()
-            .set_api_key(&settings.openai_api_key);
-        transcriber
-            .cleanup_mut()
             .set_api_key(&settings.openai_api_key);
         transcriber.update_settings(settings.clone());
         self.daemon.update_settings(settings);

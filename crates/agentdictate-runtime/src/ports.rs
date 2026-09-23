@@ -114,7 +114,6 @@ pub struct RecordingJob {
     pub paste_triggered: bool,
     pub delivery_status: DeliveryStatus,
     pub error_message: Option<String>,
-    pub cleanup_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,28 +141,21 @@ pub trait Recorder {
     }
 }
 
+/// Speech-to-text output for one recording.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Transcript {
-    pub raw: String,
-    pub final_text: String,
-    pub cleaned_text: Option<String>,
-    pub cleanup_error: Option<String>,
+    pub text: String,
+    /// The model that produced `text`, which a live session can change from
+    /// the job's requested model. It is stored with the job.
+    pub model: String,
 }
 
-pub type TranscriptCheckpoint<'a> = dyn FnMut(&str, Option<&str>) -> Result<(), ExternalError> + 'a;
-
+/// Turns a captured recording into text. `begin_recording` and
+/// `cancel_recording` bracket a recording for transcribers that listen while
+/// it is captured.
 pub trait Transcriber {
     fn begin_recording(&mut self, _job: &RecordingJob) {}
     fn cancel_recording(&mut self, _id: JobId) {}
-    fn transcribe_checkpointed(
-        &mut self,
-        job: &RecordingJob,
-        checkpoint: &mut TranscriptCheckpoint<'_>,
-    ) -> Result<Transcript, ExternalError> {
-        let result = self.transcribe(job)?;
-        checkpoint(&result.raw, None)?;
-        Ok(result)
-    }
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError>;
 }
 

@@ -1,16 +1,11 @@
 use std::path::PathBuf;
 
 use agentdictate_app::{
-    CleanupRequest, CleanupTransport, SpeechRouter, SpeechTransport, TranscriptionPipeline,
-    TranscriptionRequest,
+    SpeechRouter, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
 };
 use agentdictate_core::{JobId, JobStage, Settings, TranscriptionProvider};
 use agentdictate_runtime::{DeliveryStatus, ExternalError, RecordingJob, Transcriber};
 use chrono::Utc;
-
-struct FixedOpenAi;
-
-struct FailingCleanupOpenAi;
 
 struct SubscriptionSpeech;
 
@@ -34,27 +29,10 @@ fn subscription_language_list_is_rejected_before_reading_audio_or_authentication
 }
 
 #[test]
-fn recovered_raw_skips_speech_and_uses_original_cleanup_options() {
-    struct InspectCleanup;
-    impl CleanupTransport for InspectCleanup {
-        fn cleanup_text(&mut self, request: CleanupRequest<'_>) -> Result<String, ExternalError> {
-            assert_eq!(request.model, "original-model");
-            assert_eq!(request.timeout.as_millis(), 1234);
-            Ok("Push now.".into()) // Must be rejected by the constraint guard.
-        }
-    }
-    let original = Settings {
-        cleanup_enabled: true,
-        cleanup_model: "original-model".into(),
-        cleanup_timeout_ms: 1234,
-        ..Settings::default()
-    };
+fn a_stored_transcript_is_reused_without_transcribing_again() {
     let now = Utc::now();
     let job = RecordingJob {
-        options: Some(agentdictate_core::DictationOptions::from_settings(
-            &original,
-            vec![],
-        )),
+        options: None,
         id: JobId::new(),
         legacy_id: 1,
         started_at: now,
@@ -70,49 +48,11 @@ fn recovered_raw_skips_speech_and_uses_original_cleanup_options() {
         paste_triggered: false,
         delivery_status: DeliveryStatus::NotAttempted,
         error_message: None,
-        cleanup_error: None,
     };
-    let mut pipeline = TranscriptionPipeline::new(
-        Settings {
-            cleanup_enabled: false,
-            ..Settings::default()
-        },
-        PaidApiMustNotRun,
-        InspectCleanup,
-    );
+    let mut pipeline = TranscriptionPipeline::new(Settings::default(), PaidApiMustNotRun);
     let result = pipeline.transcribe(&job).unwrap();
-    assert_eq!(result.final_text, "Do not push.");
-    assert!(result.cleanup_error.is_some());
-}
-
-impl SpeechTransport for FixedOpenAi {
-    fn transcribe_audio(
-        &mut self,
-        _request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        Ok("hello um world".into())
-    }
-}
-
-impl CleanupTransport for FixedOpenAi {
-    fn cleanup_text(&mut self, _request: CleanupRequest<'_>) -> Result<String, ExternalError> {
-        Ok("Hello world.".into())
-    }
-}
-
-impl SpeechTransport for FailingCleanupOpenAi {
-    fn transcribe_audio(
-        &mut self,
-        _request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        Ok("raw words survive".into())
-    }
-}
-
-impl CleanupTransport for FailingCleanupOpenAi {
-    fn cleanup_text(&mut self, _request: CleanupRequest<'_>) -> Result<String, ExternalError> {
-        Err(ExternalError::new("cleanup unavailable"))
-    }
+    assert_eq!(result.text, "Do not push.");
+    assert_eq!(result.model, "gpt-transcribe");
 }
 
 impl SpeechTransport for SubscriptionSpeech {
@@ -134,87 +74,9 @@ impl SpeechTransport for PaidApiMustNotRun {
 }
 
 #[test]
-fn transcription_and_cleanup_are_one_deep_runtime_operation() {
-    let settings = Settings {
-        cleanup_enabled: true,
-        cleanup_model: "gpt-5.4-nano".into(),
-        ..Settings::default()
-    };
-    let mut transcriber = TranscriptionPipeline::new(settings, FixedOpenAi, FixedOpenAi);
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        legacy_id: 1,
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: PathBuf::from("speech.wav"),
-        duration_seconds: 12.0,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-        cleanup_error: None,
-    };
-
-    let result = transcriber.transcribe(&job).unwrap();
-
-    assert_eq!(result.raw, "hello um world");
-    assert_eq!(result.final_text, "Hello world.");
-    assert_eq!(result.cleaned_text.as_deref(), Some("Hello world."));
-    assert_eq!(result.cleanup_error, None);
-}
-
-#[test]
-fn cleanup_failure_returns_the_successful_raw_transcript() {
-    let settings = Settings {
-        cleanup_enabled: true,
-        ..Settings::default()
-    };
-    let mut transcriber =
-        TranscriptionPipeline::new(settings, FailingCleanupOpenAi, FailingCleanupOpenAi);
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        legacy_id: 1,
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: PathBuf::from("speech.wav"),
-        duration_seconds: 2.0,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-        cleanup_error: None,
-    };
-
-    let result = transcriber.transcribe(&job).unwrap();
-
-    assert_eq!(result.raw, "raw words survive");
-    assert_eq!(result.final_text, "raw words survive");
-    assert_eq!(result.cleaned_text, None);
-    assert_eq!(result.cleanup_error.as_deref(), Some("cleanup unavailable"));
-}
-
-#[test]
 fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
-    let settings = Settings {
-        cleanup_enabled: false,
-        ..Settings::default()
-    };
     let speech = SpeechRouter::new(PaidApiMustNotRun, SubscriptionSpeech);
-    let mut transcriber = TranscriptionPipeline::new(settings, speech, FixedOpenAi);
+    let mut transcriber = TranscriptionPipeline::new(Settings::default(), speech);
     let now = Utc::now();
     let job = RecordingJob {
         options: None,
@@ -233,107 +95,11 @@ fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
         paste_triggered: false,
         delivery_status: DeliveryStatus::NotAttempted,
         error_message: None,
-        cleanup_error: None,
     };
 
     let result = transcriber.transcribe(&job).unwrap();
 
-    assert_eq!(result.raw, "subscription transcript");
-    assert_eq!(result.final_text, "subscription transcript");
-}
-
-#[test]
-fn cleanup_started_observer_fires_before_the_cleanup_transport() {
-    use std::sync::{Arc, Mutex};
-
-    struct LoggingCleanup(Arc<Mutex<Vec<String>>>);
-
-    impl CleanupTransport for LoggingCleanup {
-        fn cleanup_text(&mut self, _request: CleanupRequest<'_>) -> Result<String, ExternalError> {
-            self.0.lock().unwrap().push("cleanup-ran".to_owned());
-            Ok("Cleaned.".to_owned())
-        }
-    }
-
-    let events: Arc<Mutex<Vec<String>>> = Arc::default();
-    let settings = Settings {
-        cleanup_enabled: true,
-        cleanup_model: "gpt-5.4-nano".into(),
-        ..Settings::default()
-    };
-    let mut transcriber =
-        TranscriptionPipeline::new(settings, FixedOpenAi, LoggingCleanup(events.clone()));
-    let observed = events.clone();
-    transcriber.set_cleanup_started_observer(move |job_id| {
-        observed.lock().unwrap().push(format!("observer:{job_id}"));
-    });
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        legacy_id: 1,
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: PathBuf::from("speech.wav"),
-        duration_seconds: 12.0,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-        cleanup_error: None,
-    };
-
-    transcriber.transcribe(&job).unwrap();
-
-    assert_eq!(
-        *events.lock().unwrap(),
-        [format!("observer:{}", job.id), "cleanup-ran".to_owned()]
-    );
-}
-
-#[test]
-fn cleanup_started_observer_stays_silent_when_cleanup_is_disabled() {
-    use std::sync::{Arc, Mutex};
-
-    let events: Arc<Mutex<Vec<String>>> = Arc::default();
-    let settings = Settings {
-        cleanup_enabled: false,
-        ..Settings::default()
-    };
-    let mut transcriber = TranscriptionPipeline::new(settings, FixedOpenAi, FixedOpenAi);
-    let observed = events.clone();
-    transcriber.set_cleanup_started_observer(move |job_id| {
-        observed.lock().unwrap().push(format!("observer:{job_id}"));
-    });
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        legacy_id: 1,
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: PathBuf::from("speech.wav"),
-        duration_seconds: 12.0,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-        cleanup_error: None,
-    };
-
-    transcriber.transcribe(&job).unwrap();
-
-    assert!(events.lock().unwrap().is_empty());
+    assert_eq!(result.text, "subscription transcript");
 }
 
 #[test]
@@ -345,12 +111,6 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
             _: TranscriptionRequest<'_>,
         ) -> Result<String, ExternalError> {
             self.0.clone()
-        }
-    }
-    struct NoCleanup;
-    impl CleanupTransport for NoCleanup {
-        fn cleanup_text(&mut self, _: CleanupRequest<'_>) -> Result<String, ExternalError> {
-            panic!("ordinary dictation must not use cleanup")
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -373,7 +133,6 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
         paste_triggered: false,
         delivery_status: DeliveryStatus::NotAttempted,
         error_message: None,
-        cleanup_error: None,
     };
     for sample in [12i16, 2000] {
         let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data\x80\x0c\0\0".to_vec();
@@ -388,12 +147,11 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
             Err(ExternalError::new("network unavailable")),
         ] {
             let original = result.clone();
-            let mut pipeline =
-                TranscriptionPipeline::new(Settings::default(), Speech(result), NoCleanup);
+            let mut pipeline = TranscriptionPipeline::new(Settings::default(), Speech(result));
             let actual = pipeline.transcribe(&job);
             match original {
                 Ok(text) if !text.trim().is_empty() => {
-                    assert_eq!(actual.unwrap().final_text, "Yes.")
+                    assert_eq!(actual.unwrap().text, "Yes.")
                 }
                 Err(ExternalError::Failure { .. }) => {
                     assert_eq!(actual.unwrap_err().to_string(), "network unavailable")

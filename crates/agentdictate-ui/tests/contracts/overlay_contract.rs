@@ -16,12 +16,10 @@ fn overlay_opens_at_the_start_request_and_stays_through_processing() {
         OverlayState::Starting,
         OverlayState::Recording,
         OverlayState::Transcribing,
-        OverlayState::Cleaning,
     ] {
         assert!(state.is_visible(), "{state:?} should open the overlay");
     }
     assert_eq!(OverlayState::Transcribing.label(), "Transcribing");
-    assert_eq!(OverlayState::Cleaning.label(), "Cleaning up...");
 
     let state = OverlayState::recoverable_failure("Could not paste", "Copy again");
     for state in [

@@ -56,12 +56,6 @@ impl From<WorkflowSnapshot> for StatusViewModel {
                     tone: StatusTone::Processing,
                     is_busy: true,
                 },
-                ProcessingStage::Cleaning => Self {
-                    label: "Cleaning up",
-                    detail: "Polishing your transcript",
-                    tone: StatusTone::Processing,
-                    is_busy: true,
-                },
                 ProcessingStage::ReadyToDeliver => Self {
                     label: "Ready to paste",
                     detail: "Your transcript is safe",

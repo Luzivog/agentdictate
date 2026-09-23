@@ -23,7 +23,7 @@ mod ports;
 pub use ports::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest,
-    RuntimeError, RuntimeEvent, Transcriber, Transcript, TranscriptCheckpoint,
+    RuntimeError, RuntimeEvent, Transcriber, Transcript,
 };
 mod pricing;
 mod recovery;

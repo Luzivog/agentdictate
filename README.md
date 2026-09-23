@@ -77,11 +77,9 @@ are limited or billed. The route can stop working without notice.
 OpenAI API transcription uploads the recording to `gpt-transcribe` with any
 applicable language, context, or vocabulary hints. Optional streaming sends audio
 while recording to `gpt-live-transcribe`. Both require an OpenAI Platform API
-key and can incur Platform charges outside a ChatGPT subscription. New dictations
-use direct transcription without a cleanup call. Historical recovery jobs and
-explicit cleanup evaluations can still upload the transcript and saved instructions
-to the paid OpenAI API. A failed live stream falls back to `gpt-transcribe`,
-which can add a second transcription charge.
+key and can incur Platform charges outside a ChatGPT subscription. A failed live
+stream falls back to `gpt-transcribe`, which can add a second transcription
+charge.
 Subscription failures never fall back to the paid API route.
 
 ## Local storage
@@ -134,8 +132,7 @@ Development, packaging, and local data paths are in the
    ```
 
 2. Subscription STT does not require an OpenAI Platform API key. For the
-   no-key path, select **ChatGPT subscription**, turn **Cleanup** off, and click
-   **Save changes**.
+   no-key path, select **ChatGPT subscription** and click **Save changes**.
 3. Press `Ctrl+Space` once to start recording. Before pressing it again, focus
    the destination app. Keep that app focused until AgentDictate copies the
    transcript and submits the paste shortcut. The shortcut targets the app

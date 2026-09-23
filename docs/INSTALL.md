@@ -58,8 +58,8 @@ rebuilding:
 Continue only when the final line is `Native input readiness: ready`.
 
 Run `agentdictate` or `~/.local/bin/agentdictate`. In **Settings**, set
-**Transcription source** to **ChatGPT subscription**. For the no-key path, turn
-**Cleanup** off and click **Save changes**. Press `Ctrl+Space` once to start
+**Transcription source** to **ChatGPT subscription** and click **Save changes**.
+Press `Ctrl+Space` once to start
 recording. Before pressing it again, focus the destination app and keep it
 focused until AgentDictate submits the paste shortcut. The shortcut targets the
 app focused at paste time. AgentDictate confirms shortcut submission, not
@@ -131,10 +131,9 @@ The route may not be enabled for every account and can stop working without
 notice. It does not require an OpenAI Platform API key.
 
 The OpenAI API transcription route sends the recording to `gpt-transcribe` with
-any applicable language, prompt, and vocabulary text. Cleanup sends the transcript,
-cleanup instructions, selected model, and optional reasoning effort. Both
-require a Platform API key and can incur Platform charges. A suspiciously short
-API transcription can trigger one paid retry with `whisper-1`.
+any applicable language, prompt, and vocabulary text. It requires a Platform
+API key and can incur Platform charges. A connection that fails before OpenAI
+replies, or a compressed upload that OpenAI rejects, is sent once more.
 
 The Platform API key is stored unencrypted in the XDG config directory with
 user-only `0600` permissions. The SQLite database and retained WAV files are

@@ -694,7 +694,6 @@ mod tests {
             paste_triggered: false,
             delivery_status: DeliveryStatus::NotAttempted,
             error_message: None,
-            cleanup_error: None,
         };
 
         let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
@@ -782,7 +781,6 @@ mod tests {
             paste_triggered: false,
             delivery_status: DeliveryStatus::NotAttempted,
             error_message: None,
-            cleanup_error: None,
         };
 
         let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
@@ -890,7 +888,6 @@ mod tests {
             paste_triggered: false,
             delivery_status: DeliveryStatus::NotAttempted,
             error_message: None,
-            cleanup_error: None,
         };
         let starter = {
             let controller = Arc::clone(&controller);

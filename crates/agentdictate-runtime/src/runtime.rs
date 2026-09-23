@@ -282,44 +282,49 @@ impl Runtime {
         deliverer: &mut impl Deliverer,
     ) -> Result<RecordingJob, RuntimeError> {
         let transcribing = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        let transcript =
-            match transcriber.transcribe_checkpointed(&transcribing, &mut |raw, model| {
-                self.connection
-                    .execute(
-                        "UPDATE dictation_jobs SET raw_transcript = ?1, updated_at = ?2,
-                 transcription_model = COALESCE(?4, transcription_model) WHERE runtime_id = ?3",
-                        params![raw, timestamp(Utc::now()), id.to_string(), model],
-                    )
-                    .map_err(RuntimeError::from)?;
-                Ok(())
-            }) {
-                Ok(transcript) => transcript,
-                Err(ExternalError::NoSpeech) => {
-                    // Nothing to deliver or recover, so the job leaves the
-                    // in-flight table. The caller removes its audio.
-                    self.connection.execute(
-                        "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
-                        [id.to_string()],
-                    )?;
-                    let finished = RecordingJob {
-                        stage: JobStage::NoSpeech,
-                        updated_at: Utc::now(),
-                        ..transcribing
-                    };
-                    self.publish(RuntimeEvent::JobUpdated(finished.clone()));
-                    return Ok(finished);
-                }
-                Err(error) => {
-                    // If this write fails too, `fail_job` records the failure.
-                    let _ = self.update_stage(id, JobStage::Failed, Some(error.to_string()));
-                    return Err(error.into());
-                }
-            };
+        let transcript = match transcriber.transcribe(&transcribing) {
+            Ok(transcript) => transcript,
+            Err(ExternalError::NoSpeech) => {
+                // Nothing to deliver or recover, so the job leaves the
+                // in-flight table. The caller removes its audio.
+                self.connection.execute(
+                    "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+                    [id.to_string()],
+                )?;
+                let finished = RecordingJob {
+                    stage: JobStage::NoSpeech,
+                    updated_at: Utc::now(),
+                    ..transcribing
+                };
+                self.publish(RuntimeEvent::JobUpdated(finished.clone()));
+                return Ok(finished);
+            }
+            Err(error) => {
+                // If this write fails too, `fail_job` records the failure.
+                let _ = self.update_stage(id, JobStage::Failed, Some(error.to_string()));
+                return Err(error.into());
+            }
+        };
+        // Checkpoint the paid-for text first, so a later failure leaves it
+        // in Recovery instead of needing another transcription.
+        self.connection.execute(
+            r#"
+            UPDATE dictation_jobs
+            SET raw_transcript = ?1, transcription_model = ?2, updated_at = ?3
+            WHERE runtime_id = ?4
+            "#,
+            params![
+                transcript.text,
+                transcript.model,
+                timestamp(Utc::now()),
+                id.to_string()
+            ],
+        )?;
         let replacement_rules = match &transcribing.options {
             Some(options) => options.replacements.clone(),
             None => self.replacement_rules()?,
         };
-        let mut replacement_result = apply_replacements(&transcript.final_text, &replacement_rules)
+        let mut replacement_result = apply_replacements(&transcript.text, &replacement_rules)
             .map_err(|error| {
                 ExternalError::new(format!("replacement processing failed: {error}"))
             })?;
@@ -337,18 +342,14 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
-                raw_transcript = ?2, cleaned_transcript = ?3, final_text = ?4,
-                replacements_applied = ?5, cleanup_error = ?6, error_message = NULL,
+                final_text = ?2, replacements_applied = ?3, error_message = NULL,
                 delivery_status = 'not_attempted'
-            WHERE runtime_id = ?7
+            WHERE runtime_id = ?4
             "#,
             params![
                 timestamp(Utc::now()),
-                transcript.raw,
-                transcript.cleaned_text,
                 replacement_result.text,
                 replacements_applied,
-                transcript.cleanup_error,
                 id.to_string(),
             ],
         )?;
@@ -525,7 +526,6 @@ impl Runtime {
                     | JobStage::Recording
                     | JobStage::Captured
                     | JobStage::Transcribing
-                    | JobStage::Cleaning
                     | JobStage::Delivering
                     | JobStage::Delivered
                     | JobStage::Deleted
@@ -569,7 +569,6 @@ impl Runtime {
             JobStage::Starting
                 | JobStage::Recording
                 | JobStage::Transcribing
-                | JobStage::Cleaning
                 | JobStage::Delivering
                 | JobStage::Delivered
                 | JobStage::Deleted
@@ -745,8 +744,8 @@ impl Runtime {
     }
 
     /// Records `error` on a job that a failed step left in flight, applying
-    /// the daemon-start rules to this one job: transcribing or cleaning
-    /// becomes failed and keeps its raw transcript, and a started paste
+    /// the daemon-start rules to this one job: transcribing becomes failed
+    /// and keeps its raw transcript, and a started paste
     /// attempt becomes ambiguous so it is never replayed. A job at a safe
     /// checkpoint is left as it is. Returns the error to propagate; if even
     /// this write fails, the error says so and the next daemon start
@@ -761,7 +760,7 @@ impl Runtime {
                     ELSE delivery_status
                 END
             WHERE runtime_id = ?3
-              AND (stage IN ('transcribing', 'cleaning') OR delivery_status = 'attempting')
+              AND (stage = 'transcribing' OR delivery_status = 'attempting')
             "#,
             params![timestamp(Utc::now()), error.to_string(), id.to_string()],
         );
@@ -809,7 +808,7 @@ impl Runtime {
                    duration_seconds, transcription_model, transcription_provider,
                    raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
-                   delivery_status, error_message, cleanup_error, processing_options
+                   delivery_status, error_message, processing_options
             FROM dictation_jobs
             WHERE state NOT IN ('delivered', 'deleted', 'no_speech')
             ORDER BY updated_at DESC, id DESC
@@ -891,7 +890,7 @@ pub(crate) fn load_job(
                    duration_seconds, transcription_model, transcription_provider,
                    raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
-                   delivery_status, error_message, cleanup_error, processing_options
+                   delivery_status, error_message, processing_options
             FROM dictation_jobs
             WHERE runtime_id = ?1
             "#,
