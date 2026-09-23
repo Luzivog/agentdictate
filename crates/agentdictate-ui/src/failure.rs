@@ -77,6 +77,11 @@ pub const fn notice_wording(notice: DictationNotice) -> NoticeWording {
             detail: Some("Check your microphone"),
             body: "The recording was silent. Check that the right microphone is on and not muted.",
         },
+        DictationNotice::PasteUnavailable => NoticeWording {
+            title: "Can't paste it again",
+            detail: None,
+            body: "Only the last dictation, or one waiting in Recovery, can be pasted again. Copy older ones from History.",
+        },
         DictationNotice::Failed { failure } => {
             let wording = failure_wording(failure);
             NoticeWording {

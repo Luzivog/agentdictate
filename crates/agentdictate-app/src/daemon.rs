@@ -165,7 +165,9 @@ pub enum DaemonError {
     StaleResult { job_id: JobId },
     #[error("there is no dictation to paste yet")]
     NothingToPaste,
-    #[error("the last dictation was not pasted: {reason}")]
+    #[error("dictation {job_id} is neither the last one nor waiting in Recovery")]
+    PasteUnavailable { job_id: JobId },
+    #[error("the dictation was not pasted again: {reason}")]
     NotPasted { reason: String },
 }
 
@@ -357,7 +359,8 @@ pub struct Daemon<R, T, D> {
     activity: Activity,
     recoverable_count: usize,
     /// The last dictation delivered, or whose delivery failed, for "Paste
-    /// last dictation". It is kept in memory only.
+    /// last dictation". It is kept in memory only, and forgotten when its
+    /// text is deleted.
     last_dictation: Option<RecordingJob>,
     overlay: OverlayDeliveryGate,
     notifier: Option<Notifier>,
@@ -961,28 +964,56 @@ where
     }
 
     /// "Paste last dictation": pastes the last dictation's text again into
-    /// the focused window, through the same gate and single paste chord as
-    /// a dictation. It is refused while a dictation is in flight, so it can
-    /// never collide with one. A paste no application took is announced
-    /// like a dictation's, and never sent again.
+    /// the focused window; see `paste_again`.
     pub fn paste_last(&mut self) -> Result<(), DaemonError> {
         self.require_idle()?;
         let last = self
             .last_dictation
             .clone()
             .ok_or(DaemonError::NothingToPaste)?;
+        self.paste_again(&last)
+    }
+
+    /// "Paste again" on a notification about the dictation `job_id`: pastes
+    /// that dictation's text, never another's; see `paste_again`. Its text
+    /// is the last dictation's, or one waiting in Recovery. When it is
+    /// neither, because it was deleted, expired, or pasted before a newer
+    /// dictation, nothing is pasted, and the overlay and a notification say
+    /// so.
+    pub fn paste_dictation(&mut self, job_id: JobId) -> Result<(), DaemonError> {
+        self.require_idle()?;
+        let dictation = match self.last_dictation.clone().filter(|last| last.id == job_id) {
+            Some(last) => Some(last),
+            None => self
+                .runtime
+                .job(job_id)?
+                .filter(|job| !job.final_text.trim().is_empty()),
+        };
+        let Some(dictation) = dictation else {
+            self.publish(Some((DictationNotice::PasteUnavailable, job_id)));
+            return Err(DaemonError::PasteUnavailable { job_id });
+        };
+        self.paste_again(&dictation)
+    }
+
+    /// Pastes `dictation`'s text again into the focused window, through the
+    /// same gate and single paste chord as a dictation. The caller refuses
+    /// it while a dictation is in flight, so it can never collide with one.
+    /// A paste no application took is announced like a dictation's, and
+    /// never sent again.
+    fn paste_again(&mut self, dictation: &RecordingJob) -> Result<(), DaemonError> {
         self.overlay
             .confirm_ready()
             .map_err(|error| DaemonError::NotPasted {
                 reason: error.to_string(),
             })?;
         self.deliverer.wait_for_released_keys();
-        let disposition = self.deliverer.deliver(&last, DeliveryMethod::Paste)?;
-        tracing::info!(job_id = %last.id, ?disposition, "last dictation pasted again");
+        let disposition = self.deliverer.deliver(dictation, DeliveryMethod::Paste)?;
+        tracing::info!(job_id = %dictation.id, ?disposition, "dictation pasted again");
         match disposition {
             DeliveryDisposition::Submitted { consumed, .. } => {
                 if let Some(notice) = delivered_notice(DeliveryMethod::Paste, consumed) {
-                    self.publish(Some((notice, last.id)));
+                    self.publish(Some((notice, dictation.id)));
                 }
                 Ok(())
             }
@@ -999,6 +1030,7 @@ where
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         let result = self.runtime.delete_recovery(id)?;
         tracing::info!(job_id = %id, "recovery item deleted");
+        self.forget_dictation(id);
         self.clear_attention_for(id);
         self.recoverable_count = self.attention_recovery_count()?;
         self.publish_overlay_update();
@@ -1016,12 +1048,33 @@ where
         self.workflow.snapshot().phase
     }
 
+    /// Deletes one History entry; returns whether it existed. Its text can
+    /// no longer be pasted again.
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
-        self.runtime.delete_history(id)
+        let deleted = self.runtime.delete_history(id)?;
+        if let Some(job_id) = deleted.and_then(|deleted| deleted.job_id) {
+            self.forget_dictation(job_id);
+        }
+        Ok(deleted.is_some())
     }
 
+    /// Deletes all of History, and forgets the last dictation, so "Paste
+    /// last dictation" has nothing left to paste.
     pub fn clear_history(&mut self) -> Result<(), RuntimeError> {
+        self.last_dictation = None;
         self.runtime.clear_history()
+    }
+
+    /// Forgets the last dictation when it is the job `id`, whose text was
+    /// deleted.
+    fn forget_dictation(&mut self, id: JobId) {
+        if self
+            .last_dictation
+            .as_ref()
+            .is_some_and(|last| last.id == id)
+        {
+            self.last_dictation = None;
+        }
     }
 
     pub fn transcript_text(&self, id: i64) -> Result<Option<String>, RuntimeError> {

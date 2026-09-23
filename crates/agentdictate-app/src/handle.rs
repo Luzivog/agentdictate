@@ -254,12 +254,20 @@ where
         Ok(())
     }
 
-    /// "Paste last dictation" from the tray or a notification.
+    /// "Paste last dictation" from the tray.
     pub fn paste_last(&self) -> Result<(), DaemonError> {
         if self.shared.quitting.load(Ordering::Acquire) {
             return Err(DaemonError::ShuttingDown);
         }
         self.lock().daemon_mut().paste_last()
+    }
+
+    /// "Paste again" on a notification about the dictation `job_id`.
+    pub fn paste_dictation(&self, job_id: JobId) -> Result<(), DaemonError> {
+        if self.shared.quitting.load(Ordering::Acquire) {
+            return Err(DaemonError::ShuttingDown);
+        }
+        self.lock().daemon_mut().paste_dictation(job_id)
     }
 
     /// Runs `f` under the process lock, for composition and tests.

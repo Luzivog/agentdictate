@@ -10,6 +10,7 @@ pub use ipc::{IpcClient, IpcError, IpcHandler, IpcServer, SOCKET_FILE_NAME};
 mod fs;
 pub use fs::write_atomic;
 mod history;
+pub use history::DeletedTranscript;
 mod legacy_replacements;
 pub use legacy_replacements::{RetiredReplacement, RetiredReplacementOutcome};
 mod migrations;

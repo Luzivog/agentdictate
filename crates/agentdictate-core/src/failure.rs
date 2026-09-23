@@ -81,6 +81,9 @@ pub enum DictationNotice {
     NothingHeard,
     /// The dictation failed and waits in Recovery.
     Failed { failure: FailureKind },
+    /// "Paste again" was asked for a dictation that is neither the last one
+    /// nor waiting in Recovery, so nothing was pasted.
+    PasteUnavailable,
 }
 
 #[cfg(test)]

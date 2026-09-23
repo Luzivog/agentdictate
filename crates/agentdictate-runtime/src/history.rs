@@ -166,12 +166,20 @@ impl Runtime {
     }
 
     /// Deletes one History entry with its usage numbers, from the disk too.
-    pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
+    /// Returns `None` when there is no such entry.
+    pub fn delete_history(&mut self, id: i64) -> Result<Option<DeletedTranscript>, RuntimeError> {
         let deleted = self
             .connection
-            .execute("DELETE FROM dictations WHERE id = ?1", [id])?;
+            .query_row(
+                "DELETE FROM dictations WHERE id = ?1 RETURNING job_id",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?;
         self.truncate_write_ahead_log();
-        Ok(deleted > 0)
+        Ok(deleted.map(|job_id| DeletedTranscript {
+            job_id: job_id.and_then(|job_id| job_id.parse().ok()),
+        }))
     }
 
     /// Deletes every dictation, text and usage numbers, from the disk too.
@@ -180,6 +188,14 @@ impl Runtime {
         self.truncate_write_ahead_log();
         Ok(())
     }
+}
+
+/// A History entry `Runtime::delete_history` deleted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeletedTranscript {
+    /// The dictation job it came from; entries from before jobs were
+    /// recorded have none.
+    pub job_id: Option<JobId>,
 }
 
 /// Inserts the dictation row of a delivered job: its usage numbers, and its

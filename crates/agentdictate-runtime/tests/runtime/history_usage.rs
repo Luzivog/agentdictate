@@ -4,8 +4,8 @@ use agentdictate_core::{
     DictationOptions, HistoryPageRequest, KeepTranscripts, Settings, parse_vocabulary,
 };
 use agentdictate_runtime::{
-    DatabaseObserver, Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError,
-    HeadlessDeliveryGate, RecordingJob, Runtime, RuntimeError,
+    DatabaseObserver, DeletedTranscript, Deliverer, DeliveryDisposition, DeliveryMethod,
+    ExternalError, HeadlessDeliveryGate, RecordingJob, Runtime, RuntimeError,
 };
 use tempfile::TempDir;
 
@@ -117,7 +117,12 @@ fn deleted_history_stays_deleted_after_a_restart() {
         .complete_delivered(delivered.id, &Settings::default())
         .unwrap();
     let entry = history_rows(&runtime).remove(0);
-    assert!(runtime.delete_history(entry.id).unwrap());
+    assert_eq!(
+        runtime.delete_history(entry.id).unwrap(),
+        Some(DeletedTranscript {
+            job_id: Some(delivered.id)
+        })
+    );
     drop(runtime);
 
     let mut restarted = Runtime::open(&database_path).unwrap();
@@ -235,8 +240,8 @@ fn history_query_and_delete_keep_daily_usage_consistent() {
     assert_eq!(found.len(), 1);
     assert!(search(&runtime, "missing").is_empty());
 
-    assert!(runtime.delete_history(found[0].id).unwrap());
-    assert!(!runtime.delete_history(found[0].id).unwrap());
+    assert!(runtime.delete_history(found[0].id).unwrap().is_some());
+    assert!(runtime.delete_history(found[0].id).unwrap().is_none());
     assert_eq!(runtime.usage().unwrap().all_time.dictations, 0);
     assert!(history_rows(&runtime).is_empty());
 }

@@ -89,6 +89,8 @@ struct SubmittedDelivery {
     attempts: usize,
     methods: Vec<DeliveryMethod>,
     texts: Vec<String>,
+    /// Sends the next paste nowhere, as when no window has the focus.
+    refuse_next_paste: bool,
 }
 
 #[test]
@@ -140,6 +142,12 @@ impl Deliverer for SubmittedDelivery {
         self.attempts += 1;
         self.methods.push(method);
         self.texts.push(job.final_text.clone());
+        if method == DeliveryMethod::Paste && std::mem::take(&mut self.refuse_next_paste) {
+            return Ok(DeliveryDisposition::NotSent {
+                copied_to_clipboard: false,
+                reason: "no window has the focus".to_owned(),
+            });
+        }
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
             paste_triggered: method == DeliveryMethod::Paste,
@@ -1152,6 +1160,81 @@ fn the_last_dictation_is_pasted_again_with_one_chord_but_never_during_a_dictatio
     daemon.start_recording().unwrap();
     assert!(matches!(daemon.paste_last(), Err(DaemonError::Busy { .. })));
     assert_eq!(daemon.deliverer().attempts, 2);
+}
+
+/// A notification's "Paste again" pastes the dictation it is about: the
+/// last one, or one waiting in Recovery, never a later one.
+#[test]
+fn paste_again_pastes_the_notified_dictation_or_nothing() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let transcriber = ScriptedTranscriber::replying([
+        Ok("First.".into()),
+        Ok("Second.".into()),
+        Ok("Third.".into()),
+    ]);
+    let mut daemon = daemon_with(&paths, Settings::default(), transcriber);
+    daemon.deliverer_mut().refuse_next_paste = true;
+    daemon.start_recording().unwrap();
+    let unpasted = finish(&mut daemon);
+    assert_eq!(unpasted.stage, JobStage::ReadyToDeliver);
+    daemon.start_recording().unwrap();
+    let pasted = finish(&mut daemon);
+    daemon.start_recording().unwrap();
+    let last = finish(&mut daemon);
+
+    daemon.paste_dictation(unpasted.id).unwrap();
+    // Delivered and followed by a newer dictation: only History has it.
+    assert!(matches!(
+        daemon.paste_dictation(pasted.id),
+        Err(DaemonError::PasteUnavailable { job_id }) if job_id == pasted.id
+    ));
+    daemon.paste_dictation(last.id).unwrap();
+
+    assert_eq!(
+        daemon.deliverer().texts,
+        ["First.", "Second.", "Third.", "First.", "Third."]
+    );
+}
+
+/// Deleted text is never pasted again, from the tray or a notification.
+#[test]
+fn deleting_a_dictation_forgets_it_for_paste_again() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    daemon.start_recording().unwrap();
+    let delivered = finish(&mut daemon);
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    let entry = history_rows(&observer).remove(0);
+
+    assert!(daemon.delete_history(entry.id).unwrap());
+    assert!(matches!(
+        daemon.paste_last(),
+        Err(DaemonError::NothingToPaste)
+    ));
+    assert!(matches!(
+        daemon.paste_dictation(delivered.id),
+        Err(DaemonError::PasteUnavailable { .. })
+    ));
+
+    daemon.start_recording().unwrap();
+    finish(&mut daemon);
+    daemon.clear_history().unwrap();
+    assert!(matches!(
+        daemon.paste_last(),
+        Err(DaemonError::NothingToPaste)
+    ));
+
+    daemon.deliverer_mut().refuse_next_paste = true;
+    daemon.start_recording().unwrap();
+    let unpasted = finish(&mut daemon);
+    daemon.delete_recovery(unpasted.id).unwrap();
+    assert!(matches!(
+        daemon.paste_last(),
+        Err(DaemonError::NothingToPaste)
+    ));
+    assert_eq!(daemon.deliverer().attempts, 3);
 }
 
 #[test]

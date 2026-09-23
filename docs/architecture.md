@@ -41,9 +41,11 @@ agentdictate setup-access
 
 `paste-last` pastes the last dictation again, through the same gate and single
 paste chord as a dictation, once the shortcut's modifier keys are released. The
-daemon keeps that text in memory only, and refuses while a dictation is in flight.
-The tray's **Paste last dictation** and a notification's **Paste again** do the
-same.
+daemon keeps that text in memory only, forgets it when you delete it, and refuses
+while a dictation is in flight. The tray's **Paste last dictation** does the same.
+A notification's **Paste again** pastes the dictation that notification is about:
+the last one, or one still waiting in Recovery. Otherwise it pastes nothing and says
+so.
 
 `setup-access` runs a copy of `packaging/grant-access.sh` as root through `pkexec`
 to install and apply the input-access rule. See

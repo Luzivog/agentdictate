@@ -724,7 +724,7 @@ mod tests {
                 .unwrap()
                 .delete_history(id)
                 .unwrap();
-            assert!(deleted);
+            assert!(deleted.is_some());
             self.snapshot()
         }
     }

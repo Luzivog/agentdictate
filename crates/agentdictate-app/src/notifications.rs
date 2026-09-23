@@ -3,8 +3,9 @@
 //! focus, so they are safe to show while the user types elsewhere.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use agentdictate_core::{DictationNotice, FailureKind, JobId};
 use agentdictate_ui::notice_wording;
@@ -22,28 +23,52 @@ const DESKTOP_ENTRY: &str = "local.agentdictate.AgentDictate";
 pub enum NotificationAction {
     /// Transcribe a failed dictation again; its text is then copied.
     TryAgain(JobId),
-    /// Paste the last dictation into the focused app.
-    PasteLast,
+    /// Paste this dictation's text into the focused app.
+    PasteAgain(JobId),
     /// Open the settings window, where Recovery lists the dictation.
     OpenWindow,
 }
 
+/// The key of a click on the notification itself.
+const DEFAULT_KEY: &str = "default";
+const TRY_AGAIN_KEY: &str = "try-again";
+const PASTE_AGAIN_KEY: &str = "paste-again";
+
 impl NotificationAction {
-    /// The action key sent to the notification service. "default" is the
-    /// click on the notification itself.
-    const fn key(self) -> &'static str {
+    /// The action key sent to the notification service. A button about a
+    /// dictation carries its job id, so a click acts on that dictation even
+    /// after later ones ended, or after the daemon restarted.
+    fn key(self) -> String {
         match self {
-            Self::TryAgain(_) => "try-again",
-            Self::PasteLast => "paste-again",
-            Self::OpenWindow => "default",
+            Self::TryAgain(job_id) => format!("{TRY_AGAIN_KEY}:{job_id}"),
+            Self::PasteAgain(job_id) => format!("{PASTE_AGAIN_KEY}:{job_id}"),
+            Self::OpenWindow => DEFAULT_KEY.to_owned(),
         }
     }
 
     const fn label(self) -> &'static str {
         match self {
             Self::TryAgain(_) => "Try again",
-            Self::PasteLast => "Paste again",
+            Self::PasteAgain(_) => "Paste again",
             Self::OpenWindow => "Open AgentDictate",
+        }
+    }
+
+    /// What a click on `key` of notification `id` asks for, with `shown` the
+    /// notification on screen. A button about a dictation names it, so it is
+    /// followed from any notification. A click on a notification itself is
+    /// only ours when it is the one on screen: every app's notifications
+    /// send "default".
+    fn clicked(shown: u32, id: u32, key: &str) -> Option<Self> {
+        if key == DEFAULT_KEY {
+            return (id == shown).then_some(Self::OpenWindow);
+        }
+        let (name, job_id) = key.split_once(':')?;
+        let job_id = job_id.parse().ok()?;
+        match name {
+            TRY_AGAIN_KEY => Some(Self::TryAgain(job_id)),
+            PASTE_AGAIN_KEY => Some(Self::PasteAgain(job_id)),
+            _ => None,
         }
     }
 }
@@ -65,8 +90,8 @@ impl Notification {
     pub fn for_notice(notice: DictationNotice, job_id: JobId) -> Self {
         let wording = notice_wording(notice);
         let (actions, transient) = match notice {
-            DictationNotice::Copied => (vec![NotificationAction::PasteLast], true),
-            DictationNotice::NothingHeard => (Vec::new(), true),
+            DictationNotice::Copied => (vec![NotificationAction::PasteAgain(job_id)], true),
+            DictationNotice::NothingHeard | DictationNotice::PasteUnavailable => (Vec::new(), true),
             DictationNotice::Failed { failure } => {
                 let fix = match failure {
                     FailureKind::Offline
@@ -76,7 +101,7 @@ impl Notification {
                     | FailureKind::MicrophoneStalled
                     | FailureKind::Unexpected => Some(NotificationAction::TryAgain(job_id)),
                     // The text is transcribed; only its paste failed.
-                    FailureKind::PasteNotConfirmed => Some(NotificationAction::PasteLast),
+                    FailureKind::PasteNotConfirmed => Some(NotificationAction::PasteAgain(job_id)),
                     // The key must be fixed first, or nothing was recorded.
                     FailureKind::CredentialMissing
                     | FailureKind::CredentialRejected
@@ -106,34 +131,14 @@ pub trait NotificationBus: Send + 'static {
     fn show(&mut self, notification: &Notification, replaces: u32) -> Result<u32, String>;
 }
 
-/// The notification on screen and the actions it offers. Each new one
-/// replaces the last, so AgentDictate never stacks notifications.
-#[derive(Default)]
-struct Shown {
-    id: u32,
-    actions: Vec<NotificationAction>,
-}
-
-impl Shown {
-    /// What a click on `key` of notification `id` asks for. A click on an
-    /// older notification, or on a key it does not offer, asks for nothing.
-    fn action(&self, id: u32, key: &str) -> Option<NotificationAction> {
-        if id != self.id {
-            return None;
-        }
-        self.actions
-            .iter()
-            .copied()
-            .find(|action| action.key() == key)
-    }
-}
-
 /// Shows notices as desktop notifications on its own thread, away from the
 /// daemon lock, and turns a clicked action into a `NotificationAction`.
 #[derive(Clone)]
 pub struct Notifier {
     notices: Sender<Notification>,
-    shown: Arc<Mutex<Shown>>,
+    /// The id of the notification on screen, 0 before the first. Each new
+    /// one replaces it, so AgentDictate never stacks notifications.
+    shown: Arc<AtomicU32>,
     actions: Sender<NotificationAction>,
 }
 
@@ -145,20 +150,15 @@ impl Notifier {
         actions: Sender<NotificationAction>,
     ) -> std::io::Result<Self> {
         let (notices, pending) = channel::<Notification>();
-        let shown = Arc::new(Mutex::new(Shown::default()));
+        let shown = Arc::new(AtomicU32::new(0));
         let worker_shown = Arc::clone(&shown);
         std::thread::Builder::new()
             .name("agentdictate-notifications".into())
             .spawn(move || {
                 for notification in pending {
-                    let replaces = lock(&worker_shown).id;
+                    let replaces = worker_shown.load(Ordering::Acquire);
                     match bus.show(&notification, replaces) {
-                        Ok(id) => {
-                            *lock(&worker_shown) = Shown {
-                                id,
-                                actions: notification.actions,
-                            };
-                        }
+                        Ok(id) => worker_shown.store(id, Ordering::Release),
                         Err(error) => {
                             tracing::warn!(%error, "could not show a desktop notification");
                         }
@@ -177,17 +177,14 @@ impl Notifier {
         let _ = self.notices.send(Notification::for_notice(notice, job_id));
     }
 
-    /// Routes a click on `key` of notification `id`; see `Shown::action`.
+    /// Routes a click on `key` of notification `id`; see
+    /// `NotificationAction::clicked`.
     pub fn action_invoked(&self, id: u32, key: &str) {
-        let action = lock(&self.shown).action(id, key);
-        if let Some(action) = action {
+        let shown = self.shown.load(Ordering::Acquire);
+        if let Some(action) = NotificationAction::clicked(shown, id, key) {
             let _ = self.actions.send(action);
         }
     }
-}
-
-fn lock(shown: &Mutex<Shown>) -> std::sync::MutexGuard<'_, Shown> {
-    shown.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `org.freedesktop.Notifications` on the session bus.
@@ -200,7 +197,7 @@ impl NotificationBus for SessionNotifications {
         let actions = notification
             .actions
             .iter()
-            .flat_map(|action| [action.key(), action.label()])
+            .flat_map(|action| [action.key(), action.label().to_owned()])
             .collect::<Vec<_>>();
         let mut hints = HashMap::<&str, zbus::zvariant::Value<'_>>::new();
         hints.insert("desktop-entry", DESKTOP_ENTRY.into());
@@ -290,9 +287,9 @@ pub fn follow_notification_actions(
                     NotificationAction::TryAgain(job_id) => {
                         handle.try_again(job_id).map_err(|error| error.to_string())
                     }
-                    NotificationAction::PasteLast => {
-                        handle.paste_last().map_err(|error| error.to_string())
-                    }
+                    NotificationAction::PasteAgain(job_id) => handle
+                        .paste_dictation(job_id)
+                        .map_err(|error| error.to_string()),
                     NotificationAction::OpenWindow => open_settings_window(&settings_executable)
                         .map_err(|error| error.to_string()),
                 };
@@ -336,31 +333,33 @@ mod tests {
         assert_eq!(no_key.actions, [NotificationAction::OpenWindow]);
 
         let copied = Notification::for_notice(DictationNotice::Copied, job_id);
-        assert_eq!(copied.actions, [NotificationAction::PasteLast]);
+        assert_eq!(copied.actions, [NotificationAction::PasteAgain(job_id)]);
         assert!(copied.transient);
     }
 
     #[test]
-    fn only_a_button_of_the_notification_on_screen_is_routed() {
+    fn a_button_acts_on_its_own_dictation_and_only_our_notification_opens_the_window() {
         let job_id = JobId::new();
-        let shown = Shown {
-            id: 7,
-            actions: vec![
-                NotificationAction::TryAgain(job_id),
-                NotificationAction::OpenWindow,
-            ],
-        };
-
+        for action in [
+            NotificationAction::TryAgain(job_id),
+            NotificationAction::PasteAgain(job_id),
+        ] {
+            // From the notification on screen, an older one, or one shown
+            // before the daemon restarted.
+            for (shown, id) in [(7, 7), (7, 3), (0, 3)] {
+                assert_eq!(
+                    NotificationAction::clicked(shown, id, &action.key()),
+                    Some(action)
+                );
+            }
+        }
         assert_eq!(
-            shown.action(7, "try-again"),
-            Some(NotificationAction::TryAgain(job_id))
-        );
-        assert_eq!(
-            shown.action(7, "default"),
+            NotificationAction::clicked(7, 7, "default"),
             Some(NotificationAction::OpenWindow)
         );
-        // An older notification, replaced by this one, and a key it lacks.
-        assert_eq!(shown.action(6, "try-again"), None);
-        assert_eq!(shown.action(7, "paste-again"), None);
+        // Another app's notification, and keys that are not ours.
+        assert_eq!(NotificationAction::clicked(7, 8, "default"), None);
+        assert_eq!(NotificationAction::clicked(7, 7, "paste-again"), None);
+        assert_eq!(NotificationAction::clicked(7, 7, "reply:42"), None);
     }
 }

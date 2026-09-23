@@ -238,6 +238,29 @@ fn a_quiet_recording_is_announced_as_nothing_heard() {
     );
 }
 
+#[test]
+fn paste_again_of_a_deleted_dictation_says_it_cannot() {
+    let directory = tempdir().unwrap();
+    let paths = AppPaths::isolated(directory.path());
+    let (notifier, notifications) = forwarding_notifier();
+    let mut daemon = daemon_with(&paths, super::support::FixedTranscriber, SubmittedDelivery);
+    daemon.set_notifier(notifier);
+    let started = daemon.start_recording().unwrap();
+    finish(&mut daemon);
+    daemon.clear_history().unwrap();
+
+    assert!(daemon.paste_dictation(started.id).is_err());
+    drop(daemon);
+
+    assert_eq!(
+        notifications.iter().collect::<Vec<_>>(),
+        [Notification::for_notice(
+            DictationNotice::PasteUnavailable,
+            started.id
+        )]
+    );
+}
+
 /// A paste is sent once, into the window the dictation was stopped in, and
 /// only a paste its target took ends silently. Otherwise the text is on the
 /// clipboard, and the user is told to press Ctrl+V.
