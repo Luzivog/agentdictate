@@ -14,8 +14,8 @@ use agentdictate_linux::{
     focus::{FocusError, observe_x11_focus},
     injection::PasteInjector,
     paste::{
-        ClipboardProtocol, DeliveryAction, DeliveryFailure, DeliveryObservation, PasteDelivery,
-        ShortcutMode, X11FocusObservation, resolve_focus_target,
+        DeliveryAction, DeliveryFailure, DeliveryObservation, PasteDelivery, ShortcutMode,
+        X11FocusObservation, resolve_focus_target,
     },
     recorder::{PwRecordRecorder, Recording, RecordingExitObserver},
 };
@@ -414,17 +414,14 @@ impl SystemDeliverer {
 
     fn publish_delivery_text(
         &mut self,
-        protocol: ClipboardProtocol,
         text: &str,
         deadline: Instant,
     ) -> Result<(), ClipboardError> {
-        let selections: &[ClipboardSelection] = match (self.shortcut_mode, protocol) {
-            // Some terminals bind Shift+Insert to the primary selection,
-            // while regular applications bind it to the clipboard.
-            (ShortcutMode::Auto, ClipboardProtocol::Wayland) => {
-                &[ClipboardSelection::Primary, ClipboardSelection::Clipboard]
-            }
-            _ => &[ClipboardSelection::Clipboard],
+        let selections: &[ClipboardSelection] = match self.shortcut_mode {
+            // Automatic mode's Shift+Insert pastes the primary selection in
+            // terminals and the clipboard everywhere else.
+            ShortcutMode::Auto => &[ClipboardSelection::Primary, ClipboardSelection::Clipboard],
+            ShortcutMode::Standard | ShortcutMode::Terminal => &[ClipboardSelection::Clipboard],
         };
         self.selections.publish(text, selections, deadline)
     }
@@ -461,7 +458,7 @@ impl SystemDeliverer {
                 }
                 DeliveryAction::PublishClipboard(protocol) => {
                     let started = Instant::now();
-                    let published = self.publish_delivery_text(protocol, &job.final_text, deadline);
+                    let published = self.publish_delivery_text(&job.final_text, deadline);
                     clipboard_time += started.elapsed();
                     if let Err(error) = published {
                         return DeliveryDisposition::NotSent {
@@ -493,6 +490,7 @@ impl SystemDeliverer {
                             tracing::info!(
                                 job_id = %job.id,
                                 ?protocol,
+                                window_class = target.window_class(),
                                 ?shortcut,
                                 method = "uinput",
                                 focus_ms = focus_time.as_millis() as u64,
@@ -750,9 +748,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste() {
+    fn automatic_delivery_to_a_terminal_publishes_both_selections_before_one_universal_paste() {
         if !std::path::Path::new("/dev/uinput").exists() {
-            skip("automatic_wayland_delivery_prepares_both_selections_before_one_universal_paste");
+            skip(
+                "automatic_delivery_to_a_terminal_publishes_both_selections_before_one_universal_paste",
+            );
             return;
         }
         let mut injector = PasteInjector::new();
@@ -761,12 +761,18 @@ mod tests {
         let selections = FakeSelections::default();
         let mut deliverer = SystemDeliverer {
             selections: Box::new(selections.clone()),
-            focus: |_| Err(FocusError::NoActiveWindow),
+            focus: |_| {
+                Ok(X11FocusObservation {
+                    window_id: 84,
+                    window_class: "xterm XTerm".to_owned(),
+                    focused: true,
+                })
+            },
             injector,
             shortcut_mode: ShortcutMode::Auto,
             wayland_session: true,
         };
-        let job = ready_job(directory.path(), "Wayland transcript.");
+        let job = ready_job(directory.path(), "Terminal transcript.");
 
         let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
 

@@ -402,7 +402,8 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
         # The paste comes first: toolkits may answer a later paste of the
         # same offer from the copy an earlier read cached.
         assert probe.ask("pressed") == "marked"
-        chord = ("shift", "insert") if backend == "wayland" else ("ctrl", "v")
+        # The daemon's Automatic chord for every target.
+        chord = ("shift", "insert")
         desktop.press_chord(*chord)
         acknowledgement = probe.ask("requested 1000")
         assert acknowledgement.startswith("requested "), acknowledgement

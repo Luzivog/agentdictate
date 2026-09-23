@@ -98,22 +98,23 @@ After transcription, the daemon delivers text to the focused application:
    `WM_CLASS`, and `_NET_WM_STATE` from the X server (X11 or XWayland)
    in-process. On native Wayland, only an XWayland window that holds focus
    counts as the target.
-2. Publish the transcript. Automatic mode on native Wayland publishes the
-   same text to both the clipboard and the primary selection; other
-   deliveries publish only to the clipboard. The daemon owns both X11
-   selections itself: one long-lived thread keeps an unmapped window on the
-   X server (X11 or XWayland) and answers `TARGETS`, `UTF8_STRING`, `TEXT`
-   and Latin-1 `STRING` requests until the next delivery, or until another
-   application takes the selection. The compositor's XWayland selection
+2. Publish the transcript. Automatic mode publishes the same text to both
+   the clipboard and the primary selection; Standard and Terminal modes, and
+   copies without a paste, publish only to the clipboard. The daemon owns
+   both X11 selections itself: one long-lived thread keeps an unmapped
+   window on the X server (X11 or XWayland) and answers `TARGETS`,
+   `UTF8_STRING`, `TEXT` and Latin-1 `STRING` requests until the next
+   delivery, or until another application takes the selection. The compositor's XWayland selection
    bridge carries both selections to Wayland-native applications.
    wl-clipboard is deliberately unused: without a data-control protocol on
    GNOME, every `wl-copy`/`wl-paste` call pops a transient toplevel that
    visibly re-layouts the taskbar at paste time. Publication is confirmed
    when the X server reports AgentDictate's window as each selection's owner.
-3. Select the paste chord. On X11 or XWayland, Automatic mode uses
-   `Ctrl+Shift+V` for detected terminals and `Ctrl+V` for regular or unknown
-   targets. On native Wayland, Automatic mode uses `Shift+Insert`. Standard
-   and Terminal modes bypass target detection and use their named shortcuts.
+3. Select the paste chord. Automatic mode sends `Shift+Insert` to every
+   target, native Wayland or X11: terminals (xterm, VTE, kitty) paste the
+   primary selection on it and other applications (GTK, Qt, Tk, Chromium and
+   Electron) the clipboard, so both selections carry the text. Standard and
+   Terminal modes send `Ctrl+V` and `Ctrl+Shift+V`.
 4. Inject one paced paste chord from an in-process uinput virtual keyboard
    (`evdev`). Press and release always run in-process and stay paired, and
    the kernel releases any held key if the daemon dies, so a chord can never

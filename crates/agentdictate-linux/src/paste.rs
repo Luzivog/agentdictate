@@ -232,7 +232,7 @@ impl PasteDelivery {
                 .is_some_and(|known| known.same_focus(&target))
         {
             self.action = DeliveryAction::InjectPaste {
-                shortcut: shortcut_for(self.shortcut_mode, &target),
+                shortcut: shortcut_for(self.shortcut_mode),
                 target,
             };
             return;
@@ -249,36 +249,14 @@ impl PasteDelivery {
     }
 }
 
-fn shortcut_for(mode: ShortcutMode, target: &FocusTarget) -> PasteShortcut {
+/// Automatic mode sends Shift+Insert to every target, with the text on both
+/// selections: terminals (xterm, VTE, kitty) paste the primary selection on
+/// Shift+Insert, and other applications (GTK, Qt, Tk, Chromium and
+/// Electron) the clipboard.
+fn shortcut_for(mode: ShortcutMode) -> PasteShortcut {
     match mode {
-        ShortcutMode::Auto if target.protocol() == ClipboardProtocol::Wayland => {
-            PasteShortcut::Universal
-        }
-        ShortcutMode::Auto if is_terminal_class(target.window_class()) => PasteShortcut::Terminal,
-        ShortcutMode::Auto | ShortcutMode::Standard => PasteShortcut::Standard,
+        ShortcutMode::Auto => PasteShortcut::Universal,
+        ShortcutMode::Standard => PasteShortcut::Standard,
         ShortcutMode::Terminal => PasteShortcut::Terminal,
     }
-}
-
-fn is_terminal_class(window_class: &str) -> bool {
-    window_class
-        .to_ascii_lowercase()
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|word| {
-            matches!(
-                word,
-                "kitty"
-                    | "terminal"
-                    | "alacritty"
-                    | "wezterm"
-                    | "konsole"
-                    | "xterm"
-                    | "tilix"
-                    | "terminator"
-                    | "foot"
-                    | "ghostty"
-                    | "rio"
-                    | "st"
-            )
-        })
 }

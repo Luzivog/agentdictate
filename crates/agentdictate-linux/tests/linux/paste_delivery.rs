@@ -6,7 +6,7 @@ use agentdictate_linux::paste::{
 #[test]
 fn paste_is_not_injected_until_clipboard_readiness_is_observed() {
     let target = FocusTarget::x11(42, "chatgpt Chatgpt");
-    let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
+    let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
 
     assert_eq!(delivery.action(), DeliveryAction::ObserveFocus);
     assert_eq!(
@@ -27,56 +27,24 @@ fn paste_is_not_injected_until_clipboard_readiness_is_observed() {
 }
 
 #[test]
-fn auto_mode_uses_standard_paste_for_regular_x11_targets() {
-    let target = FocusTarget::x11(42, "chatgpt Chatgpt");
-    let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
+fn auto_mode_uses_universal_paste_for_every_target() {
+    for target in [
+        FocusTarget::x11(42, "chatgpt Chatgpt"),
+        FocusTarget::x11(84, "kitty kitty"),
+        FocusTarget::wayland(),
+    ] {
+        let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
+        delivery.advance(DeliveryObservation::Focus(target.clone()));
+        delivery.advance(DeliveryObservation::ClipboardReady(target.protocol()));
 
-    delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
-
-    assert_eq!(
-        delivery.advance(DeliveryObservation::Focus(target.clone())),
-        DeliveryAction::InjectPaste {
-            target,
-            shortcut: PasteShortcut::Standard,
-        }
-    );
-}
-
-#[test]
-fn auto_mode_uses_terminal_paste_for_x11_terminal_targets() {
-    let target = FocusTarget::x11(84, "kitty kitty");
-    let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
-
-    delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
-
-    assert_eq!(
-        delivery.advance(DeliveryObservation::Focus(target.clone())),
-        DeliveryAction::InjectPaste {
-            target,
-            shortcut: PasteShortcut::Terminal,
-        }
-    );
-}
-
-#[test]
-fn auto_mode_uses_universal_paste_for_unclassified_wayland_targets() {
-    let target = FocusTarget::wayland();
-    let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
-
-    delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(
-        ClipboardProtocol::Wayland,
-    ));
-
-    assert_eq!(
-        delivery.advance(DeliveryObservation::Focus(target.clone())),
-        DeliveryAction::InjectPaste {
-            target,
-            shortcut: PasteShortcut::Universal,
-        }
-    );
+        assert_eq!(
+            delivery.advance(DeliveryObservation::Focus(target.clone())),
+            DeliveryAction::InjectPaste {
+                target,
+                shortcut: PasteShortcut::Universal,
+            }
+        );
+    }
 }
 
 #[test]
@@ -182,7 +150,7 @@ fn clipboard_failure_never_attempts_paste() {
 
 #[test]
 fn x11_focus_identity_is_the_window_id_not_mutable_class_metadata() {
-    let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
+    let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(FocusTarget::x11(42, "")));
     delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
     let same_window = FocusTarget::x11(42, "chatgpt Chatgpt");

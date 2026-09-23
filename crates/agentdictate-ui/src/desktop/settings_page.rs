@@ -515,7 +515,7 @@ fn delivery_storage_section(
     )
     .child(select_row(
         "Paste shortcut",
-        "Automatic detects X11/XWayland apps; native Wayland uses Shift+Insert",
+        "Automatic uses Shift+Insert, which terminals and other apps both paste with",
         "settings-input-paste-shortcut",
         editor.paste_shortcut.clone(),
         false,
