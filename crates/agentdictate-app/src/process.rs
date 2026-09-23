@@ -4,16 +4,18 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use agentdictate_core::{
-    AppSnapshot, ClientCommandKind, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness, RecordingMode,
-    ServerMessage, SettingChange, Settings,
+    ApiKeyCheck, AppSnapshot, ClientCommandKind, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness,
+    MicrophoneCheck, RecordingMode, ServerMessage, SettingChange, Settings,
 };
 use agentdictate_linux::hotkey::HotkeySpec;
 use agentdictate_runtime::{FinishedJobCleanup, Runtime, load_settings, save_settings};
 
 use crate::{
-    AppPaths, Daemon, DaemonDeliverer, OverlayController, ProcessingTicket, RecorderEvent,
-    RecordingController, ReqwestOpenAiTransport, SystemDeliverer, SystemRecordingController,
-    Transcriber, TranscriptionPipeline, startup::LoginStartup,
+    AppPaths, Daemon, DaemonDeliverer, OpenAiKeyCheck, OverlayController, ProcessingTicket,
+    RecorderEvent, RecordingController, ReqwestOpenAiTransport, SystemDeliverer,
+    SystemRecordingController, Transcriber, TranscriptionPipeline,
+    microphone_test::{MICROPHONE_TEST_FILE, Microphone},
+    startup::LoginStartup,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
@@ -48,12 +50,17 @@ pub struct AgentProcess<
     hotkey_control: Option<Arc<dyn HotkeyControl>>,
     /// Where startup moved a history database it could not read.
     history_set_aside: Option<PathBuf>,
+    /// For the Setup screen's microphone test.
+    microphone: Arc<Microphone>,
+    api_key_check: OpenAiKeyCheck,
 }
 
 /// What an IPC command answers with, rendered once the command's work is done.
 pub(crate) enum Reply {
     Snapshot,
     HotkeyCaptured(HotkeyCaptureOutcome),
+    ApiKeyChecked(ApiKeyCheck),
+    MicrophoneTested(MicrophoneCheck),
     Rejected(String),
 }
 
@@ -66,6 +73,14 @@ pub(crate) enum Followup<T> {
     ProcessThenReply(ProcessingTicket<T>),
     /// Wait for the user to press a shortcut, then reply with it.
     CaptureHotkey(Arc<dyn HotkeyControl>),
+    /// Ask OpenAI whether `api_key` works, then reply with its answer.
+    CheckApiKey {
+        check: OpenAiKeyCheck,
+        api_key: String,
+    },
+    /// Listen to the microphone, reporting its level, then reply with
+    /// whether it heard speech.
+    TestMicrophone(Arc<Microphone>),
     Quit,
 }
 
@@ -125,6 +140,11 @@ where
             recordings_directory: paths.recordings.clone(),
             hotkey_control: None,
             history_set_aside: None,
+            microphone: Arc::new(Microphone::new(
+                "pw-record",
+                paths.runtime.join(MICROPHONE_TEST_FILE),
+            )),
+            api_key_check: OpenAiKeyCheck::default(),
         }
     }
 
@@ -260,6 +280,22 @@ where
                 .hotkey_control()
                 .and_then(|control| control.cancel_capture())
                 .map(|()| (Reply::Snapshot, Followup::None)),
+            ClientCommandKind::CheckApiKey { api_key } => {
+                let api_key = api_key.map_or_else(
+                    || daemon.settings().openai_api_key.clone(),
+                    |api_key| api_key.expose_secret().to_owned(),
+                );
+                if api_key.trim().is_empty() {
+                    Err(anyhow::anyhow!("no OpenAI API key is saved"))
+                } else {
+                    let check = self.api_key_check.clone();
+                    Ok((Reply::Snapshot, Followup::CheckApiKey { check, api_key }))
+                }
+            }
+            ClientCommandKind::TestMicrophone => Ok((
+                Reply::Snapshot,
+                Followup::TestMicrophone(Arc::clone(&self.microphone)),
+            )),
             ClientCommandKind::Quit => Ok((Reply::Snapshot, Followup::Quit)),
         };
         handled.unwrap_or_else(|error| (Reply::Rejected(error.to_string()), Followup::None))
@@ -270,6 +306,8 @@ where
         match reply {
             Reply::Snapshot => ServerMessage::snapshot(self.snapshot(), self.daemon.settings()),
             Reply::HotkeyCaptured(outcome) => ServerMessage::hotkey_captured(outcome),
+            Reply::ApiKeyChecked(outcome) => ServerMessage::api_key_checked(outcome),
+            Reply::MicrophoneTested(outcome) => ServerMessage::microphone_tested(outcome),
             Reply::Rejected(error) => ServerMessage::command_rejected(error),
         }
     }
@@ -408,7 +446,7 @@ mod tests {
         },
     };
 
-    use agentdictate_core::{JobStage, KeepTranscripts, ServerMessageKind};
+    use agentdictate_core::{ClientCommand, JobStage, KeepTranscripts, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };
@@ -763,6 +801,180 @@ mod tests {
             .history_set_aside
             .expect("the notice is reported");
         assert_eq!(std::fs::read(set_aside).unwrap(), b"garbage");
+    }
+
+    /// A fake pw-record that writes `seconds` of `sample` bytes after a WAV
+    /// header, then keeps its file open for `then_wait` seconds.
+    fn fake_pw_record(directory: &Path, sample: &str, seconds: u32, then_wait: f32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let recorder = directory.join("fake-pw-record");
+        std::fs::write(
+            &recorder,
+            format!(
+                "#!/bin/sh\n\
+                 for output do :; done\n\
+                 trap 'exit 0' INT TERM\n\
+                 printf 'RIFF\\000\\000\\000\\000WAVEfmt \\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\000\\175\\000\\000\\002\\000\\020\\000data\\000\\000\\000\\000' > \"$output\"\n\
+                 head -c {bytes} /dev/zero | tr '\\000' '{sample}' >> \"$output\"\n\
+                 sleep {then_wait}\n",
+                bytes = seconds * 32_000,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        recorder
+    }
+
+    /// Runs a microphone test on `handle`, collecting its levels until
+    /// `watching` returns false.
+    fn test_microphone(
+        handle: &crate::DaemonHandle,
+        mut watching: impl FnMut(&[u8]) -> bool,
+    ) -> (Vec<u8>, ServerMessageKind) {
+        let mut levels = Vec::new();
+        let reply =
+            handle.handle_reporting(ClientCommandKind::TestMicrophone.into(), &mut |message| {
+                match message.kind {
+                    ServerMessageKind::MicrophoneLevel { level } => {
+                        levels.push(level);
+                        if watching(&levels) {
+                            Ok(())
+                        } else {
+                            Err(agentdictate_runtime::IpcError::Disconnected)
+                        }
+                    }
+                    other => panic!("unexpected interim message {other:?}"),
+                }
+            });
+        (levels, reply.kind)
+    }
+
+    #[test]
+    fn a_microphone_test_reports_levels_and_keeps_nothing_it_heard() {
+        for (sample, expected) in [
+            ("0", MicrophoneCheck::Heard),
+            ("\\000", MicrophoneCheck::Silent),
+        ] {
+            let directory = tempdir().unwrap();
+            let paths = app_paths(directory.path());
+            let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
+            let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
+            let recorder = fake_pw_record(directory.path(), sample, 1, 0.2);
+            handle.with_process(|process| {
+                process.microphone = Arc::new(Microphone::new(
+                    recorder,
+                    paths.runtime.join(MICROPHONE_TEST_FILE),
+                ));
+            });
+
+            let (levels, reply) = test_microphone(&handle, |_| true);
+
+            assert_eq!(
+                reply,
+                ServerMessageKind::MicrophoneTested { outcome: expected }
+            );
+            // One second of audio is twenty 50 ms readings.
+            assert_eq!(levels.len(), 20, "{levels:?}");
+            assert!(!paths.runtime.join(MICROPHONE_TEST_FILE).exists());
+            assert!(
+                std::fs::read_dir(&paths.recordings)
+                    .unwrap()
+                    .next()
+                    .is_none(),
+                "no recording is kept"
+            );
+            let snapshot = handle.with_process(|process| process.snapshot());
+            assert_eq!(snapshot.recoverable_count, 0);
+            assert_eq!(
+                snapshot.workflow.phase,
+                agentdictate_core::WorkflowPhase::Ready
+            );
+        }
+    }
+
+    #[test]
+    fn a_microphone_test_stops_listening_once_its_window_is_gone() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
+        let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
+        let recorder = fake_pw_record(directory.path(), "0", 1, 30.0);
+        handle.with_process(|process| {
+            process.microphone = Arc::new(Microphone::new(
+                recorder,
+                paths.runtime.join(MICROPHONE_TEST_FILE),
+            ));
+        });
+        let started = std::time::Instant::now();
+
+        let (levels, _) = test_microphone(&handle, |levels| levels.len() < 3);
+
+        assert_eq!(levels.len(), 3);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Answers each API key check: 200 for `sk-works`, 401 for any other.
+    fn fake_openai() -> OpenAiKeyCheck {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let works = BufReader::new(&stream)
+                    .lines()
+                    .map_while(Result::ok)
+                    .take_while(|line| !line.is_empty())
+                    .any(|line| line.eq_ignore_ascii_case("authorization: Bearer sk-works"));
+                let status = if works { "200 OK" } else { "401 Unauthorized" };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                )
+                .unwrap();
+            }
+        });
+        OpenAiKeyCheck::with_api_base(format!("http://{address}/v1"))
+    }
+
+    #[test]
+    fn checking_an_api_key_asks_openai_and_saves_nothing() {
+        let directory = tempdir().unwrap();
+        let paths = app_paths(directory.path());
+        let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
+        let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
+        handle.with_process(|process| process.api_key_check = fake_openai());
+        let check = |api_key: Option<&str>| {
+            handle
+                .handle(ClientCommand::check_api_key(api_key.map(str::to_owned)))
+                .kind
+        };
+
+        // Nothing is saved to check yet.
+        assert!(matches!(
+            check(None),
+            ServerMessageKind::CommandRejected { .. }
+        ));
+        assert_eq!(
+            check(Some("sk-works")),
+            ServerMessageKind::ApiKeyChecked {
+                outcome: ApiKeyCheck::Works
+            }
+        );
+        assert_eq!(
+            load_settings(&paths.config_file).unwrap().openai_api_key,
+            ""
+        );
+
+        handle.with_process(|process| process.set_api_key("sk-revoked").unwrap());
+        assert_eq!(
+            check(None),
+            ServerMessageKind::ApiKeyChecked {
+                outcome: ApiKeyCheck::Rejected
+            }
+        );
     }
 
     /// An isolated instance, so no test can reach the host's systemd.

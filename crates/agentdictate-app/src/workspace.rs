@@ -309,7 +309,10 @@ impl WorkspaceClient {
             ServerMessageKind::CommandRejected { error } => {
                 Err(WorkspaceError::CommandRejected { message: error })
             }
-            ServerMessageKind::HotkeyCaptured { .. } => Err(WorkspaceError::UnexpectedResponse),
+            ServerMessageKind::HotkeyCaptured { .. }
+            | ServerMessageKind::ApiKeyChecked { .. }
+            | ServerMessageKind::MicrophoneLevel { .. }
+            | ServerMessageKind::MicrophoneTested { .. } => Err(WorkspaceError::UnexpectedResponse),
         }
     }
 

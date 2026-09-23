@@ -7,6 +7,7 @@ mod daemon;
 pub mod diagnostics;
 mod handle;
 mod hotkey_dispatch;
+mod microphone_test;
 mod native_access;
 mod notifications;
 mod openai;
@@ -36,7 +37,8 @@ pub use notifications::{
     start_session_notifier,
 };
 pub use openai::{
-    ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
+    OpenAiKeyCheck, ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline,
+    TranscriptionRequest,
 };
 pub use opus_encoder::FinishingEncode;
 #[cfg(feature = "desktop")]

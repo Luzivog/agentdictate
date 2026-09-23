@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{DictationOptions, FailureKind, Settings};
+use agentdictate_core::{ApiKeyCheck, DictationOptions, FailureKind, Settings};
 use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
 
@@ -9,6 +9,8 @@ use crate::Transcriber;
 use crate::opus_encoder::{FinishingEncode, encode_file};
 use reqwest::StatusCode;
 use serde_json::Value;
+
+const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
 /// Container of the audio sent to the transcription endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,7 +282,7 @@ pub struct ReqwestOpenAiTransport {
 impl ReqwestOpenAiTransport {
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_api_base(api_key, "https://api.openai.com/v1")
+        Self::with_api_base(api_key, OPENAI_API_BASE)
     }
 
     /// Creates a transport for an OpenAI-compatible endpoint. Exposing the
@@ -475,6 +477,58 @@ impl SpeechTransport for ReqwestOpenAiTransport {
             return Err(ExternalError::NoSpeech);
         }
         Ok(text)
+    }
+}
+
+/// Checks OpenAI API keys with the cheapest authenticated request: listing
+/// the models, which costs nothing. The key is never logged.
+#[derive(Clone, Debug)]
+pub struct OpenAiKeyCheck {
+    api_base: String,
+}
+
+impl Default for OpenAiKeyCheck {
+    fn default() -> Self {
+        Self::with_api_base(OPENAI_API_BASE)
+    }
+}
+
+impl OpenAiKeyCheck {
+    /// Checks keys with an OpenAI-compatible endpoint, so tests need no
+    /// network.
+    #[must_use]
+    pub fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into().trim_end_matches('/').to_owned(),
+        }
+    }
+
+    /// What OpenAI says about `api_key`. It refuses a key with 401 or 403,
+    /// as for a transcription; any other status, or no answer, means it
+    /// could not say.
+    #[must_use]
+    pub fn check(&self, api_key: &str) -> ApiKeyCheck {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("the rustls HTTP client must be constructible");
+        let response = client
+            .get(format!("{}/models", self.api_base))
+            .bearer_auth(api_key.trim())
+            .send();
+        match response.map(|response| response.status()) {
+            Ok(status) if status.is_success() => ApiKeyCheck::Works,
+            Ok(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => ApiKeyCheck::Rejected,
+            Ok(status) => {
+                tracing::warn!(%status, "OpenAI did not say whether the API key works");
+                ApiKeyCheck::Unreachable
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not reach OpenAI to check the API key");
+                ApiKeyCheck::Unreachable
+            }
+        }
     }
 }
 

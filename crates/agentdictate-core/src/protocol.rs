@@ -9,7 +9,7 @@ use crate::workflow::{JobId, WorkflowSnapshot};
 /// The IPC wire format's version. The settings window reads History, usage
 /// and Recovery from the database itself; IPC carries commands and the
 /// status snapshot.
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -54,6 +54,14 @@ impl ClientCommand {
     pub fn set_api_key(api_key: impl Into<String>) -> Self {
         Self::new(ClientCommandKind::SetApiKey {
             api_key: SecretString(api_key.into()),
+        })
+    }
+
+    /// Checks `api_key` with OpenAI, or the saved key when it is `None`.
+    #[must_use]
+    pub fn check_api_key(api_key: Option<String>) -> Self {
+        Self::new(ClientCommandKind::CheckApiKey {
+            api_key: api_key.map(SecretString),
         })
     }
 }
@@ -104,6 +112,18 @@ pub enum ClientCommandKind {
     SetApiKey {
         api_key: SecretString,
     },
+    /// Checks an OpenAI API key with one request to OpenAI, without saving
+    /// it: `api_key`, or the saved key when it is `None`. The reply is
+    /// [`ServerMessageKind::ApiKeyChecked`].
+    CheckApiKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key: Option<SecretString>,
+    },
+    /// Listens to the microphone for a few seconds and keeps nothing it
+    /// hears. [`ServerMessageKind::MicrophoneLevel`] messages say how loud it
+    /// is while it listens; the reply is
+    /// [`ServerMessageKind::MicrophoneTested`].
+    TestMicrophone,
     Quit,
 }
 
@@ -126,6 +146,27 @@ pub enum HotkeyCaptureOutcome {
     Cancelled,
     /// No shortcut was pressed in time.
     TimedOut,
+}
+
+/// What OpenAI said when AgentDictate checked an API key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyCheck {
+    Works,
+    /// OpenAI refused the key.
+    Rejected,
+    /// OpenAI could not be reached, or did not say whether the key works.
+    Unreachable,
+}
+
+/// What a microphone test heard.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophoneCheck {
+    /// Sound as loud as speech.
+    Heard,
+    /// Nothing louder than a quiet room.
+    Silent,
 }
 
 /// The daemon's status: what the database does not hold.
@@ -170,6 +211,21 @@ impl ServerMessage {
     }
 
     #[must_use]
+    pub const fn api_key_checked(outcome: ApiKeyCheck) -> Self {
+        Self::new(ServerMessageKind::ApiKeyChecked { outcome })
+    }
+
+    #[must_use]
+    pub const fn microphone_level(level: u8) -> Self {
+        Self::new(ServerMessageKind::MicrophoneLevel { level })
+    }
+
+    #[must_use]
+    pub const fn microphone_tested(outcome: MicrophoneCheck) -> Self {
+        Self::new(ServerMessageKind::MicrophoneTested { outcome })
+    }
+
+    #[must_use]
     pub fn command_rejected(error: impl Into<String>) -> Self {
         Self::new(ServerMessageKind::CommandRejected {
             error: error.into(),
@@ -187,7 +243,27 @@ pub enum ServerMessageKind {
     HotkeyCaptured {
         outcome: HotkeyCaptureOutcome,
     },
+    ApiKeyChecked {
+        outcome: ApiKeyCheck,
+    },
+    /// How loud the microphone is, from 0 to 100, while a microphone test
+    /// listens. It comes before the command's reply.
+    MicrophoneLevel {
+        level: u8,
+    },
+    MicrophoneTested {
+        outcome: MicrophoneCheck,
+    },
     CommandRejected {
         error: String,
     },
+}
+
+impl ServerMessageKind {
+    /// Whether this message reports progress before a command's reply
+    /// instead of being the reply.
+    #[must_use]
+    pub const fn is_interim(&self) -> bool {
+        matches!(self, Self::MicrophoneLevel { .. })
+    }
 }

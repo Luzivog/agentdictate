@@ -28,9 +28,10 @@ use agentdictate_core::{
     ServerMessage, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::HotkeySignal;
-use agentdictate_runtime::{IpcClient, IpcHandler, RecordingJob};
+use agentdictate_runtime::{IpcClient, IpcError, IpcHandler, RecordingJob};
 
 use crate::daemon::copied;
+use crate::microphone_test::MICROPHONE_TEST_DURATION;
 use crate::process::{Followup, HOTKEY_CAPTURE_TIMEOUT, Reply};
 use crate::{
     AgentProcess, DaemonDeliverer, DaemonError, DaemonStatus, ProcessingTicket,
@@ -387,12 +388,21 @@ where
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
+        self.handle_reporting(command, &mut |_| Ok(()))
+    }
+
+    fn handle_reporting(
+        &self,
+        command: ClientCommand,
+        interim: &mut dyn FnMut(ServerMessage) -> Result<(), IpcError>,
+    ) -> ServerMessage {
         let starts_work = matches!(
             command.kind,
             ClientCommandKind::StartRecording { .. }
                 | ClientCommandKind::RetryTranscription { .. }
                 | ClientCommandKind::RetryDelivery { .. }
                 | ClientCommandKind::PasteLast
+                | ClientCommandKind::TestMicrophone
         );
         if starts_work && self.shared.quitting.load(Ordering::Acquire) {
             return ServerMessage::command_rejected(DaemonError::ShuttingDown.to_string());
@@ -411,6 +421,21 @@ where
             Followup::CaptureHotkey(control) => match control.capture(HOTKEY_CAPTURE_TIMEOUT) {
                 Ok(outcome) => Reply::HotkeyCaptured(outcome),
                 Err(error) => Reply::Rejected(error.to_string()),
+            },
+            Followup::CheckApiKey { check, api_key } => {
+                let outcome = check.check(&api_key);
+                tracing::info!(?outcome, "checked an OpenAI API key");
+                Reply::ApiKeyChecked(outcome)
+            }
+            // A client that went away stops the test early.
+            Followup::TestMicrophone(microphone) => match microphone
+                .test(MICROPHONE_TEST_DURATION, |level| {
+                    interim(ServerMessage::microphone_level(level)).is_ok()
+                }) {
+                Ok(outcome) => Reply::MicrophoneTested(outcome),
+                Err(error) => {
+                    Reply::Rejected(format!("could not listen to the microphone: {error}"))
+                }
             },
             Followup::Quit => match self.quit() {
                 Ok(()) => reply,

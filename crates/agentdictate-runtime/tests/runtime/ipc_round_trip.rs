@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 use std::{fs, io};
 
-use agentdictate_core::HotkeyCaptureOutcome;
+use agentdictate_core::{HotkeyCaptureOutcome, MicrophoneCheck};
 use agentdictate_runtime::{
     AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, IpcClient, IpcError,
     IpcHandler, IpcServer, ServerMessage, ServerMessageKind, Settings, Workflow, WorkflowPhase,
@@ -163,8 +163,8 @@ struct CapturingHandler {
     outcomes: Arc<Mutex<mpsc::Receiver<HotkeyCaptureOutcome>>>,
 }
 
-impl IpcHandler for CapturingHandler {
-    fn snapshot(&self) -> ServerMessage {
+impl CapturingHandler {
+    fn idle_snapshot() -> ServerMessage {
         let snapshot = AppSnapshot {
             workflow: Workflow::new().snapshot(),
             readiness: agentdictate_core::Readiness {
@@ -177,6 +177,12 @@ impl IpcHandler for CapturingHandler {
             history_set_aside: None,
         };
         ServerMessage::snapshot(snapshot, &Settings::default())
+    }
+}
+
+impl IpcHandler for CapturingHandler {
+    fn snapshot(&self) -> ServerMessage {
+        Self::idle_snapshot()
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
@@ -236,6 +242,66 @@ fn a_waiting_shortcut_capture_does_not_block_other_sessions() {
     let (first, second) = accepts.join().unwrap();
     first.join().unwrap().unwrap();
     second.join().unwrap().unwrap();
+}
+
+/// Reports two microphone levels before it answers a microphone test.
+struct ReportingHandler;
+
+impl IpcHandler for ReportingHandler {
+    fn snapshot(&self) -> ServerMessage {
+        CapturingHandler::idle_snapshot()
+    }
+
+    fn handle(&self, _command: ClientCommand) -> ServerMessage {
+        unreachable!("the server answers through handle_reporting")
+    }
+
+    fn handle_reporting(
+        &self,
+        command: ClientCommand,
+        interim: &mut dyn FnMut(ServerMessage) -> Result<(), IpcError>,
+    ) -> ServerMessage {
+        assert_eq!(command.kind, ClientCommandKind::TestMicrophone);
+        for level in [12, 64] {
+            interim(ServerMessage::microphone_level(level)).unwrap();
+        }
+        ServerMessage::microphone_tested(MicrophoneCheck::Heard)
+    }
+}
+
+#[test]
+fn interim_messages_reach_the_client_before_the_reply() {
+    let directory = TempDir::new().unwrap();
+    let runtime_directory = directory.path().join("runtime");
+    let server = IpcServer::bind(&runtime_directory).unwrap();
+    let server_thread = thread::spawn(move || server.serve_next(&ReportingHandler).unwrap());
+    let (mut client, _) = IpcClient::connect(&runtime_directory).unwrap();
+
+    let mut levels = Vec::new();
+    let reply = client
+        .send_reporting(ClientCommandKind::TestMicrophone.into(), |message| {
+            levels.push(message.kind);
+        })
+        .unwrap();
+    // A plain send skips them.
+    let plain = client
+        .send(ClientCommandKind::TestMicrophone.into())
+        .unwrap();
+
+    assert_eq!(
+        levels,
+        [12, 64].map(|level| ServerMessageKind::MicrophoneLevel { level })
+    );
+    for reply in [reply, plain] {
+        assert_eq!(
+            reply.kind,
+            ServerMessageKind::MicrophoneTested {
+                outcome: MicrophoneCheck::Heard
+            }
+        );
+    }
+    drop(client);
+    server_thread.join().unwrap();
 }
 
 #[test]

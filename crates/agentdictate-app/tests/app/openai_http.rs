@@ -4,8 +4,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc;
 use std::thread;
 
-use agentdictate_app::{ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
-use agentdictate_core::FailureKind;
+use agentdictate_app::{
+    OpenAiKeyCheck, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest,
+};
+use agentdictate_core::{ApiKeyCheck, FailureKind};
 use tempfile::tempdir;
 
 #[test]
@@ -259,6 +261,51 @@ fn transcription_failures_are_typed_for_the_user() {
         .transcribe_audio(transcription_request(&audio_path))
         .unwrap_err();
     assert_eq!(error.kind(), FailureKind::CredentialMissing, "{error}");
+}
+
+/// Answers each request with `status` and hands the request to the test.
+fn answer_once(status: &'static str) -> (std::net::SocketAddr, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        )
+        .unwrap();
+        request
+    });
+    (address, server)
+}
+
+#[test]
+fn an_api_key_check_lists_the_models_with_the_key_and_reads_a_refusal() {
+    for (status, expected) in [
+        ("200 OK", ApiKeyCheck::Works),
+        ("401 Unauthorized", ApiKeyCheck::Rejected),
+        ("503 Service Unavailable", ApiKeyCheck::Unreachable),
+    ] {
+        let (address, server) = answer_once(status);
+
+        let outcome =
+            OpenAiKeyCheck::with_api_base(format!("http://{address}/v1")).check("sk-test");
+
+        let request = server.join().unwrap();
+        assert_eq!(outcome, expected, "{status}");
+        assert!(request.starts_with("GET /v1/models HTTP/1.1"), "{request}");
+        assert!(request.contains("authorization: Bearer sk-test"));
+    }
+
+    let unreachable = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    assert_eq!(
+        OpenAiKeyCheck::with_api_base(format!("http://{unreachable}/v1")).check("sk-test"),
+        ApiKeyCheck::Unreachable
+    );
 }
 
 fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'_> {

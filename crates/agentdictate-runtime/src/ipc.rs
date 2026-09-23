@@ -39,6 +39,18 @@ pub enum IpcError {
 pub trait IpcHandler {
     fn snapshot(&self) -> ServerMessage;
     fn handle(&self, command: ClientCommand) -> ServerMessage;
+
+    /// Answers `command` like `handle`. A command that reports as it goes,
+    /// such as a microphone test, first sends its interim messages through
+    /// `interim`, which fails once the client has gone.
+    fn handle_reporting(
+        &self,
+        command: ClientCommand,
+        interim: &mut dyn FnMut(ServerMessage) -> Result<(), IpcError>,
+    ) -> ServerMessage {
+        let _ = interim;
+        self.handle(command)
+    }
 }
 
 pub struct IpcServer {
@@ -180,10 +192,27 @@ impl IpcClient {
         Ok((client, initial))
     }
 
+    /// Sends `command` and returns its reply, skipping any interim messages.
     pub fn send(&mut self, command: ClientCommand) -> Result<ServerMessage, IpcError> {
+        self.send_reporting(command, |_| {})
+    }
+
+    /// Sends `command` and returns its reply, handing each interim message
+    /// that comes before it, such as a microphone level, to `interim`.
+    pub fn send_reporting(
+        &mut self,
+        command: ClientCommand,
+        mut interim: impl FnMut(ServerMessage),
+    ) -> Result<ServerMessage, IpcError> {
         check_version(command.protocol_version)?;
         write_message(&mut self.stream, &command)?;
-        self.read_server_message()
+        loop {
+            let message = self.read_server_message()?;
+            if !message.kind.is_interim() {
+                return Ok(message);
+            }
+            interim(message);
+        }
     }
 
     /// Wakes a server blocked in `accept` without creating a live session.
@@ -260,7 +289,10 @@ fn serve_session(
             }
             Err(error) => return Err(error),
         };
-        let response = handler.handle(command);
+        let response = handler.handle_reporting(command, &mut |message| {
+            check_version(message.protocol_version)?;
+            write_message(&mut stream, &message)
+        });
         check_version(response.protocol_version)?;
         write_message(&mut stream, &response)?;
     }

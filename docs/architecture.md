@@ -295,8 +295,12 @@ per setting: each control sends one `change_setting` command, and the daemon
 applies it to the settings it holds, so two clients never overwrite each other's
 changes. `agentdictate stop` returns once the
 recording is stopped; the paste follows. A Recovery retry's reply waits for the
-copied text, and a shortcut capture's reply for the key press, both without holding
-the daemon lock.
+copied text, a shortcut capture's reply for the key press, and an API key check's
+reply for OpenAI's answer to one `GET /v1/models`, all without holding the daemon
+lock. A microphone test listens for 3 s and sends the microphone's level every
+50 ms as interim messages before its reply. It records through `pw-record` into
+a file in the runtime directory whose name is removed as soon as recording
+starts, so nothing it hears is kept, uploaded, or added to Recovery.
 
 ## Data locations
 

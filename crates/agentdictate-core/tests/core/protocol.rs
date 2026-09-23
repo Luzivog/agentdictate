@@ -7,11 +7,11 @@ use agentdictate_core::{
 fn client_commands_have_a_versioned_stable_wire_shape() {
     assert_eq!(
         serde_json::to_string(&ClientCommand::start_recording()).unwrap(),
-        r#"{"protocol_version":15,"command":"start_recording"}"#
+        r#"{"protocol_version":16,"command":"start_recording"}"#
     );
     assert_eq!(
         serde_json::to_string(&ClientCommand::new(ClientCommandKind::StopRecording)).unwrap(),
-        r#"{"protocol_version":15,"command":"stop_recording"}"#
+        r#"{"protocol_version":16,"command":"stop_recording"}"#
     );
 }
 
@@ -25,7 +25,7 @@ fn rejected_commands_return_an_error_instead_of_looking_successful() {
     ));
     assert_eq!(
         serde_json::to_string(&message).unwrap(),
-        r#"{"protocol_version":15,"message":"command_rejected","error":"microphone unavailable"}"#
+        r#"{"protocol_version":16,"message":"command_rejected","error":"microphone unavailable"}"#
     );
 }
 
@@ -44,9 +44,15 @@ fn commands_round_trip_through_the_wire() {
         ClientCommandKind::CopyTranscript { id: 7 },
         ClientCommandKind::CaptureHotkey,
         ClientCommandKind::CancelHotkeyCapture,
+        ClientCommandKind::TestMicrophone,
         ClientCommandKind::Quit,
     ]
-    .map(ClientCommand::new);
+    .map(ClientCommand::new)
+    .into_iter()
+    .chain([
+        ClientCommand::check_api_key(None),
+        ClientCommand::check_api_key(Some("sk-pasted".to_owned())),
+    ]);
 
     for command in commands {
         let wire = serde_json::to_string(&command).unwrap();
