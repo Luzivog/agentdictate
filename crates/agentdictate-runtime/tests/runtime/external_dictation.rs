@@ -117,7 +117,6 @@ fn background_writer_open_does_not_reconcile_the_live_recording() {
                 options: None,
                 audio_path: directory.path().join("active.wav"),
                 started_at: Utc::now(),
-                transcription_provider: Default::default(),
                 transcription_model: "test-model".to_owned(),
             },
             &mut recorder,

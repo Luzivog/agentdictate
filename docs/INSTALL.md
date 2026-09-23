@@ -25,10 +25,6 @@ sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x1
 the raw WAV, about 8 times larger. The clipboard and paste injection are built into
 AgentDictate and need no extra tools.
 
-AgentDictate also has an experimental route that uses the ChatGPT account signed into
-the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) instead of an API key. It
-needs `codex login` with **Sign in with ChatGPT**.
-
 ## Install from source
 
 ```bash
@@ -113,11 +109,6 @@ your vocabulary spellings, unless you use Literal mode, which sends only the
 language. With **Stream speech** on, audio is sent while you speak, and a failed
 stream falls back to the normal upload, which can mean paying for both. A request
 that fails before OpenAI answers is sent once more.
-
-The experimental ChatGPT subscription route sends the audio and language hint to an
-undocumented ChatGPT endpoint instead. It gets a short-lived ChatGPT token from the
-Codex CLI, keeps it in memory, and never falls back to the paid API. The endpoint is
-not a supported OpenAI API and can stop working without notice.
 
 **What stays on your computer.**
 

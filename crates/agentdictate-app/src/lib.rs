@@ -4,7 +4,6 @@ use std::{io, os::unix::fs::PermissionsExt, path::PathBuf};
 
 mod captured_audio;
 mod chatgpt_dictation_import;
-mod codex_subscription;
 mod daemon;
 pub mod diagnostics;
 mod hotkey_dispatch;
@@ -18,7 +17,6 @@ mod system;
 mod tray;
 mod workspace;
 
-pub use codex_subscription::CodexSubscriptionTransport;
 pub use daemon::{CapturedRecording, Daemon, DaemonError, RecordingController};
 pub use diagnostics::init_file_logging;
 pub use hotkey_dispatch::{
@@ -26,8 +24,7 @@ pub use hotkey_dispatch::{
 };
 pub use native_access::{NativeAccessError, grant_native_access};
 pub use openai::{
-    ReqwestOpenAiTransport, SpeechRouter, SpeechTransport, TranscriptionPipeline,
-    TranscriptionRequest,
+    ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
 };
 #[cfg(feature = "desktop")]
 pub use overlay_process::run_overlay_helper;

@@ -208,26 +208,22 @@ fn record_session(
     )?;
     let replacements_applied = deserialize_replacements(&replacements_json)?;
     // Priced once, at today's price: that is what these minutes cost.
-    let price_per_minute = job
-        .transcription_provider
-        .marginal_price_per_audio_minute(transcription_price_per_minute(&job.transcription_model));
-    let cost = job.duration_seconds.max(0.0) / 60.0 * price_per_minute;
+    let cost = job.duration_seconds.max(0.0) / 60.0
+        * transcription_price_per_minute(&job.transcription_model);
     transaction.execute(
         r#"
         INSERT INTO dictation_sessions (
             started_at, ended_at, duration_seconds, transcription_model,
-            transcription_provider, raw_word_count,
-            final_word_count, final_character_count,
+            raw_word_count, final_word_count, final_character_count,
             estimated_transcription_cost, estimated_total_cost, success,
             error_message, runtime_job_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 1, NULL, ?10)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1, NULL, ?9)
         "#,
         params![
             timestamp(job.started_at),
             timestamp(job.updated_at),
             job.duration_seconds,
             job.transcription_model,
-            job.transcription_provider.as_str(),
             count_words_ascii_history(&job.raw_transcript),
             count_words_ascii_history(&job.final_text),
             job.final_text.chars().count() as u64,

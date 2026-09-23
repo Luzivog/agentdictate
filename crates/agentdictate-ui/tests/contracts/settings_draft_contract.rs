@@ -1,8 +1,6 @@
 //! Settings draft contracts.
 
-use agentdictate_core::{
-    PasteShortcut, RecordingMode, Settings, SettingsError, TranscriptionProvider,
-};
+use agentdictate_core::{PasteShortcut, RecordingMode, Settings, SettingsError};
 use agentdictate_ui::{SettingsDraft, SettingsDraftError};
 
 #[test]
@@ -13,7 +11,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
         ..Settings::default()
     };
     let mut draft = SettingsDraft::from(&original);
-    draft.transcription_provider = TranscriptionProvider::ChatGptSubscription;
     draft.language = "en".to_owned();
     draft.transcription_prompt = "Leadlord, AgentDictate".to_owned();
     draft.hotkey = "Alt+Space".to_owned();
@@ -30,10 +27,6 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
 
     let updated = draft.apply_to(&original).unwrap();
 
-    assert_eq!(
-        updated.transcription_provider,
-        TranscriptionProvider::ChatGptSubscription
-    );
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
     assert_eq!(updated.hotkey, "Alt+Space");

@@ -4,8 +4,6 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use agentdictate_core::TranscriptionProvider;
 use agentdictate_core::{ClientCommand, JobId, PasteShortcut, ServerMessageKind, Settings};
 use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
@@ -687,7 +685,6 @@ mod tests {
             stage: JobStage::ReadyToDeliver,
             audio_path: directory.join("recording.wav"),
             duration_seconds: 1.0,
-            transcription_provider: TranscriptionProvider::OpenAiApi,
             transcription_model: "test".to_owned(),
             raw_transcript: final_text.to_lowercase(),
             final_text: final_text.to_owned(),
@@ -839,7 +836,6 @@ mod tests {
             stage: JobStage::Starting,
             audio_path: directory.path().join("recording.wav"),
             duration_seconds: 0.0,
-            transcription_provider: TranscriptionProvider::OpenAiApi,
             transcription_model: "test".to_owned(),
             raw_transcript: String::new(),
             final_text: String::new(),

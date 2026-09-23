@@ -1,32 +1,9 @@
-use std::path::PathBuf;
-
-use agentdictate_app::{
-    SpeechRouter, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
-};
-use agentdictate_core::{JobId, JobStage, Settings, TranscriptionProvider};
+use agentdictate_app::{SpeechTransport, TranscriptionPipeline, TranscriptionRequest};
+use agentdictate_core::{JobId, JobStage, Settings};
 use agentdictate_runtime::{DeliveryStatus, ExternalError, RecordingJob, Transcriber};
 use chrono::Utc;
 
-struct SubscriptionSpeech;
-
 struct PaidApiMustNotRun;
-
-#[test]
-fn subscription_language_list_is_rejected_before_reading_audio_or_authentication() {
-    let mut transport = agentdictate_app::CodexSubscriptionTransport::new();
-    let error = transport
-        .transcribe_audio(TranscriptionRequest {
-            keywords: &[],
-            audio_path: std::path::Path::new("does-not-exist.wav"),
-            provider: TranscriptionProvider::ChatGptSubscription,
-            model: "ignored",
-            language: "en,fr",
-            prompt: "",
-            duration_seconds: 1.0,
-        })
-        .unwrap_err();
-    assert!(error.to_string().contains("one language hint"));
-}
 
 #[test]
 fn a_stored_transcript_is_reused_without_transcribing_again() {
@@ -39,7 +16,6 @@ fn a_stored_transcript_is_reused_without_transcribing_again() {
         stage: JobStage::Transcribing,
         audio_path: "missing.wav".into(),
         duration_seconds: 2.0,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
         transcription_model: "gpt-transcribe".into(),
         raw_transcript: "Do not push.".into(),
         final_text: String::new(),
@@ -54,50 +30,13 @@ fn a_stored_transcript_is_reused_without_transcribing_again() {
     assert_eq!(result.model, "gpt-transcribe");
 }
 
-impl SpeechTransport for SubscriptionSpeech {
-    fn transcribe_audio(
-        &mut self,
-        _request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        Ok("subscription transcript".into())
-    }
-}
-
 impl SpeechTransport for PaidApiMustNotRun {
     fn transcribe_audio(
         &mut self,
         _request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
-        panic!("subscription transcription must not call the paid API transport")
+        panic!("a stored transcript must not be transcribed again")
     }
-}
-
-#[test]
-fn subscription_jobs_never_fall_back_to_the_paid_api_transport() {
-    let speech = SpeechRouter::new(PaidApiMustNotRun, SubscriptionSpeech);
-    let mut transcriber = TranscriptionPipeline::new(Settings::default(), speech);
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: PathBuf::from("speech.wav"),
-        duration_seconds: 2.0,
-        transcription_provider: TranscriptionProvider::ChatGptSubscription,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-    };
-
-    let result = transcriber.transcribe(&job).unwrap();
-
-    assert_eq!(result.text, "subscription transcript");
 }
 
 #[test]
@@ -122,7 +61,6 @@ fn empty_results_require_quiet_audio_while_short_words_and_network_errors_surviv
         stage: JobStage::Transcribing,
         audio_path: audio_path.clone(),
         duration_seconds: 0.1,
-        transcription_provider: TranscriptionProvider::OpenAiApi,
         transcription_model: "gpt-transcribe".into(),
         raw_transcript: String::new(),
         final_text: String::new(),

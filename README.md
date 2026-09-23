@@ -15,8 +15,6 @@ AgentDictate runs in the background with a global shortcut. A small overlay at t
 bottom of your screen shows that it is listening. When you stop, the audio goes to
 OpenAI's `gpt-transcribe` model with your API key, and the text is pasted into the
 focused window. If anything goes wrong, the recording is kept so you can try again.
-An experimental option can use the ChatGPT account signed into the Codex CLI
-instead of an API key.
 
 ## Requirements
 

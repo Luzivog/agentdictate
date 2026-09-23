@@ -1,4 +1,4 @@
-use agentdictate_core::{AppliedReplacement, TranscriptionProvider, count_words_ascii_history};
+use agentdictate_core::{AppliedReplacement, count_words_ascii_history};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
@@ -18,9 +18,9 @@ impl ExternalDictationSource {
         }
     }
 
-    const fn transcription_provider(self) -> TranscriptionProvider {
+    const fn transcription_provider(self) -> &'static str {
         match self {
-            Self::ChatGptDesktop => TranscriptionProvider::ChatGptSubscription,
+            Self::ChatGptDesktop => "chatgpt_subscription",
         }
     }
 }
@@ -98,7 +98,7 @@ impl Runtime {
                 timestamp(ended_at),
                 receipt.duration_seconds,
                 receipt.transcription_model,
-                receipt.source.transcription_provider().as_str(),
+                receipt.source.transcription_provider(),
                 raw_words,
                 final_words,
                 final_text.chars().count() as u64,

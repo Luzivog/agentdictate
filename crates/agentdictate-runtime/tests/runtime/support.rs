@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use agentdictate_core::{HistoryPageRequest, HistorySnapshot, JobId, TranscriptionProvider};
+use agentdictate_core::{HistoryPageRequest, HistorySnapshot, JobId};
 use agentdictate_runtime::{ExternalError, Recorder, RecordingJob, RecordingRequest, Runtime};
 use chrono::{TimeZone, Utc};
 
@@ -13,24 +13,11 @@ impl Recorder for ReadyRecorder {
 }
 
 pub(crate) fn request(audio_path: &Path, transcription_model: &str) -> RecordingRequest {
-    request_with_provider(
-        audio_path,
-        TranscriptionProvider::OpenAiApi,
-        transcription_model,
-    )
-}
-
-pub(crate) fn request_with_provider(
-    audio_path: &Path,
-    transcription_provider: TranscriptionProvider,
-    transcription_model: &str,
-) -> RecordingRequest {
     RecordingRequest {
         id: JobId::new(),
         options: None,
         audio_path: audio_path.to_owned(),
         started_at: Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap(),
-        transcription_provider,
         transcription_model: transcription_model.to_owned(),
     }
 }
@@ -58,7 +45,6 @@ pub(crate) struct StoredHistory {
     pub(crate) raw_word_count: u64,
     pub(crate) final_word_count: u64,
     pub(crate) final_character_count: u64,
-    pub(crate) transcription_provider: String,
     pub(crate) estimated_total_cost: f64,
 }
 
@@ -71,7 +57,7 @@ pub(crate) fn stored_history(database: &Path) -> Vec<StoredHistory> {
             SELECT s.runtime_job_id, h.raw_transcript, h.final_text,
                    h.replacements_applied, h.copied_to_clipboard, h.paste_triggered,
                    s.raw_word_count, s.final_word_count, s.final_character_count,
-                   s.transcription_provider, s.estimated_total_cost
+                   s.estimated_total_cost
             FROM transcript_history h
             JOIN dictation_sessions s ON s.id = h.session_id
             ORDER BY h.created_at DESC, h.id DESC
@@ -90,8 +76,7 @@ pub(crate) fn stored_history(database: &Path) -> Vec<StoredHistory> {
                 raw_word_count: row.get(6)?,
                 final_word_count: row.get(7)?,
                 final_character_count: row.get(8)?,
-                transcription_provider: row.get(9)?,
-                estimated_total_cost: row.get(10)?,
+                estimated_total_cost: row.get(9)?,
             })
         })
         .unwrap()

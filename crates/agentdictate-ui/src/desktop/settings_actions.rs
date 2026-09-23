@@ -1,8 +1,5 @@
 use gpui::{Context, Window};
 
-#[cfg(feature = "test-support")]
-use agentdictate_core::TranscriptionProvider;
-
 use crate::SettingsDraft;
 
 use super::SettingsShell;
@@ -56,25 +53,6 @@ fn captured_shortcut(keystroke: &gpui::Keystroke) -> Result<String, String> {
 }
 
 impl SettingsShell {
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn select_transcription_provider_for_test(
-        &mut self,
-        provider: TranscriptionProvider,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings
-            .form
-            .transcription_provider
-            .update(cx, |state, cx| {
-                state.set_selected_value(&provider.as_str().to_owned(), window, cx);
-            });
-        self.recompute_settings_dirty(cx);
-        self.clear_route_feedback();
-        cx.notify();
-    }
-
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn settings_draft_for_test(&self, cx: &gpui::App) -> SettingsDraft {

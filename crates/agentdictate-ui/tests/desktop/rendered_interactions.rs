@@ -13,8 +13,7 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, Settings, TranscriptionProvider, WorkflowPhase,
-    WorkflowSnapshot,
+    ClientCommand, ClientCommandKind, Settings, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, CommandSink, HistoryViewModel, RecoveryItemViewModel, RecoveryStage,
@@ -1330,7 +1329,6 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     let commands = Arc::new(Mutex::new(Vec::new()));
     let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
 
-    harness.bounds("settings-input-transcription-provider");
     harness.bounds("settings-input-language");
     harness.bounds("settings-hotkey-change");
     harness.bounds("settings-input-recording-mode");
@@ -1359,38 +1357,6 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
                 && settings.audio_ducking_fade_out_ms == 600
                 && settings.audio_ducking_fade_in_ms == 600
                 && settings.streaming_enabled != Settings::default().streaming_enabled
-    ));
-}
-
-#[gpui::test]
-fn chatgpt_subscription_replaces_api_controls_with_one_managed_model_status(
-    cx: &mut TestAppContext,
-) {
-    let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
-
-    harness.shell.update_in(harness.cx, |shell, window, cx| {
-        shell.select_transcription_provider_for_test(
-            TranscriptionProvider::ChatGptSubscription,
-            window,
-            cx,
-        );
-    });
-    harness.cx.run_until_parked();
-
-    harness.bounds("settings-input-transcription-provider");
-    harness.bounds("settings-transcription-managed-by-chatgpt");
-    harness.bounds("settings-input-language");
-    harness.bounds("settings-api-key");
-    assert!(!harness.has("settings-input-transcription-prompt"));
-    harness.click("save-settings");
-
-    let commands = commands.lock().expect("command lock");
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        &commands[0].kind,
-        ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.transcription_provider == TranscriptionProvider::ChatGptSubscription
     ));
 }
 

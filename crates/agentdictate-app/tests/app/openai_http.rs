@@ -5,7 +5,6 @@ use std::sync::mpsc;
 use std::thread;
 
 use agentdictate_app::{ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
-use agentdictate_core::TranscriptionProvider;
 use tempfile::tempdir;
 
 #[test]
@@ -36,7 +35,6 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
         .transcribe_audio(TranscriptionRequest {
             keywords: &["AgentDictate".into(), "GPUI".into()],
             audio_path: &audio_path,
-            provider: TranscriptionProvider::OpenAiApi,
             model: "gpt-transcribe",
             language: "en,fr",
             prompt: "AgentDictate and GPUI",
@@ -185,7 +183,6 @@ fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'
     TranscriptionRequest {
         keywords: &[],
         audio_path,
-        provider: TranscriptionProvider::OpenAiApi,
         model: "gpt-transcribe",
         language: "en",
         prompt: "",

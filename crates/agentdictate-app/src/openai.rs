@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{JobId, Settings, TranscriptionProvider};
+use agentdictate_core::{JobId, Settings};
 use agentdictate_linux::command::{
     PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool, SystemCommandRunner,
 };
@@ -201,7 +201,6 @@ fn failed_before_status(error: &reqwest::Error) -> bool {
 pub struct TranscriptionRequest<'a> {
     pub keywords: &'a [String],
     pub audio_path: &'a Path,
-    pub provider: TranscriptionProvider,
     pub model: &'a str,
     pub language: &'a str,
     pub prompt: &'a str,
@@ -224,50 +223,6 @@ pub trait SpeechTransport {
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError>;
-}
-
-pub struct SpeechRouter<A, C> {
-    openai: A,
-    chatgpt: C,
-}
-
-impl<A, C> SpeechRouter<A, C> {
-    #[must_use]
-    pub const fn new(openai: A, chatgpt: C) -> Self {
-        Self { openai, chatgpt }
-    }
-
-    pub const fn openai_mut(&mut self) -> &mut A {
-        &mut self.openai
-    }
-}
-
-impl<A: SpeechTransport, C: SpeechTransport> SpeechTransport for SpeechRouter<A, C> {
-    fn begin_recording(
-        &mut self,
-        job: &RecordingJob,
-        options: &agentdictate_core::DictationOptions,
-    ) {
-        if job.transcription_provider == TranscriptionProvider::OpenAiApi {
-            self.openai.begin_recording(job, options);
-        }
-    }
-    fn cancel_recording(&mut self, id: JobId) {
-        self.openai.cancel_recording(id);
-    }
-    fn actual_model(&self) -> Option<&str> {
-        self.openai.actual_model()
-    }
-
-    fn transcribe_audio(
-        &mut self,
-        request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        match request.provider {
-            TranscriptionProvider::OpenAiApi => self.openai.transcribe_audio(request),
-            TranscriptionProvider::ChatGptSubscription => self.chatgpt.transcribe_audio(request),
-        }
-    }
 }
 
 /// The production `Transcriber`: sends the recording to the speech transport
@@ -318,7 +273,6 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
         let text = match self.speech.transcribe_audio(TranscriptionRequest {
             keywords: &keywords,
             audio_path: &job.audio_path,
-            provider: job.transcription_provider,
             model: &job.transcription_model,
             language: &options.language,
             prompt: &options.context,
@@ -340,12 +294,11 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
                 ExternalError::new("Transcription returned an empty result; audio is saved")
             });
         }
-        let model = match job.transcription_provider {
-            TranscriptionProvider::OpenAiApi => self.speech.actual_model(),
-            TranscriptionProvider::ChatGptSubscription => None,
-        }
-        .unwrap_or(&job.transcription_model)
-        .to_owned();
+        let model = self
+            .speech
+            .actual_model()
+            .unwrap_or(&job.transcription_model)
+            .to_owned();
         Ok(Transcript { text, model })
     }
 }
@@ -486,7 +439,7 @@ impl SpeechTransport for ReqwestOpenAiTransport {
     ) {
         self.live = None;
         self.actual_model = None;
-        if options.streaming && job.transcription_provider == TranscriptionProvider::OpenAiApi {
+        if options.streaming {
             let url = format!(
                 "{}/realtime?intent=transcription",
                 self.api_base

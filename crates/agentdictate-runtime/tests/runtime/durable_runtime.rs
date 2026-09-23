@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agentdictate_core::{ReplacementRule, TranscriptionProvider};
+use agentdictate_core::ReplacementRule;
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob,
@@ -8,7 +8,7 @@ use agentdictate_runtime::{
 };
 use tempfile::TempDir;
 
-use crate::support::{request, request_with_provider};
+use crate::support::request;
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
@@ -855,6 +855,8 @@ fn startup_keeps_stored_canceled_jobs_recoverable() {
     assert_eq!(restarted.recoveries().unwrap()[0].job_id, job.id);
 }
 
+/// Also covers rows from the retired ChatGPT subscription route: their
+/// stored provider is never read, so they still load and retry.
 #[test]
 fn captured_checkpoint_can_be_retried_after_restart() {
     let directory = TempDir::new().unwrap();
@@ -866,9 +868,8 @@ fn captured_checkpoint_can_be_retried_after_restart() {
     };
     let job = runtime
         .start_recording(
-            request_with_provider(
+            request(
                 &directory.path().join("recordings/captured-restart.wav"),
-                TranscriptionProvider::ChatGptSubscription,
                 TRANSCRIPTION_MODEL,
             ),
             &mut recorder,
@@ -876,13 +877,16 @@ fn captured_checkpoint_can_be_retried_after_restart() {
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
     drop(runtime);
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute(
+            "UPDATE dictation_jobs SET transcription_provider = 'chatgpt_subscription'",
+            [],
+        )
+        .unwrap();
     let mut runtime = Runtime::open(&database_path).unwrap();
     let restarted = runtime.job(job.id).unwrap().unwrap();
     assert_eq!(restarted.stage, JobStage::Captured);
-    assert_eq!(
-        restarted.transcription_provider,
-        TranscriptionProvider::ChatGptSubscription
-    );
     let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
@@ -891,10 +895,6 @@ fn captured_checkpoint_can_be_retried_after_restart() {
         .unwrap();
 
     assert_eq!(delivered.stage, JobStage::Delivered);
-    assert_eq!(
-        delivered.transcription_provider,
-        TranscriptionProvider::ChatGptSubscription
-    );
     assert_eq!(transcriber.attempts, 1);
     assert_eq!(deliverer.attempts, 1);
 }

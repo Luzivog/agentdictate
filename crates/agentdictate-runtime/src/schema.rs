@@ -3,8 +3,6 @@ use std::str::FromStr;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 
-use agentdictate_core::TranscriptionProvider;
-
 use crate::{DeliveryStatus, JobId, JobStage, RecordingJob, RuntimeError};
 
 pub(crate) const SCHEMA: &str = r#"
@@ -108,7 +106,7 @@ pub(crate) fn row_to_job(
     Ok((|| {
         Ok(RecordingJob {
             options: row
-                .get::<_, Option<String>>(14)?
+                .get::<_, Option<String>>(13)?
                 .map(|s| serde_json::from_str(&s))
                 .transpose()?,
             id: JobId::from_str(&runtime_id)
@@ -119,16 +117,12 @@ pub(crate) fn row_to_job(
             audio_path: PathBuf::from(row.get::<_, String>(4)?),
             duration_seconds: row.get(5)?,
             transcription_model: row.get(6)?,
-            transcription_provider: row
-                .get::<_, String>(7)?
-                .parse::<TranscriptionProvider>()
-                .map_err(|error| RuntimeError::InvalidTranscriptionProvider(error.to_string()))?,
-            raw_transcript: row.get(8)?,
-            final_text: row.get(9)?,
-            copied_to_clipboard: row.get(10)?,
-            paste_triggered: row.get(11)?,
-            delivery_status: parse_delivery_status(&row.get::<_, String>(12)?)?,
-            error_message: row.get(13)?,
+            raw_transcript: row.get(7)?,
+            final_text: row.get(8)?,
+            copied_to_clipboard: row.get(9)?,
+            paste_triggered: row.get(10)?,
+            delivery_status: parse_delivery_status(&row.get::<_, String>(11)?)?,
+            error_message: row.get(12)?,
         })
     })())
 }

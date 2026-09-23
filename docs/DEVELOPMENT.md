@@ -98,8 +98,7 @@ that matches no passing test exits nonzero.
 
 Tests that need `/dev/uinput` create and grab their own virtual keyboard, so their
 key presses never reach your desktop. Without access they print `SKIPPED` and pass,
-so a passing run on a host without access proves less. The one ignored test,
-`codex_subscription_live`, sends audio to ChatGPT; run it only on purpose.
+so a passing run on a host without access proves less.
 
 To measure how a transcription change affects output, use `agentdictate-evaluate`
 as described in [dictation output](dictation-output.md#evaluate-a-change).

@@ -1,4 +1,3 @@
-use agentdictate_core::TranscriptionProvider;
 use gpui::{Context, Entity, prelude::*, px};
 use gpui_component::{
     Disableable, Selectable, Sizable,
@@ -15,7 +14,7 @@ use crate::{SettingsDraft, ThemeTokens, WorkspaceAction};
 use super::{
     SettingsShell, gpui_color,
     row_actions::delete_button,
-    settings_form::{SettingSelectState, SettingsFormState, selected_transcription_provider},
+    settings_form::{SettingSelectState, SettingsFormState},
 };
 
 pub(super) struct SettingsPageModel {
@@ -82,13 +81,6 @@ pub(super) fn surface(
         pending_destructive_action,
         ..
     } = model;
-    let transcription_provider = selected_transcription_provider(
-        &settings_form.transcription_provider,
-        settings.transcription_provider,
-        cx,
-    );
-    let uses_chatgpt_subscription =
-        transcription_provider == TranscriptionProvider::ChatGptSubscription;
     h_flex().w_full().justify_center().child(
         v_flex()
             .debug_selector(|| "settings-page".to_owned())
@@ -117,11 +109,10 @@ pub(super) fn surface(
                 has_api_key,
                 api_key_input,
                 api_key_feedback,
-                uses_chatgpt_subscription,
                 theme,
                 cx,
             ))
-            .child(dictation_section(&settings, &settings_form, theme, cx))
+            .child(dictation_section(&settings_form, theme))
             .child(output_section(&settings, &settings_form, theme, cx))
             .child(recording_audio_section(
                 &settings,
@@ -227,8 +218,6 @@ fn account_section(
     has_api_key: bool,
     api_key_input: Entity<InputState>,
     api_key_feedback: Option<String>,
-    uses_chatgpt_subscription: bool,
-
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -252,11 +241,7 @@ fn account_section(
             .py_2()
             .child(setting_label(
                 "OpenAI API key",
-                if uses_chatgpt_subscription {
-                    "Not needed for transcription"
-                } else {
-                    "Used for API transcription"
-                },
+                "Used for API transcription",
                 theme,
             ))
             .child(
@@ -289,15 +274,11 @@ fn account_section(
                             .text_xs()
                             .text_color(gpui_color(if has_api_key {
                                 theme.success
-                            } else if uses_chatgpt_subscription {
-                                theme.text_muted
                             } else {
                                 theme.danger
                             }))
                             .child(if has_api_key {
                                 "Configured"
-                            } else if uses_chatgpt_subscription {
-                                "Not needed"
                             } else {
                                 "Required"
                             }),
@@ -318,19 +299,7 @@ fn account_section(
     })
 }
 
-fn dictation_section(
-    settings: &SettingsDraft,
-    editor: &SettingsFormState,
-    theme: ThemeTokens,
-    cx: &Context<SettingsShell>,
-) -> gpui::Div {
-    let transcription_provider = selected_transcription_provider(
-        &editor.transcription_provider,
-        settings.transcription_provider,
-        cx,
-    );
-    let uses_chatgpt_subscription =
-        transcription_provider == TranscriptionProvider::ChatGptSubscription;
+fn dictation_section(editor: &SettingsFormState, theme: ThemeTokens) -> gpui::Div {
     settings_section(
         "settings-group-dictation",
         "Dictation",
@@ -339,27 +308,6 @@ fn dictation_section(
         theme,
     )
     .child(select_row(
-        "Transcription source",
-        if uses_chatgpt_subscription {
-            "Uses your Codex sign-in"
-        } else {
-            "How speech is transcribed"
-        },
-        "settings-input-transcription-provider",
-        editor.transcription_provider.clone(),
-        false,
-        theme,
-    ))
-    .when(uses_chatgpt_subscription, |section| {
-        section.child(value_row(
-            "Speech model",
-            "Selected automatically",
-            "Managed by ChatGPT",
-            "settings-transcription-managed-by-chatgpt",
-            theme,
-        ))
-    })
-    .child(select_row(
         "Language",
         "One language or automatic detection. English & French requires gpt-transcribe.",
         "settings-input-language",
@@ -367,16 +315,14 @@ fn dictation_section(
         false,
         theme,
     ))
-    .when(!uses_chatgpt_subscription, |section| {
-        section.child(prompt_row(
-            "Context prompt",
-            "Describe what you are talking about; spellings belong in Vocabulary",
-            "settings-input-transcription-prompt",
-            editor.transcription_prompt.clone(),
-            false,
-            theme,
-        ))
-    })
+    .child(prompt_row(
+        "Context prompt",
+        "Describe what you are talking about; spellings belong in Vocabulary",
+        "settings-input-transcription-prompt",
+        editor.transcription_prompt.clone(),
+        false,
+        theme,
+    ))
 }
 
 fn output_section(
@@ -647,34 +593,6 @@ fn select_row(
                 .child(Select::new(&select).small().w_full().disabled(disabled)),
         )
         .when(disabled, |row| row.opacity(0.48))
-}
-
-fn value_row(
-    label: &'static str,
-    detail: &'static str,
-    value: &'static str,
-    selector: &'static str,
-    theme: ThemeTokens,
-) -> gpui::Div {
-    h_flex()
-        .debug_selector(move || selector.to_owned())
-        .min_h(px(54.))
-        .items_start()
-        .flex_wrap()
-        .justify_between()
-        .gap_6()
-        .border_b_1()
-        .border_color(gpui_color(theme.border))
-        .py_2()
-        .child(setting_label(label, detail, theme))
-        .child(
-            control_slot(selector, SettingsControlKind::Choice).child(
-                gpui::div()
-                    .text_sm()
-                    .text_color(gpui_color(theme.text_muted))
-                    .child(value),
-            ),
-        )
 }
 
 #[allow(clippy::too_many_arguments)]

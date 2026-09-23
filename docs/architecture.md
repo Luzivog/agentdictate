@@ -102,8 +102,8 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   deadlines.
 - **agentdictate-ui**: toolkit-free view models, plus the GPUI settings window and
   overlay view behind the `desktop` feature.
-- **agentdictate-app**: composition. The daemon, the OpenAI and ChatGPT speech
-  transports, optional live streaming, the ChatGPT desktop-history importer, the
+- **agentdictate-app**: composition. The daemon, the OpenAI speech transport,
+  optional live streaming, the ChatGPT desktop-history importer, the
   overlay supervisor and helper, the tray, the service unit and login startup,
   `setup-access`, the hotkey dispatch gate, logging, and the three binaries.
 
@@ -118,9 +118,9 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    rules, never credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
    node latency) writing a WAV under `recordings/`, lowers other audio on a separate
    thread, and launches the overlay helper.
-2. **Stream (optional).** With **Stream speech** on and the OpenAI API selected, a
-   Realtime session tails the WAV, resamples it to 24 kHz, and sends it to
-   `gpt-live-transcribe` while you speak.
+2. **Stream (optional).** With **Stream speech** on, a Realtime session tails the
+   WAV, resamples it to 24 kHz, and sends it to `gpt-live-transcribe` while you
+   speak.
 3. **Stop.** A second press, a hold release, the maximum duration, the tray, or
    `agentdictate stop` finalizes the WAV and records the `captured` checkpoint. Esc
    discards the recording instead, and deletes its audio unless **Preserve temporary
@@ -130,9 +130,7 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    `/v1/audio/transcriptions` with the model, `languages[]`, `keywords[]` (the
    vocabulary spellings), and `prompt` (the context). Without ffmpeg, the WAV is
    uploaded. A request that fails before OpenAI returns any status is sent once more,
-   and an HTTP 400 about the file resends the WAV once. Nothing else is retried. The
-   ChatGPT subscription route instead sends the WAV and one language hint to
-   ChatGPT's transcription endpoint.
+   and an HTTP 400 about the file resends the WAV once. Nothing else is retried.
 5. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
    job is removed and nothing is pasted or kept in History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.
@@ -253,8 +251,6 @@ replaces those defaults. Logs can contain transcript text.
   lacked working vocabulary hints, and needed 1.5 to 2 GB of RAM.
 - **No noise suppression or gain control.** Enhancement front-ends tend to make
   modern speech recognition worse.
-- **The ChatGPT subscription route never falls back to the paid API.** A failed
-  subscription request goes to Recovery instead.
 - **Legacy replacements splice text literally.** Unlike the removed Python version,
   a `$1` in a replacement phrase is inserted as typed, whole-word matching checks the
   neighboring characters, and applied rules are reported as `rule_id`.

@@ -6,65 +6,14 @@ use serde::{Deserialize, Serialize};
 /// override it from config.json to try a newer model; the app has no picker.
 pub const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub enum TranscriptionProvider {
-    #[default]
-    #[serde(rename = "openai_api")]
-    OpenAiApi,
-    #[serde(rename = "chatgpt_subscription")]
-    ChatGptSubscription,
-}
-
-impl TranscriptionProvider {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::OpenAiApi => "openai_api",
-            Self::ChatGptSubscription => "chatgpt_subscription",
-        }
-    }
-
-    /// Returns the Platform API transcription price for this route.
-    /// The ChatGPT route does not send a Platform API billing credential.
-    #[must_use]
-    pub const fn marginal_price_per_audio_minute(self, openai_api_price: f64) -> f64 {
-        match self {
-            Self::OpenAiApi => openai_api_price,
-            Self::ChatGptSubscription => 0.0,
-        }
-    }
-}
-
-impl std::str::FromStr for TranscriptionProvider {
-    type Err = ParseTranscriptionProviderError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "openai_api" => Ok(Self::OpenAiApi),
-            "chatgpt_subscription" => Ok(Self::ChatGptSubscription),
-            _ => Err(ParseTranscriptionProviderError(value.to_owned())),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ParseTranscriptionProviderError(String);
-
-impl fmt::Display for ParseTranscriptionProviderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "unknown transcription provider {:?}", self.0)
-    }
-}
-
-impl std::error::Error for ParseTranscriptionProviderError {}
-
 /// The user's configuration, stored in config.json. Missing keys take their
-/// defaults and unknown keys, such as retired settings, are ignored.
+/// defaults and unknown keys, such as retired settings, are ignored. The
+/// retired `transcription_provider` key is one: every dictation uses the
+/// OpenAI API.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub openai_api_key: String,
-    pub transcription_provider: TranscriptionProvider,
     #[serde(deserialize_with = "deserialize_transcription_model")]
     pub transcription_model: String,
     pub language: String,
@@ -94,11 +43,6 @@ impl Settings {
         if self.audio_ducking_volume_percent > 100 {
             return Err(SettingsError::DuckedVolumeOutOfRange);
         }
-        if self.transcription_provider == TranscriptionProvider::ChatGptSubscription
-            && self.language.contains(',')
-        {
-            return Err(SettingsError::SubscriptionTakesOneLanguage);
-        }
         Ok(())
     }
 }
@@ -108,8 +52,6 @@ impl Settings {
 pub enum SettingsError {
     #[error("Ducked volume must be between 0 and 100")]
     DuckedVolumeOutOfRange,
-    #[error("The ChatGPT subscription accepts one language; choose one or automatic detection")]
-    SubscriptionTakesOneLanguage,
     #[error("Recording mode must be toggle or hold")]
     UnknownRecordingMode,
     #[error("Paste shortcut must be automatic, standard, or terminal")]
@@ -192,7 +134,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             openai_api_key: String::new(),
-            transcription_provider: TranscriptionProvider::OpenAiApi,
             transcription_model: TRANSCRIPTION_MODEL.into(),
             language: String::new(),
             transcription_prompt: String::new(),

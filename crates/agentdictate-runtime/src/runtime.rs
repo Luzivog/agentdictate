@@ -86,8 +86,8 @@ impl Runtime {
             r#"
             INSERT INTO dictation_jobs (
                 runtime_id, started_at, updated_at, state, stage, audio_path,
-                transcription_model, transcription_provider, processing_options
-            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5, ?6, ?7)
+                transcription_model, processing_options
+            ) VALUES (?1, ?2, ?3, 'active', 'starting', ?4, ?5, ?6)
             "#,
             params![
                 id.to_string(),
@@ -95,7 +95,6 @@ impl Runtime {
                 now,
                 request.audio_path.to_string_lossy(),
                 request.transcription_model,
-                request.transcription_provider.as_str(),
                 request
                     .options
                     .as_ref()
@@ -741,8 +740,7 @@ impl Runtime {
         let mut statement = self.connection.prepare(
             r#"
             SELECT runtime_id, started_at, updated_at, stage, audio_path,
-                   duration_seconds, transcription_model, transcription_provider,
-                   raw_transcript,
+                   duration_seconds, transcription_model, raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
                    delivery_status, error_message, processing_options
             FROM dictation_jobs
@@ -803,8 +801,7 @@ pub(crate) fn load_job(
         .query_row(
             r#"
             SELECT runtime_id, started_at, updated_at, stage, audio_path,
-                   duration_seconds, transcription_model, transcription_provider,
-                   raw_transcript,
+                   duration_seconds, transcription_model, raw_transcript,
                    final_text, copied_to_clipboard, paste_triggered,
                    delivery_status, error_message, processing_options
             FROM dictation_jobs

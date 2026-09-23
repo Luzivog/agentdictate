@@ -201,7 +201,6 @@ where
                 options: Some(options),
                 audio_path: path,
                 started_at: now,
-                transcription_provider: self.settings.transcription_provider,
                 transcription_model: self.settings.transcription_model.clone(),
             },
             &mut self.recorder,

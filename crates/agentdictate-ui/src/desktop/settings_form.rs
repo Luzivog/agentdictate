@@ -5,7 +5,7 @@ use gpui_component::{
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 
-use agentdictate_core::{PasteShortcut, RecordingMode, TranscriptionProvider};
+use agentdictate_core::{PasteShortcut, RecordingMode};
 
 use crate::{SettingsDraft, settings::settings_fields};
 
@@ -40,15 +40,6 @@ impl SelectItem for SettingOption {
 
 pub(super) type SettingSelectState = SelectState<SearchableVec<SettingOption>>;
 
-macro_rules! read_select {
-    (provider, $state:expr, $fallback:expr, $cx:ident) => {
-        selected_transcription_provider($state, $fallback, $cx)
-    };
-    (string, $state:expr, $fallback:expr, $cx:ident) => {
-        selected_setting($state, &$fallback, $cx)
-    };
-}
-
 macro_rules! define_settings_form {
     (
         select {
@@ -58,7 +49,6 @@ macro_rules! define_settings_form {
                     apply: $select_apply_kind:ident($select_apply:ident),
                     options: plain($select_options:ident),
                     searchable: $select_searchable:literal,
-                    read: $select_read:ident,
                 },
             )*
         }
@@ -150,12 +140,8 @@ macro_rules! define_settings_form {
             pub(super) fn snapshot(&self, cx: &gpui::App) -> SettingsDraft {
                 let mut draft = self.draft.clone();
                 $(
-                    draft.$select_field = read_select!(
-                        $select_read,
-                        &self.$select_field,
-                        draft.$select_field,
-                        cx
-                    );
+                    draft.$select_field =
+                        selected_setting(&self.$select_field, &draft.$select_field, cx);
                 )*
                 $(draft.$text_area_field = self.$text_area_field.read(cx).value().to_string();)*
                 $(draft.$number_field = self.$number_field.read(cx).value().to_string();)*
@@ -319,36 +305,12 @@ fn settings_select(
     })
 }
 
-pub(super) fn selected_setting(
-    state: &Entity<SettingSelectState>,
-    fallback: &str,
-    cx: &gpui::App,
-) -> String {
+fn selected_setting(state: &Entity<SettingSelectState>, fallback: &str, cx: &gpui::App) -> String {
     state
         .read(cx)
         .selected_value()
         .cloned()
         .unwrap_or_else(|| fallback.to_owned())
-}
-
-pub(super) fn selected_transcription_provider(
-    state: &Entity<SettingSelectState>,
-    fallback: TranscriptionProvider,
-    cx: &gpui::App,
-) -> TranscriptionProvider {
-    selected_setting(state, fallback.as_str(), cx)
-        .parse()
-        .unwrap_or(fallback)
-}
-
-fn transcription_provider_options() -> Vec<SettingOption> {
-    vec![
-        SettingOption::new(
-            "ChatGPT subscription",
-            TranscriptionProvider::ChatGptSubscription.as_str(),
-        ),
-        SettingOption::new("OpenAI API", TranscriptionProvider::OpenAiApi.as_str()),
-    ]
 }
 
 fn setting_options(options: &[(&str, &str)]) -> Vec<SettingOption> {

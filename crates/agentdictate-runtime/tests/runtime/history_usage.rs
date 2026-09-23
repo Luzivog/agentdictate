@@ -1,11 +1,11 @@
-use agentdictate_core::{HistoryPageRequest, ReplacementRule, Settings, TranscriptionProvider};
+use agentdictate_core::{HistoryPageRequest, ReplacementRule, Settings};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate, JobStage,
     RecordingJob, Runtime, Transcriber, Transcript,
 };
 use tempfile::TempDir;
 
-use crate::support::{ReadyRecorder, history_rows, request, request_with_provider, stored_history};
+use crate::support::{ReadyRecorder, history_rows, request, stored_history};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
@@ -36,14 +36,6 @@ impl Deliverer for SubmittedDeliverer {
 }
 
 fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
-    delivered_job_with_provider(runtime, directory, TranscriptionProvider::OpenAiApi)
-}
-
-fn delivered_job_with_provider(
-    runtime: &mut Runtime,
-    directory: &TempDir,
-    transcription_provider: TranscriptionProvider,
-) -> RecordingJob {
     runtime
         .create_replacement(ReplacementRule {
             id: None,
@@ -57,9 +49,8 @@ fn delivered_job_with_provider(
     let mut recorder = ReadyRecorder;
     let job = runtime
         .start_recording(
-            request_with_provider(
+            request(
                 &directory.path().join("recordings/history.wav"),
-                transcription_provider,
                 TRANSCRIPTION_MODEL,
             ),
             &mut recorder,
@@ -74,29 +65,6 @@ fn delivered_job_with_provider(
             &mut SubmittedDeliverer,
         )
         .unwrap()
-}
-
-#[test]
-fn subscription_history_keeps_its_route_and_has_zero_marginal_transcription_cost() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    let delivered = delivered_job_with_provider(
-        &mut runtime,
-        &directory,
-        TranscriptionProvider::ChatGptSubscription,
-    );
-
-    assert_eq!(
-        delivered.transcription_provider,
-        TranscriptionProvider::ChatGptSubscription
-    );
-    runtime
-        .complete_delivered(delivered.id, &Settings::default())
-        .unwrap();
-    let recorded = &stored_history(&database_path)[0];
-    assert_eq!(recorded.transcription_provider, "chatgpt_subscription");
-    assert_eq!(recorded.estimated_total_cost, 0.0);
 }
 
 #[test]

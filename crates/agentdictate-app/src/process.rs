@@ -12,13 +12,12 @@ use agentdictate_runtime::{
 };
 
 use crate::{
-    AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
-    SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
+    AppPaths, Daemon, OverlayController, ReqwestOpenAiTransport, SystemDeliverer,
+    SystemRecordingController, TranscriptionPipeline,
     chatgpt_dictation_import::start_chatgpt_dictation_importer, startup::LoginStartup,
 };
 
-pub type ProductionTranscriber =
-    TranscriptionPipeline<SpeechRouter<ReqwestOpenAiTransport, CodexSubscriptionTransport>>;
+pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
 pub type ProductionDaemon =
     Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
@@ -48,11 +47,10 @@ impl AgentProcess {
         let settings = load_settings(&paths.config_file)?;
         let runtime = Runtime::open(&paths.database_file)?;
         runtime.reconcile_recovery_deletions(&paths.recordings)?;
-        let speech = SpeechRouter::new(
+        let transcriber = TranscriptionPipeline::new(
+            settings.clone(),
             ReqwestOpenAiTransport::new(&settings.openai_api_key),
-            CodexSubscriptionTransport::new(),
         );
-        let transcriber = TranscriptionPipeline::new(settings.clone(), speech);
         let recorder = SystemRecordingController::for_system(
             &settings,
             &paths.runtime,
@@ -241,7 +239,6 @@ impl AgentProcess {
         let transcriber = self.daemon.transcriber_mut();
         transcriber
             .speech_mut()
-            .openai_mut()
             .set_api_key(&settings.openai_api_key);
         transcriber.update_settings(settings.clone());
         self.daemon.update_settings(settings);
@@ -509,7 +506,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use agentdictate_core::{ClientCommand, JobStage, ServerMessageKind, TranscriptionProvider};
+    use agentdictate_core::{ClientCommand, JobStage, ServerMessageKind};
     use agentdictate_runtime::{
         ExternalError, IpcHandler, Recorder, RecordingJob, RecordingRequest,
     };
@@ -716,7 +713,6 @@ mod tests {
                     options: None,
                     audio_path: directory.path().join("recording.wav"),
                     started_at: chrono::Utc::now(),
-                    transcription_provider: TranscriptionProvider::OpenAiApi,
                     transcription_model: "test".into(),
                 },
                 &mut StartedRecorder,

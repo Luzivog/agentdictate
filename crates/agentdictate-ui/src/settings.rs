@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use agentdictate_core::{
-    PasteShortcut, RecordingMode, Settings, SettingsError, TranscriptionProvider,
-};
+use agentdictate_core::{PasteShortcut, RecordingMode, Settings, SettingsError};
 use thiserror::Error;
 
 macro_rules! settings_fields {
@@ -14,35 +12,24 @@ macro_rules! settings_fields {
                     apply: validate_field(parsed_dictation_mode),
                     options: plain(dictation_mode_options),
                     searchable: false,
-                    read: string,
-                },
-                transcription_provider: TranscriptionProvider {
-                    from: copied,
-                    apply: value(copied),
-                    options: plain(transcription_provider_options),
-                    searchable: false,
-                    read: provider,
                 },
                 language: String {
                     from: cloned,
                     apply: value(trimmed),
                     options: plain(language_options),
                     searchable: true,
-                    read: string,
                 },
                 recording_mode: String {
                     from: recording_mode_value,
                     apply: validate_field(parsed_setting),
                     options: plain(recording_mode_options),
                     searchable: false,
-                    read: string,
                 },
                 paste_shortcut: String {
                     from: paste_shortcut_value,
                     apply: validate_field(parsed_setting),
                     options: plain(paste_shortcut_options),
                     searchable: false,
-                    read: string,
                 },
             }
             text_area {

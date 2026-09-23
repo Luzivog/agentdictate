@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agentdictate_core::{JobId, JobStage, TranscriptionProvider};
+use agentdictate_core::{JobId, JobStage};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
@@ -10,8 +10,6 @@ pub enum RuntimeError {
     Database(#[from] rusqlite::Error),
     #[error("invalid persisted job id: {0}")]
     InvalidJobId(String),
-    #[error("invalid persisted transcription provider: {0}")]
-    InvalidTranscriptionProvider(String),
     #[error("invalid history cursor: {0}")]
     InvalidHistoryCursor(String),
     #[error("dictation job {0} was not found")]
@@ -104,7 +102,6 @@ pub struct RecordingJob {
     pub stage: JobStage,
     pub audio_path: PathBuf,
     pub duration_seconds: f64,
-    pub transcription_provider: TranscriptionProvider,
     pub transcription_model: String,
     pub raw_transcript: String,
     pub final_text: String,
@@ -122,7 +119,6 @@ pub struct RecordingRequest {
     pub options: Option<agentdictate_core::DictationOptions>,
     pub audio_path: PathBuf,
     pub started_at: DateTime<Utc>,
-    pub transcription_provider: TranscriptionProvider,
     pub transcription_model: String,
 }
 

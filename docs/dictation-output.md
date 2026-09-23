@@ -82,10 +82,6 @@ conversation.
 **Language** is automatic detection, one language, or **English and French**. Each
 language is sent as a `languages[]` hint.
 
-The ChatGPT subscription route sends only the audio and one language hint. It uses no
-context or keywords, rejects a language list when you save it, and never falls back
-to the paid API. Aliases and legacy replacements still apply to its result.
-
 ## Streaming
 
 **Stream speech** is an experimental, OpenAI API-only option, off by default. While
@@ -167,8 +163,8 @@ used, to a new file with mode 0600. It refuses to overwrite an existing file, so
 a new path per run. It prints how many cases passed and exits with an error if any
 check or request failed, keeping the results. Legacy replacements are not applied.
 
-The other modes call OpenAI and cost money. They need a configuration with the
-OpenAI API selected and a key; subscription credentials are never used.
+The other modes call OpenAI and cost money. They need a configuration with an
+OpenAI API key.
 
 - `--mode speech` uploads each case's `audio` through the production file transport.
 - `--mode live` decodes each `audio` file with ffmpeg, paces it in real time through

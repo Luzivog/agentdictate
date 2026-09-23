@@ -54,12 +54,6 @@ fn main() -> anyhow::Result<()> {
             .contains(&pair[0].as_str())),
         "unknown or incomplete argument"
     );
-    anyhow::ensure!(
-        mode == "offline"
-            || settings.transcription_provider
-                == agentdictate_core::TranscriptionProvider::OpenAiApi,
-        "Network evaluation requires an explicitly selected OpenAI API configuration; subscription credentials are not used"
-    );
     let options = DictationOptions::from_settings(&settings, Vec::new());
     let keywords = options.keywords();
     let mut transport = ReqwestOpenAiTransport::new(&settings.openai_api_key);
@@ -99,7 +93,6 @@ fn main() -> anyhow::Result<()> {
                 transport.transcribe_audio(TranscriptionRequest {
                     keywords: &keywords,
                     audio_path: audio,
-                    provider: settings.transcription_provider,
                     model: &settings.transcription_model,
                     language: &options.language,
                     prompt: &options.context,
@@ -222,7 +215,6 @@ fn replay_live(
         stage: agentdictate_core::JobStage::Recording,
         audio_path: path.0.clone(),
         duration_seconds: pcm.len() as f64 / 32000.0,
-        transcription_provider: settings.transcription_provider,
         transcription_model: settings.transcription_model.clone(),
         raw_transcript: String::new(),
         final_text: String::new(),
@@ -251,7 +243,6 @@ fn replay_live(
     let result = transport.transcribe_audio(TranscriptionRequest {
         keywords: &keywords,
         audio_path: &path.0,
-        provider: settings.transcription_provider,
         model: &settings.transcription_model,
         language: &options.language,
         prompt: &options.context,
