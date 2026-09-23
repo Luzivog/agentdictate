@@ -21,9 +21,10 @@ logout/login before logind applies the new ACL.
 
 ## Repository user install
 
-`./install.sh` copies the rule and unit to user-visible data locations, but it
-does not use sudo, change host udev policy, or start a service. Install the rule
-as an administrator, then reload it:
+`./install.sh` copies the rule to a user-visible data location, but it does not
+use sudo, change host udev policy, or start a service. Run
+`./install.sh --setup-native-access` to see the one `sudo` command that installs
+and applies the rule, and confirm it. Or do the same by hand:
 
 ```bash
 agentdictate_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"

@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Installs AgentDictate into the user profile and restarts a running daemon.
+# Exit status: 0 ready, 2 native input access is missing, 3 installed and
+# working, but input devices are world-accessible through another app's rule.
+#
+#   ./install.sh --check-native-access  report readiness only (same codes)
+#   ./install.sh --setup-native-access  show the sudo command that grants
+#                                        access, ask, then run it
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,9 +24,13 @@ case "${1:-}" in
     agentdictate_check_native_readiness
     exit
     ;;
+  --setup-native-access)
+    agentdictate_setup_native_access "${PROJECT_DIR}/packaging/grant-access.sh"
+    exit
+    ;;
   "") ;;
   *)
-    echo "Usage: ./install.sh [--check-native-access]" >&2
+    echo "Usage: ./install.sh [--check-native-access | --setup-native-access]" >&2
     exit 64
     ;;
 esac
@@ -67,19 +78,33 @@ fi
 echo "Installed native AgentDictate:"
 echo "  ${BIN_DIR}/agentdictate"
 echo "  ${BIN_DIR}/agentdictated"
+# A running daemon keeps executing the old binary until it restarts.
+# try-restart never starts a stopped service.
+if command -v systemctl >/dev/null 2>&1 && \
+  systemctl --user --quiet is-active agentdictated.service 2>/dev/null; then
+  if systemctl --user try-restart agentdictated.service; then
+    echo "Restarted the running agentdictated.service."
+  else
+    echo "Warning: could not restart agentdictated.service; it still runs the old binaries." >&2
+  fi
+fi
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "Warning: ffmpeg is missing, so recordings upload uncompressed (about 8x larger); install it with: sudo apt install ffmpeg" >&2
 fi
 
-if ! agentdictate_check_native_readiness; then
-  cat >&2 <<EOF
+readiness=0
+agentdictate_check_native_readiness || readiness=$?
+case "${readiness}" in
+  0) echo "Run: agentdictate" ;;
+  2)
+    cat >&2 <<EOF
 
-AgentDictate was installed, but native input setup is incomplete.
-No privileged changes or services were started automatically.
-Follow: ${NATIVE_ACCESS_DIR}/NATIVE_ACCESS.md
-Then rerun: ${PROJECT_DIR}/install.sh --check-native-access
+AgentDictate was installed, but it cannot read the keyboard or use /dev/uinput
+yet. Nothing privileged was changed. To grant access (it asks before using
+sudo), run:
+  ${PROJECT_DIR}/install.sh --setup-native-access
 EOF
-  exit 2
-fi
-
-echo "Run: agentdictate"
+    ;;
+  3) echo "AgentDictate was installed and works. Run: agentdictate" ;;
+esac
+exit "${readiness}"

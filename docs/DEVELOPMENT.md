@@ -134,7 +134,10 @@ run it only when that separate check is intended and authorized. Do not describe
 a headless run as a live desktop E2E pass.
 
 Review the diff, commit on `main`, and push to `origin/main`. Check disk and build
-activity again, then run `./install.sh` and
-`systemctl --user restart agentdictated`. Verify that the service is active and
-that `/proc/<MainPID>/exe` matches the installed `agentdictated` binary. Installation
-exit status 2 means native access remains incomplete even though files were copied.
+activity again, then run `./install.sh`. It restarts a running
+`agentdictated.service`; start a stopped one with
+`systemctl --user start agentdictated.service`. Verify that the service is active
+and that `/proc/<MainPID>/exe` matches the installed `agentdictated` binary. Even
+though files were copied, installation exit status 2 means native access is
+missing (`./install.sh --setup-native-access` fixes it), and 3 means it works but
+another app's udev rule makes input devices world-accessible.

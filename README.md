@@ -41,12 +41,14 @@ manager, a running PipeWire session, and Rust 1.95.0 through
 
    The installer copies the app before it checks native input access. Exit
    status 2 means the app is installed, but native access still needs setup.
-   It does not start the daemon immediately. On a fresh install, the next
-   desktop login starts it and imports eligible ChatGPT desktop dictation
+   Exit status 3 means it works, but another app's udev rule makes input
+   devices world-accessible. The installer does not start the daemon. Opening
+   the app does, and the daemon imports eligible ChatGPT desktop dictation
    transcripts and metadata into local SQLite. Read [Local storage](#local-storage)
-   before logging out.
+   before opening it.
 4. Native access can expose every keypress and synthesize arbitrary input for
-   the active desktop session. Follow the
+   the active desktop session. Run `./install.sh --setup-native-access`, which
+   shows the `sudo` command it needs and asks first, or follow the
    [repository native-access steps](packaging/NATIVE_ACCESS.md#repository-user-install).
    After any logout and login, return to the cloned `agentdictate` directory.
    Then verify the result:

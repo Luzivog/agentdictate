@@ -4,9 +4,14 @@
 
 All work happens directly on `main`; do not create feature branches or pull
 requests. For changes to application behavior, complete focused verification,
-commit the task's changes, push to `origin/main`, run `./install.sh`, and restart
-`agentdictated` so the changed behavior is live. Follow the resource checks below
-before rebuilding. Preserve unrelated staged or working changes.
+commit the task's changes, push to `origin/main`, and run `./install.sh` so the
+changed behavior is live. The installer restarts a running
+`agentdictated.service` itself (`systemctl --user try-restart`); only if the
+service was stopped, start it with `systemctl --user start agentdictated.service`.
+On this host `./install.sh` exits 3: installed and working, but another app's udev
+rule (`/etc/udev/rules.d/99-vibetyper-uinput.rules`) makes input devices
+world-accessible. Exit 2 means native input access is missing. Follow the resource
+checks below before rebuilding. Preserve unrelated staged or working changes.
 
 For documentation or instruction-only maintenance, verify the edited documents,
 references, and applicable command contracts. Rebuild, reinstall, and daemon restart

@@ -48,16 +48,20 @@ SQLite. Before opening the app, read
 [Local data and network use](#local-data-and-network-use).
 
 On a clean machine, installation can finish with exit status 2 after the files
-have been copied. This means native input still needs setup. Follow
-[`packaging/NATIVE_ACCESS.md`](../packaging/NATIVE_ACCESS.md). After any logout
-and login, return to the cloned `agentdictate` directory. Then verify without
-rebuilding:
+have been copied. This means native input still needs setup. Run
+`./install.sh --setup-native-access`: it shows the one `sudo` command it needs and
+what that command does, and asks before running it. See
+[`packaging/NATIVE_ACCESS.md`](../packaging/NATIVE_ACCESS.md) for details. After
+any logout and login, return to the cloned `agentdictate` directory. Then verify
+without rebuilding:
 
 ```bash
 ./install.sh --check-native-access
 ```
 
-Continue only when the final line is `Native input readiness: ready`.
+Continue when the final line is `Native input readiness: ready`. Exit status 3
+(`working, but insecure`) means AgentDictate works, but another app's udev rule
+makes input devices world-accessible; the message names that rule.
 
 Run `agentdictate` or `~/.local/bin/agentdictate`. In **Settings**, set
 **Transcription source** to **ChatGPT subscription** and click **Save changes**.
