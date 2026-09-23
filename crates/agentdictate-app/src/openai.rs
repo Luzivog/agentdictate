@@ -8,7 +8,7 @@ use agentdictate_linux::command::{
 };
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
 
-use crate::{Transcriber, live_transcription::LiveTranscription};
+use crate::Transcriber;
 use reqwest::StatusCode;
 use serde_json::Value;
 
@@ -211,15 +211,6 @@ pub struct TranscriptionRequest<'a> {
 
 /// The speech-to-text service boundary; tests substitute a fake.
 pub trait SpeechTransport: Clone + Send + 'static {
-    /// Starts streaming `job`'s audio while it records, where supported.
-    fn open_live(
-        &self,
-        _job: &RecordingJob,
-        _options: &DictationOptions,
-    ) -> Option<LiveTranscription> {
-        None
-    }
-
     fn set_api_key(&mut self, _api_key: &str) {}
 
     fn transcribe_audio(
@@ -244,11 +235,6 @@ impl<S> TranscriptionPipeline<S> {
 }
 
 impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
-    fn open_session(&self, job: &RecordingJob) -> Option<LiveTranscription> {
-        let options = job.options.as_ref().filter(|options| options.streaming)?;
-        self.speech.open_live(job, options)
-    }
-
     /// Transcribes the saved audio. An empty result counts as no speech only
     /// when the audio is near-silent; otherwise the audio is kept for another
     /// attempt, so a misheard dictation is never silently dropped.
@@ -417,29 +403,6 @@ impl ReqwestOpenAiTransport {
 }
 
 impl SpeechTransport for ReqwestOpenAiTransport {
-    fn open_live(
-        &self,
-        job: &RecordingJob,
-        options: &DictationOptions,
-    ) -> Option<LiveTranscription> {
-        let url = format!(
-            "{}/realtime?intent=transcription",
-            self.api_base
-                .replacen("https://", "wss://", 1)
-                .replacen("http://", "ws://", 1)
-        );
-        LiveTranscription::start(
-            job.audio_path.clone(),
-            options.clone(),
-            self.api_key.clone(),
-            url,
-        )
-        .inspect_err(|error| {
-            tracing::warn!(%error, "live transcription startup failed; buffered audio remains available");
-        })
-        .ok()
-    }
-
     fn set_api_key(&mut self, api_key: &str) {
         self.api_key = api_key.trim().to_owned();
     }

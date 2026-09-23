@@ -1,17 +1,9 @@
 //! Explicit replay tool. It never captures a microphone or delivers text to another application.
-use agentdictate_app::{
-    AppPaths, LIVE_TRANSCRIPTION_MODEL, LiveTranscription, ReqwestOpenAiTransport, SpeechTransport,
-    TranscriptionRequest,
-};
+use agentdictate_app::{AppPaths, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
 use agentdictate_core::{DictationOptions, Settings, normalize_vocabulary};
 use serde::Deserialize;
 use serde_json::json;
-use std::{
-    fs,
-    io::Write,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{fs, io::Write, path::PathBuf, time::Instant};
 
 #[derive(Deserialize)]
 struct Case {
@@ -30,11 +22,11 @@ struct Case {
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let get = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
-    let cases = get("--cases").ok_or_else(|| anyhow::anyhow!("Usage: agentdictate-evaluate --cases cases.jsonl --output results.jsonl [--mode offline|speech|live] [--config config.json] [--model ID]"))?;
+    let cases = get("--cases").ok_or_else(|| anyhow::anyhow!("Usage: agentdictate-evaluate --cases cases.jsonl --output results.jsonl [--mode offline|speech] [--config config.json] [--model ID]"))?;
     let output = get("--output").ok_or_else(|| anyhow::anyhow!("--output is required"))?;
     let mode = get("--mode").unwrap_or_else(|| "offline".into());
     anyhow::ensure!(
-        ["offline", "speech", "live"].contains(&mode.as_str()),
+        ["offline", "speech"].contains(&mode.as_str()),
         "unsupported mode"
     );
     let config_path = get("--config")
@@ -77,20 +69,8 @@ fn main() -> anyhow::Result<()> {
     let mut count = 0;
     for case in parsed {
         let start = Instant::now();
-        let mut stop_ms = None;
         let mut actual_model = None;
         let result = match mode.as_str() {
-            "live" => {
-                let audio = case
-                    .audio
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("case {} has no audio path", case.id))?;
-                let (result, elapsed, model) =
-                    replay_live(&mut transport, audio, &settings, &options)?;
-                stop_ms = Some(elapsed);
-                actual_model = Some(model);
-                result
-            }
             "speech" => {
                 let audio = case
                     .audio
@@ -128,7 +108,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(
             file,
             "{}",
-            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":actual_model,"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
+            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":actual_model,"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
         )?;
     }
     println!(
@@ -164,117 +144,4 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
         previous = row;
     }
     previous[hypothesis.len()] as f64 / reference.len().max(1) as f64
-}
-
-/// Pace a supplied WAV through the production streaming adapter without
-/// opening a microphone. Returns the text, the stop-to-final time, and the
-/// model that produced the text.
-fn replay_live(
-    transport: &mut ReqwestOpenAiTransport,
-    audio: &std::path::Path,
-    settings: &Settings,
-    options: &DictationOptions,
-) -> anyhow::Result<(
-    Result<String, agentdictate_runtime::ExternalError>,
-    u128,
-    String,
-)> {
-    use std::io::{Seek, SeekFrom};
-    let decoded = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(audio)
-        .args(["-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"])
-        .output()?;
-    anyhow::ensure!(decoded.status.success(), "could not decode replay audio");
-    let pcm = decoded.stdout;
-    anyhow::ensure!(
-        !pcm.is_empty() && pcm.len() < u32::MAX as usize - 36,
-        "invalid replay size"
-    );
-    struct TempAudio(PathBuf);
-    impl Drop for TempAudio {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
-        }
-    }
-    let path = TempAudio(
-        std::env::temp_dir().join(format!("agentdictate-replay-{}.wav", uuid::Uuid::new_v4())),
-    );
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut writer = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&path.0)?;
-    let mut header = Vec::new();
-    header.extend_from_slice(b"RIFF");
-    header.extend_from_slice(&0u32.to_le_bytes());
-    header.extend_from_slice(b"WAVEfmt ");
-    for value in [16u32, 65537, 16000, 32000, 1048578] {
-        header.extend_from_slice(&value.to_le_bytes());
-    }
-    header.extend_from_slice(b"data");
-    header.extend_from_slice(&0u32.to_le_bytes());
-    writer.write_all(&header)?;
-    writer.flush()?;
-    let now = chrono::Utc::now();
-    let mut live_options = options.clone();
-    live_options.streaming = true;
-    let job = agentdictate_runtime::RecordingJob {
-        id: agentdictate_core::JobId::new(),
-        options: Some(live_options.clone()),
-        started_at: now,
-        updated_at: now,
-        stage: agentdictate_core::JobStage::Recording,
-        audio_path: path.0.clone(),
-        duration_seconds: pcm.len() as f64 / 32000.0,
-        transcription_model: settings.transcription_model.clone(),
-        raw_transcript: String::new(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: agentdictate_runtime::DeliveryStatus::NotAttempted,
-        error_message: None,
-    };
-    let live = transport.open_live(&job, &live_options);
-    let started = Instant::now();
-    for (index, chunk) in pcm.chunks(3200).enumerate() {
-        writer.write_all(chunk)?;
-        writer.flush()?;
-        std::thread::sleep(
-            (started + Duration::from_millis((index as u64 + 1) * 100))
-                .saturating_duration_since(Instant::now()),
-        );
-    }
-    writer.seek(SeekFrom::Start(4))?;
-    writer.write_all(&(pcm.len() as u32 + 36).to_le_bytes())?;
-    writer.seek(SeekFrom::Start(40))?;
-    writer.write_all(&(pcm.len() as u32).to_le_bytes())?;
-    writer.flush()?;
-    let stopped = Instant::now();
-    match live.map(LiveTranscription::finish) {
-        Some(Ok(text)) => {
-            return Ok((
-                Ok(text),
-                stopped.elapsed().as_millis(),
-                LIVE_TRANSCRIPTION_MODEL.into(),
-            ));
-        }
-        Some(Err(error)) => eprintln!("live transcription failed; transcribing the file: {error}"),
-        None => eprintln!("live transcription did not start; transcribing the file"),
-    }
-    let keywords = options.keywords();
-    let result = transport.transcribe_audio(TranscriptionRequest {
-        keywords: &keywords,
-        audio_path: &path.0,
-        model: &settings.transcription_model,
-        language: &options.language,
-        prompt: &options.context,
-        duration_seconds: job.duration_seconds,
-    });
-    Ok((
-        result,
-        stopped.elapsed().as_millis(),
-        settings.transcription_model.clone(),
-    ))
 }

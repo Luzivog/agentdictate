@@ -6,7 +6,7 @@ fails, and how to measure a change with `agentdictate-evaluate`. For the full
 pipeline, see [the architecture overview](architecture.md#dictation-pipeline).
 
 Each recording stores a snapshot of its options when it starts: output mode,
-language, context, vocabulary, and streaming. API credentials are never stored with
+language, context, and vocabulary. API credentials are never stored with
 it. **Transcribe again** reuses that snapshot and any text already recognized, so a
 retry neither changes behavior nor pays twice.
 Older jobs without a snapshot use the current settings.
@@ -87,21 +87,6 @@ conversation.
 **Language** is automatic detection, one language, or **English and French**. Each
 language is sent as a `languages[]` hint.
 
-## Streaming
-
-Streaming is an experimental, OpenAI API-only option, off by default. The settings
-window does not show it; set `"streaming_enabled": true` in config.json to try it.
-While you speak, it tails the saved WAV, resamples it from 16 to 24 kHz, and streams
-it to `gpt-live-transcribe`. Stopping the recording commits the audio, and only the final
-transcript is accepted; nothing is pasted before that.
-
-If the stream fails, returns something invalid, or has no final text within 8 seconds
-of the stop, AgentDictate uploads the saved WAV for normal file transcription
-instead. A failed stream can still be billed, on top of the fallback. Esc discards
-the recording without a fallback upload. Usage records the model that produced the
-text and does not count failed streaming attempts. The estimated prices are $0.017
-per audio minute for `gpt-live-transcribe` and $0.0045 for `gpt-transcribe`.
-
 ## Empty captures and failures
 
 - **Silence.** When recognition returns nothing and the WAV is near-silent, the
@@ -143,7 +128,7 @@ Each line of the case file is a JSON object:
 | `text` | The recognized text to process in `offline` mode |
 | `expected` | Optional exact output; `offline` mode fails on a mismatch |
 | `preserve` | Substrings the output must keep, compared without case |
-| `audio` | Absolute path of an audio file, for `speech` and `live` modes |
+| `audio` | Absolute path of an audio file, for `speech` mode |
 | `reference_verified` | Set to `true` only after a person has checked `expected` against the audio |
 
 `fixtures/dictation/cases.jsonl` holds the synthetic offline cases. They cover
@@ -172,14 +157,9 @@ used, to a new file with mode 0600. It refuses to overwrite an existing file, so
 a new path per run. It prints how many cases passed and exits with an error if any
 check or request failed, keeping the results.
 
-The other modes call OpenAI and cost money. They need a configuration with an
-OpenAI API key.
-
-- `--mode speech` uploads each case's `audio` through the production file transport.
-- `--mode live` decodes each `audio` file with ffmpeg, paces it in real time through
-  the streaming adapter, and records the stop-to-final time and the model that
-  actually answered, so a fallback cannot pass as a successful stream.
-- `--model <id>` overrides the transcription model.
+`--mode speech` uploads each case's `audio` through the production file transport.
+It calls OpenAI and costs money, so it needs a configuration with an OpenAI API key.
+`--model <id>` overrides the transcription model.
 
 Word error rate and exact-match fields only measure agreement with the reference you
 supplied. To decide whether a change helps your own speech, record 60 to 100

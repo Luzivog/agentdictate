@@ -110,8 +110,8 @@ API key, and history until you run the separate step that deletes all data.
 - [Install guide](docs/INSTALL.md): requirements, packages, data, and uninstall.
 - [Native input access](packaging/NATIVE_ACCESS.md): the keyboard and paste
   permission.
-- [Dictation output](docs/dictation-output.md): vocabulary, Literal mode, streaming,
-  failures, and evaluation.
+- [Dictation output](docs/dictation-output.md): vocabulary, Literal mode, failures,
+  and evaluation.
 - [Architecture](docs/architecture.md): processes, crates, pipeline, and decisions.
 - [Development](docs/DEVELOPMENT.md): building, testing, and debugging.
 

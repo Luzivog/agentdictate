@@ -7,7 +7,6 @@ mod daemon;
 pub mod diagnostics;
 mod handle;
 mod hotkey_dispatch;
-mod live_transcription;
 mod native_access;
 mod openai;
 mod overlay_process;
@@ -28,7 +27,6 @@ pub use handle::{DaemonHandle, LifecycleAction, Trigger, TriggerOutcome, lifecyc
 pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
-pub use live_transcription::{LIVE_TRANSCRIPTION_MODEL, LiveTranscription};
 pub use native_access::{NativeAccessError, grant_native_access};
 pub use openai::{
     ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,

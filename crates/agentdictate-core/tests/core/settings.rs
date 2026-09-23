@@ -13,6 +13,7 @@ fn stored_settings_keep_their_values_and_ignore_retired_or_unknown_fields() {
             "custom_transcription_model": "my-transcriber",
             "transcription_provider": "chatgpt_subscription",
             "cleanup_enabled": true,
+            "streaming_enabled": true,
             "transcription_prices": {},
             "cleanup_prices": {},
             "field_from_a_newer_version": "ignored"

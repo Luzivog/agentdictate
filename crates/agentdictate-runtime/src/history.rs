@@ -1,6 +1,6 @@
 use agentdictate_core::{
     HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot, JobId, JobStage,
-    KeepTranscripts, Settings, count_words_ascii_history, transcription_price_per_minute,
+    KeepTranscripts, Settings, TRANSCRIPTION_PRICE_PER_MINUTE, count_words_ascii_history,
 };
 use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -196,8 +196,7 @@ fn record_dictation(
         |row| row.get(0),
     )?;
     // Priced once, at today's price: that is what these minutes cost.
-    let cost = job.duration_seconds.max(0.0) / 60.0
-        * transcription_price_per_minute(&job.transcription_model);
+    let cost = job.duration_seconds.max(0.0) / 60.0 * TRANSCRIPTION_PRICE_PER_MINUTE;
     let (final_text, raw_text, corrections) = if keep_text {
         (
             Some(job.final_text.as_str()),

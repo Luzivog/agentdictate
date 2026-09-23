@@ -18,8 +18,8 @@ use chrono::Utc;
 use thiserror::Error;
 
 use crate::{
-    ActiveRecordingUpdate, AppPaths, LiveTranscription, OverlayController, OverlayUpdate,
-    ProcessingTicket, Transcriber, TranscriptionCompletion,
+    ActiveRecordingUpdate, AppPaths, OverlayController, OverlayUpdate, ProcessingTicket,
+    Transcriber, TranscriptionCompletion,
 };
 
 /// Recovery's message on a transcript that finished after its dictation was
@@ -230,9 +230,6 @@ enum Activity {
 struct ActiveRecording {
     job_id: JobId,
     overlay: ActiveRecordingUpdate,
-    /// Live transcription listening while the job records, if it asked for
-    /// one. Dropping it cancels the session.
-    session: Option<LiveTranscription>,
 }
 
 /// A job whose transcription runs away from the daemon lock.
@@ -348,7 +345,6 @@ where
                 // the recorder has produced its first durable audio frame.
                 started_at_unix_millis: Utc::now().timestamp_millis(),
             },
-            session: self.transcriber.open_session(&job),
         });
         self.advance(
             job.id,
@@ -451,22 +447,14 @@ where
                 return Err(error.into());
             }
         };
-        let processing = Activity::Processing(ActiveProcessing {
+        self.activity = Activity::Processing(ActiveProcessing {
             job_id: id,
             stopped_at,
             delivery: DeliveryMethod::Paste,
         });
-        let session = match std::mem::replace(&mut self.activity, processing) {
-            Activity::Recording(recording) => recording.session,
-            Activity::Idle | Activity::Processing(_) => None,
-        };
         self.advance(id, WorkflowSignal::CaptureFinalized { job_id: id });
         self.publish_overlay_update();
-        Ok(ProcessingTicket::new(
-            job,
-            self.transcriber.clone(),
-            session,
-        ))
+        Ok(ProcessingTicket::new(job, self.transcriber.clone()))
     }
 
     /// Records a ticket's result. Only the job the daemon is processing is
@@ -656,7 +644,6 @@ where
         let id = self.recording_job()?;
         tracing::info!(job_id = %id, "dictation discard requested");
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        self.end_session(id);
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
             Err(error) => {
@@ -771,7 +758,7 @@ where
         });
         self.advance(id, WorkflowSignal::RetryRequested { job_id: id });
         self.publish_overlay_update();
-        Ok(ProcessingTicket::new(job, self.transcriber.clone(), None))
+        Ok(ProcessingTicket::new(job, self.transcriber.clone()))
     }
 
     /// "Paste again" from Recovery: copies the stored transcript to the
@@ -919,7 +906,6 @@ where
     }
 
     fn recover_after_capture_checkpoint_failure(&mut self, id: JobId, primary: &RuntimeError) {
-        self.end_session(id);
         if let Err(recovery_error) = self.runtime.interrupt_job(
             id,
             JobStage::Recording,
@@ -945,7 +931,6 @@ where
         reason: &'static str,
     ) -> Result<RecordingJob, DaemonError> {
         let id = self.recording_job()?;
-        self.end_session(id);
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
@@ -985,16 +970,6 @@ where
             },
         );
         interrupted.map_err(Into::into)
-    }
-
-    /// Cancels the recording's live session, if any, before its audio is
-    /// discarded or preserved: nothing more is streamed or committed.
-    fn end_session(&mut self, id: JobId) {
-        if let Activity::Recording(recording) = &mut self.activity
-            && recording.job_id == id
-        {
-            recording.session = None;
-        }
     }
 
     /// Applies a signal that the daemon's own state already guarantees. An

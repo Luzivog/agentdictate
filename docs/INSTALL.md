@@ -107,9 +107,7 @@ Turning **Start AgentDictate when I log in** off only affects future logins.
 **What leaves your computer.** Each dictation's audio goes to OpenAI's
 `/v1/audio/transcriptions` endpoint, with the language hint, the context text, and
 your vocabulary spellings, unless you use Literal mode, which sends only the
-language. With streaming on (`streaming_enabled` in config.json), audio is sent
-while you speak, and a failed stream falls back to the normal upload, which can mean
-paying for both. A request that fails before OpenAI answers is sent once more.
+language. A request that fails before OpenAI answers is sent once more.
 
 **What stays on your computer.**
 

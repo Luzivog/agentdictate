@@ -78,13 +78,11 @@ fn configuration_is_credential_free() {
     let settings = Settings {
         openai_api_key: "never-snapshot-this".into(),
         vocabulary: parse_vocabulary("UniqueName = unique name").unwrap(),
-        language: "en,fr".into(),
         ..Settings::default()
     };
     let options = DictationOptions::from_settings(&settings);
     let json = serde_json::to_string(&options).unwrap();
     assert!(!json.contains("never-snapshot-this"));
-    assert_eq!(options.languages(), ["en", "fr"]);
 }
 
 #[test]

@@ -93,7 +93,7 @@ app depends on runtime, linux, and ui; each of those depends only on core.
 - **agentdictate-core**: platform-independent types. Settings and their validation,
   the IPC protocol (`PROTOCOL_VERSION` in `crates/agentdictate-core/src/protocol.rs`),
   the workflow state machine and job stages, dictation options, vocabulary parsing and
-  alias normalization, and the per-minute price table.
+  alias normalization, and the per-minute price.
 - **agentdictate-runtime**: durable state. The SQLite schema and its numbered
   migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
   the `dictations` table behind History search and usage, the settings window's
@@ -110,7 +110,7 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   `desktop` feature.
 - **agentdictate-app**: composition. The daemon and the `DaemonHandle` that shares
   it between threads, the `Transcriber` and its per-job processing tickets, the
-  OpenAI speech transport, optional live streaming, the overlay supervisor and
+  OpenAI speech transport, the overlay supervisor and
   helper, the tray, the service unit and login startup, `setup-access`, the hotkey
   dispatch gate, logging, and the three binaries.
 
@@ -121,14 +121,11 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 
 1. **Start.** The hotkey, the tray, or `agentdictate start` creates a `starting` job.
    The job stores a snapshot of its dictation options, so a later retry uses the
-   same ones: mode, language, context, vocabulary, and streaming, never
+   same ones: mode, language, context, and vocabulary, never
    credentials. The daemon starts `pw-record` (16 kHz mono PCM16, 20 ms
    node latency) writing a WAV under `recordings/`, lowers other audio on a separate
    thread, and launches the overlay helper.
-2. **Stream (optional).** With `streaming_enabled` on, a Realtime session tails the
-   WAV, resamples it to 24 kHz, and sends it to `gpt-live-transcribe` while you
-   speak.
-3. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
+2. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
    finalizes the WAV and records the `captured` checkpoint, then `transcribing`. The
    recorder owner thread ends a recording at **Stop recording after**,
    whatever started it. Esc discards the recording instead. A recording longer than
@@ -136,38 +133,38 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    is deleted with its audio unless **Keep audio recordings** is on. If the recorder
    exits by itself, or the microphone delivers no audio for 3 s, the recording is kept
    in Recovery and not transcribed.
-4. **Transcribe.** Transcription runs on its own thread, outside the daemon lock, so
+3. **Transcribe.** Transcription runs on its own thread, outside the daemon lock, so
    settings, the tray, and the settings window stay responsive meanwhile. Presses
    while a dictation transcribes are ignored. **Cancel dictation** in the tray or
    `agentdictate cancel` stops waiting: a new dictation can start at once, and the
    late result waits in Recovery as "Cancelled before paste". Esc does not cancel a
-   transcription. A successful live result is used as is. Otherwise ffmpeg encodes
+   transcription. ffmpeg encodes
    the WAV to WebM/Opus at 32 kbps in speech mode, and the app posts it to
    `/v1/audio/transcriptions` with the model, `languages[]`, `keywords[]` (the
    vocabulary spellings), and `prompt` (the context). Without ffmpeg, the WAV is
    uploaded. A request that fails before OpenAI returns any status is sent once more,
    and an HTTP 400 about the file resends the WAV once. Nothing else is retried.
-5. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
+4. **Empty results.** An empty result from a near-silent WAV finishes quietly: the
    job is removed and nothing is pasted or kept in History. Any other empty result or
    error marks the job `failed` and keeps it in Recovery with its audio.
-6. **Normalize.** The raw text is saved first, so a later failure never needs a second
+5. **Normalize.** The raw text is saved first, so a later failure never needs a second
    paid transcription. Vocabulary aliases then replace spoken forms with their
    spellings. The job is now
    `ready_to_deliver`.
-7. **Gate.** A result that arrives more than 8 s after the stop is copied to the
+6. **Gate.** A result that arrives more than 8 s after the stop is copied to the
    clipboard instead of pasted, because by then you may be in another window. For a
    paste, the overlay is dismissed. If its helper confirmed an override-redirect
    window, the paste goes ahead while it fades. Otherwise the paste waits up to
    `OVERLAY_TEARDOWN_TIMEOUT` (2 s) for the helper to exit. A helper still running
    then is killed, nothing is pasted, and the text stays in Recovery.
-8. **Deliver.** The job is marked `attempting`. The daemon reads the focused X11
+7. **Deliver.** The job is marked `attempting`. The daemon reads the focused X11
    window, publishes the text, and reads the focus again. If the focus keeps
    changing, nothing is pasted. Otherwise it injects exactly one paste shortcut from
    its uinput keyboard, then waits up to 150 ms for an application to request the
    text. That request is logged as `consumed`, the target's acknowledgement. The
    delivery ends as `submitted`, `ambiguous` (the injection itself failed), or
    `not_sent` (nothing was injected).
-9. **Complete.** One transaction records the dictation, with its usage numbers always
+8. **Complete.** One transaction records the dictation, with its usage numbers always
    and its text unless **Keep transcripts** is **Don't keep**, and deletes the job row.
    Then text older than **Keep transcripts** allows, Recovery items unchanged for 7
    days, and cancelled recordings older than 24 hours are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
@@ -179,7 +176,7 @@ recording, or transcribing become `interrupted` and stay in Recovery with their 
 A job whose paste had started becomes `ambiguous` and is never pasted again
 automatically. Unless **Keep audio recordings** is on, startup cleanup then deletes
 the audio of finished jobs and any WAV file older than one hour that no job owns. It
-also applies the same retention as step 9. Writers set `secure_delete`, and deleting
+also applies the same retention as step 8. Writers set `secure_delete`, and deleting
 or expiring text truncates the write-ahead log, so removed text leaves the disk.
 
 Recovery actions in the History page, **Transcribe again** (**Transcribe** on a

@@ -43,17 +43,17 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
             "#,
         )
         .unwrap();
-    let live = TranscriptionOutcome::Text(Transcript {
+    let transcribed = TranscriptionOutcome::Text(Transcript {
         text: "Do not push.".into(),
-        model: "gpt-live-transcribe".into(),
+        model: "gpt-transcribe-preview".into(),
     });
-    assert!(runtime.store_transcript(job.id, live, None).is_err());
+    assert!(runtime.store_transcript(job.id, transcribed, None).is_err());
     drop(runtime);
     let runtime = Runtime::open(&db).unwrap();
     let recovered = runtime.job(job.id).unwrap().unwrap();
     assert_eq!(recovered.stage, JobStage::Failed);
     assert_eq!(recovered.raw_transcript, "Do not push.");
-    assert_eq!(recovered.transcription_model, "gpt-live-transcribe");
+    assert_eq!(recovered.transcription_model, "gpt-transcribe-preview");
     assert_eq!(recovered.options, Some(options));
     assert!(
         !std::fs::read(&db)

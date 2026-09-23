@@ -23,7 +23,6 @@ pub struct Settings {
     pub transcription_prompt: String,
     pub vocabulary: Vec<crate::VocabularyEntry>,
     pub dictation_mode: crate::DictationMode,
-    pub streaming_enabled: bool,
     #[serde(deserialize_with = "crate::hotkey::deserialize_hotkey")]
     pub hotkey: crate::Hotkey,
     pub recording_mode: RecordingMode,
@@ -269,7 +268,6 @@ impl Default for Settings {
             transcription_prompt: String::new(),
             vocabulary: Vec::new(),
             dictation_mode: crate::DictationMode::Dictate,
-            streaming_enabled: false,
             hotkey: crate::Hotkey::default(),
             recording_mode: RecordingMode::Toggle,
             max_recording_seconds: 300,

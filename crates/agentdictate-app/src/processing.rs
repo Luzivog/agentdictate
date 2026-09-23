@@ -5,18 +5,10 @@ use std::time::Instant;
 use agentdictate_core::{JobId, Settings};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript, TranscriptionOutcome};
 
-use crate::live_transcription::{LIVE_TRANSCRIPTION_MODEL, LiveTranscription};
-
 /// Turns one captured job into text. The daemon keeps one transcriber and
 /// clones it for every job, whose transcription then runs without the daemon
 /// lock, so an implementation must never touch the database.
 pub trait Transcriber: Clone + Send + 'static {
-    /// Opens a live session that listens while `job` records, when the job
-    /// asked for one. Dropping the session cancels it.
-    fn open_session(&self, _job: &RecordingJob) -> Option<LiveTranscription> {
-        None
-    }
-
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError>;
 
     /// Follows saved settings: the API key, and the options of jobs recorded
@@ -33,7 +25,6 @@ pub struct ProcessingTicket<T> {
     /// Cloned when the job stopped, so settings saved meanwhile never change
     /// the job's transcription.
     transcriber: T,
-    session: Option<LiveTranscription>,
 }
 
 impl<T> std::fmt::Debug for ProcessingTicket<T> {
@@ -46,16 +37,8 @@ impl<T> std::fmt::Debug for ProcessingTicket<T> {
 }
 
 impl<T: Transcriber> ProcessingTicket<T> {
-    pub(crate) const fn new(
-        job: RecordingJob,
-        transcriber: T,
-        session: Option<LiveTranscription>,
-    ) -> Self {
-        Self {
-            job,
-            transcriber,
-            session,
-        }
+    pub(crate) const fn new(job: RecordingJob, transcriber: T) -> Self {
+        Self { job, transcriber }
     }
 
     #[must_use]
@@ -64,8 +47,7 @@ impl<T: Transcriber> ProcessingTicket<T> {
     }
 
     /// Transcribes the job. A transcript an earlier attempt already stored is
-    /// reused without another paid request, and a live session's text is
-    /// preferred over transcribing the saved audio.
+    /// reused without another paid request.
     pub fn run(mut self) -> TranscriptionCompletion {
         let started = Instant::now();
         let outcome = self.outcome();
@@ -92,30 +74,6 @@ impl<T: Transcriber> ProcessingTicket<T> {
                 text: self.job.raw_transcript.clone(),
                 model: self.job.transcription_model.clone(),
             });
-        }
-        if let Some(session) = self.session.take() {
-            match session.finish() {
-                Ok(text) if !text.trim().is_empty() => {
-                    tracing::info!(
-                        job_id = %self.job.id,
-                        model = LIVE_TRANSCRIPTION_MODEL,
-                        "live transcription completed"
-                    );
-                    return TranscriptionOutcome::Text(Transcript {
-                        text,
-                        model: LIVE_TRANSCRIPTION_MODEL.to_owned(),
-                    });
-                }
-                Ok(_) => tracing::warn!(
-                    job_id = %self.job.id,
-                    "live transcription returned no text; transcribing the saved audio"
-                ),
-                Err(error) => tracing::warn!(
-                    job_id = %self.job.id,
-                    %error,
-                    "live transcription failed; transcribing the saved audio"
-                ),
-            }
         }
         match self.transcriber.transcribe(&self.job) {
             Ok(transcript) => TranscriptionOutcome::Text(transcript),

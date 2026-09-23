@@ -161,7 +161,6 @@ pub struct DictationOptions {
     pub language: String,
     pub context: String,
     pub vocabulary: Vec<VocabularyEntry>,
-    pub streaming: bool,
 }
 
 impl DictationOptions {
@@ -180,7 +179,6 @@ impl DictationOptions {
             } else {
                 settings.vocabulary.clone()
             },
-            streaming: settings.streaming_enabled,
         }
     }
 
@@ -188,14 +186,6 @@ impl DictationOptions {
         self.vocabulary
             .iter()
             .map(|entry| entry.spelling.clone())
-            .collect()
-    }
-    pub fn languages(&self) -> Vec<String> {
-        self.language
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
             .collect()
     }
 }
