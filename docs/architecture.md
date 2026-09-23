@@ -55,6 +55,9 @@ the overlay cannot render.
 `show_tray_icon` is on. That is a `config.json` setting and it defaults to on. The
 menu has **Open AgentDictate**, **Toggle dictation**, **Start literal dictation**,
 and **Quit AgentDictate**. Opening settings launches the sibling `agentdictate`.
+Only one settings window runs at a time: it holds `window.lock` in the runtime
+directory, and a later launch writes `window.raise`, which that window watches to
+come to the front, and exits.
 
 **Development instance.** With `AGENTDICTATE_HOME` set, as `./run.sh` does, every
 data root moves under that directory and the daemon is unsupervised: nothing calls
@@ -200,7 +203,9 @@ carries `protocol_version`, which must equal `PROTOCOL_VERSION` on both sides. B
 whenever the wire format changes. On connect the daemon sends a full snapshot first,
 so a reconnect never depends on replayed events. The settings window uses short-lived
 connections and watches the SQLite database and `overlay-health` with inotify, so
-daemon writes appear without polling.
+daemon writes appear without polling. Settings changes are per setting: each control
+sends one `change_setting` command, and the daemon applies it to the settings it
+holds, so two clients never overwrite each other's changes.
 
 ## Data locations
 
@@ -219,7 +224,7 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |
 | `~/.local/state/agentdictate/ducking.json` | Present only while ducking has lowered an output, so a crash can be undone at the next start |
 | `~/.cache/agentdictate/` | Created at startup; currently unused |
-| `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health` |
+| `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health`, settings window lock and raise file |
 
 Logs default to `info`, with the overlay's GPU crates at `warn`. A valid `RUST_LOG`
 replaces those defaults. Logs can contain transcript text.

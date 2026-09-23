@@ -56,53 +56,31 @@ pub type SettingsSink = Arc<
 pub type HotkeyCaptureSink =
     Arc<dyn Fn() -> Result<agentdictate_core::HotkeyCaptureOutcome, UiActionError> + Send + Sync>;
 
-/// Starts the settings window with connected workspace actions.
-pub fn run_settings_shell_with_workspace_actions(
-    model: ShellViewModel,
-    settings: agentdictate_core::SettingsSnapshot,
-    settings_sink: SettingsSink,
-    hotkey_capture: HotkeyCaptureSink,
-    action_sink: WorkspaceActionSink,
-) {
-    run_settings_shell_internal(
+/// Everything the settings window needs from the process that opens it.
+pub struct SettingsWindow {
+    pub model: ShellViewModel,
+    pub settings: agentdictate_core::SettingsSnapshot,
+    pub settings_sink: SettingsSink,
+    pub hotkey_capture: HotkeyCaptureSink,
+    pub action_sink: WorkspaceActionSink,
+    /// A fresh workspace after each daemon database write, when watched.
+    pub workspace_updates: Option<Receiver<WorkspaceViewModel>>,
+    /// One message each time a later launch asks this window to come to the
+    /// front instead of opening a second window.
+    pub raise_requests: Option<Receiver<()>>,
+}
+
+/// Opens the settings window and runs until it closes.
+pub fn run_settings_window(settings_window: SettingsWindow) {
+    let SettingsWindow {
         model,
         settings,
         settings_sink,
         hotkey_capture,
         action_sink,
-        None,
-    );
-}
-
-/// Starts the settings window with actions and event-driven daemon workspace
-/// updates. Existing entrypoints remain available for callers that provide a
-/// fixed startup snapshot.
-pub fn run_settings_shell_with_workspace_actions_and_updates(
-    model: ShellViewModel,
-    settings: agentdictate_core::SettingsSnapshot,
-    settings_sink: SettingsSink,
-    hotkey_capture: HotkeyCaptureSink,
-    action_sink: WorkspaceActionSink,
-    updates: Receiver<WorkspaceViewModel>,
-) {
-    run_settings_shell_internal(
-        model,
-        settings,
-        settings_sink,
-        hotkey_capture,
-        action_sink,
-        Some(updates),
-    );
-}
-
-fn run_settings_shell_internal(
-    model: ShellViewModel,
-    settings: agentdictate_core::SettingsSnapshot,
-    settings_sink: SettingsSink,
-    hotkey_capture: HotkeyCaptureSink,
-    action_sink: WorkspaceActionSink,
-    workspace_updates: Option<Receiver<WorkspaceViewModel>>,
-) {
+        workspace_updates,
+        raise_requests,
+    } = settings_window;
     gpui_platform::application()
         .with_assets(crate::AgentDictateAssets)
         .run(move |cx: &mut App| {
@@ -110,69 +88,87 @@ fn run_settings_shell_internal(
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
             let shell_slot = Rc::new(RefCell::new(None));
             let window_shell_slot = Rc::clone(&shell_slot);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitleBar::title_bar_options()),
-                    window_background: WindowBackgroundAppearance::Opaque,
-                    window_decorations: Some(WindowDecorations::Client),
-                    app_id: Some(APPLICATION_ID.to_owned()),
-                    window_min_size: Some(size(px(720.), px(480.))),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    let view = cx.new(|cx| {
-                        SettingsShell::new(
-                            model,
-                            settings,
-                            settings_sink,
-                            hotkey_capture,
-                            action_sink,
-                            window,
-                            cx,
-                        )
-                    });
-                    *window_shell_slot.borrow_mut() = Some(view.clone());
-                    let frame = cx.new(|_| crate::AgentDictateWindowFrame::new(view));
-                    // AgentDictateWindowFrame owns the client-side frame and
-                    // its resize zones; Root's own border would add a second.
-                    cx.new(|cx| Root::new(frame, window, cx).bordered(false))
-                },
-            )
-            .expect("AgentDictate settings window should open");
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(TitleBar::title_bar_options()),
+                        window_background: WindowBackgroundAppearance::Opaque,
+                        window_decorations: Some(WindowDecorations::Client),
+                        app_id: Some(APPLICATION_ID.to_owned()),
+                        window_min_size: Some(size(px(720.), px(480.))),
+                        ..Default::default()
+                    },
+                    move |window, cx| {
+                        let view = cx.new(|cx| {
+                            SettingsShell::new(
+                                model,
+                                settings,
+                                settings_sink,
+                                hotkey_capture,
+                                action_sink,
+                                window,
+                                cx,
+                            )
+                        });
+                        *window_shell_slot.borrow_mut() = Some(view.clone());
+                        let frame = cx.new(|_| crate::AgentDictateWindowFrame::new(view));
+                        // AgentDictateWindowFrame owns the client-side frame and
+                        // its resize zones; Root's own border would add a second.
+                        cx.new(|cx| Root::new(frame, window, cx).bordered(false))
+                    },
+                )
+                .expect("AgentDictate settings window should open");
             if let Some(workspace_updates) = workspace_updates {
                 let shell = shell_slot
                     .borrow_mut()
                     .take()
                     .expect("settings shell should exist after its window opens")
                     .downgrade();
-                let (sender, mut receiver) = mpsc::unbounded();
-                std::thread::Builder::new()
-                    .name("agentdictate-workspace-updates".into())
-                    .spawn(move || {
-                        while let Ok(workspace) = workspace_updates.recv() {
-                            if sender.unbounded_send(workspace).is_err() {
-                                return;
-                            }
-                        }
-                    })
-                    .expect("workspace update bridge should start");
-                cx.spawn(async move |cx| {
-                    while let Some(workspace) = receiver.next().await {
-                        if shell
-                            .update(cx, |shell, cx| {
-                                shell.apply_workspace_update(workspace, cx);
-                            })
-                            .is_err()
-                        {
-                            return;
-                        }
+                forward_to_ui("agentdictate-workspace-updates", workspace_updates, cx, {
+                    move |workspace, cx| {
+                        shell.update(cx, |shell, cx| {
+                            shell.apply_workspace_update(workspace, cx);
+                        })
                     }
-                })
-                .detach();
+                });
+            }
+            if let Some(raise_requests) = raise_requests {
+                forward_to_ui("agentdictate-window-raise", raise_requests, cx, {
+                    move |(), cx| window.update(cx, |_, window, _| window.activate_window())
+                });
             }
             cx.activate(true);
         });
+}
+
+/// Hands each message from `messages` to `apply` on the UI thread, until
+/// either side closes or `apply` fails because the window is gone.
+fn forward_to_ui<T: Send + 'static>(
+    thread_name: &str,
+    messages: Receiver<T>,
+    cx: &mut App,
+    mut apply: impl FnMut(T, &mut gpui::AsyncApp) -> gpui::Result<()> + 'static,
+) {
+    let (sender, mut receiver) = mpsc::unbounded();
+    std::thread::Builder::new()
+        .name(thread_name.to_owned())
+        .spawn(move || {
+            while let Ok(message) = messages.recv() {
+                if sender.unbounded_send(message).is_err() {
+                    return;
+                }
+            }
+        })
+        .expect("UI message bridge should start");
+    cx.spawn(async move |cx| {
+        while let Some(message) = receiver.next().await {
+            if apply(message, cx).is_err() {
+                return;
+            }
+        }
+    })
+    .detach();
 }
 
 /// Runs a focus-neutral X11 overlay. Placement completes before its first

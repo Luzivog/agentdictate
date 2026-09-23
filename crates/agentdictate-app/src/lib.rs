@@ -14,6 +14,7 @@ mod process;
 mod startup;
 mod system;
 mod tray;
+mod window_instance;
 mod workspace;
 
 pub use daemon::{CapturedRecording, Daemon, DaemonError, RecordingController};
@@ -41,6 +42,7 @@ pub use tray::{
     SystemTrayHandle, TrayAction, settings_executable_for_current_process, start_system_tray,
     tray_command_for_phase,
 };
+pub use window_instance::{WindowInstance, WindowLock, raise_open_window};
 pub use workspace::{WorkspaceClient, WorkspaceError};
 
 /// Set by `./run.sh`: roots an isolated instance (config, data, state, cache

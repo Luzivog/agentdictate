@@ -302,14 +302,14 @@ impl WorkspaceClient {
         self: &Arc<Self>,
         database_file: impl AsRef<Path>,
     ) -> io::Result<Receiver<WorkspaceViewModel>> {
-        let mut watcher = DatabaseChangeWatcher::new(database_file.as_ref())?;
+        let mut watcher = FileWatcher::database(database_file.as_ref())?;
         watcher.add_file(&self.runtime_directory.join(crate::OVERLAY_HEALTH_FILE))?;
         self.watch_changes(watcher)
     }
 
     fn watch_changes(
         self: &Arc<Self>,
-        mut watcher: DatabaseChangeWatcher,
+        mut watcher: FileWatcher,
     ) -> io::Result<Receiver<WorkspaceViewModel>> {
         let client = Arc::clone(self);
         let (sender, receiver) = channel();
@@ -337,13 +337,16 @@ impl WorkspaceClient {
     }
 }
 
-struct DatabaseChangeWatcher {
+/// Waits, with inotify, for writes to a set of files. A file is watched by
+/// name in its directory, so it may be replaced or not exist yet.
+pub(crate) struct FileWatcher {
     descriptor: File,
     watched_names: Vec<Vec<u8>>,
 }
 
-impl DatabaseChangeWatcher {
-    fn new(database_file: &Path) -> io::Result<Self> {
+impl FileWatcher {
+    /// A watcher with no files yet; see `add_file`.
+    pub(crate) fn empty() -> io::Result<Self> {
         // SAFETY: `inotify_init1` has no pointer parameters. On success the
         // returned descriptor is uniquely owned by `File` below.
         let raw_descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
@@ -353,6 +356,15 @@ impl DatabaseChangeWatcher {
         // SAFETY: `raw_descriptor` was just returned by `inotify_init1` and has
         // not been wrapped or closed elsewhere.
         let descriptor = unsafe { File::from_raw_fd(raw_descriptor) };
+        Ok(Self {
+            descriptor,
+            watched_names: Vec::new(),
+        })
+    }
+
+    /// Watches a SQLite database with its rollback journal and WAL.
+    fn database(database_file: &Path) -> io::Result<Self> {
+        let mut watcher = Self::empty()?;
         let mask = libc::IN_MODIFY
             | libc::IN_CLOSE_WRITE
             | libc::IN_MOVED_TO
@@ -371,7 +383,9 @@ impl DatabaseChangeWatcher {
         })?;
         // SAFETY: the descriptor is live and `parent` owns a NUL-terminated
         // path for the duration of the call.
-        if unsafe { libc::inotify_add_watch(raw_descriptor, parent.as_ptr(), mask) } < 0 {
+        if unsafe { libc::inotify_add_watch(watcher.descriptor.as_raw_fd(), parent.as_ptr(), mask) }
+            < 0
+        {
             return Err(io::Error::last_os_error());
         }
         let database_name = database_file.file_name().ok_or_else(|| {
@@ -385,18 +399,15 @@ impl DatabaseChangeWatcher {
             name.push(suffix);
             name.as_os_str().as_bytes().to_vec()
         };
-        let watched_names = vec![
+        watcher.watched_names.extend([
             database_name.as_bytes().to_vec(),
             sidecar_name("-wal"),
             sidecar_name("-journal"),
-        ];
-        Ok(Self {
-            descriptor,
-            watched_names,
-        })
+        ]);
+        Ok(watcher)
     }
 
-    fn add_file(&mut self, path: &Path) -> io::Result<()> {
+    pub(crate) fn add_file(&mut self, path: &Path) -> io::Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("watch file has no parent"))?;
@@ -419,7 +430,8 @@ impl DatabaseChangeWatcher {
         Ok(())
     }
 
-    fn wait_for_change(&mut self) -> io::Result<()> {
+    /// Blocks until a watched file is written, created or moved into place.
+    pub(crate) fn wait_for_change(&mut self) -> io::Result<()> {
         let mut buffer = [0_u8; 4096];
         loop {
             let bytes_read = match self.descriptor.read(&mut buffer) {

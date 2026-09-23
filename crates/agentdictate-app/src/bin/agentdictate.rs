@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use agentdictate_app::{
-    AppPaths, WorkspaceClient, WorkspaceError, connect_or_start_daemon, grant_native_access,
-    init_file_logging, is_overlay_helper_argument, run_overlay_helper,
+    AppPaths, WindowInstance, WorkspaceClient, WorkspaceError, connect_or_start_daemon,
+    grant_native_access, init_file_logging, is_overlay_helper_argument, raise_open_window,
+    run_overlay_helper,
 };
-use agentdictate_core::{ClientCommand, HotkeyCaptureOutcome, ServerMessageKind};
+use agentdictate_core::{
+    ClientCommand, HotkeyCaptureOutcome, ServerMessageKind, WorkspaceSnapshot,
+};
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
-    Route, SettingsRequest, ShellViewModel, UiActionError,
-    run_settings_shell_with_workspace_actions,
-    run_settings_shell_with_workspace_actions_and_updates,
+    Route, SettingsRequest, SettingsWindow, ShellViewModel, UiActionError, run_settings_window,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -52,12 +53,22 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let _log_guard = init_file_logging(&paths.logs, "agentdictate.log")?;
+    let window_lock = match WindowInstance::acquire(&paths.runtime)? {
+        WindowInstance::Primary(lock) => lock,
+        WindowInstance::Secondary => {
+            tracing::info!("settings window already open; asking it to come to the front");
+            raise_open_window(&paths.runtime)?;
+            return Ok(());
+        }
+    };
+    let raise_requests = window_lock
+        .raise_requests()
+        .inspect_err(|error| tracing::warn!(%error, "window raise requests are unavailable"))
+        .ok();
     tracing::info!("native settings window starting");
-    let (mut bootstrap_client, initial) = connect_or_start_daemon(&paths)?;
-    let workspace = bootstrap_client.send(ClientCommand::get_workspace(1))?;
     // UI actions use short-lived sessions so a closed settings window cannot
     // retain an unnecessary daemon connection.
-    drop(bootstrap_client);
+    let (_, initial) = connect_or_start_daemon(&paths)?;
     let ServerMessageKind::Snapshot {
         snapshot, settings, ..
     } = initial.kind
@@ -65,28 +76,19 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("AgentDictate daemon rejected its initial snapshot request")
     };
     let settings = *settings;
-    let ServerMessageKind::Workspace { workspace, .. } = workspace.kind else {
-        anyhow::bail!("AgentDictate daemon did not provide workspace data")
-    };
     let runtime = paths.runtime.clone();
-    let workspace_client = Arc::new(WorkspaceClient::new(runtime.clone(), *workspace));
-    let mut workspace_model = workspace_client.view_model()?;
-    let workspace_updates = match workspace_client.watch(&paths.database_file) {
-        Ok(updates) => {
-            // The watcher is registered before this refresh. A database write
-            // racing with window startup is therefore either observed by the
-            // refresh or queued by inotify, rather than being silently lost.
-            match workspace_client.refresh() {
-                Ok(refreshed) => workspace_model = refreshed,
-                Err(error) => tracing::warn!(%error, "initial live workspace refresh failed"),
-            }
-            Some(updates)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "live workspace updates are unavailable");
-            None
-        }
-    };
+    let workspace_client = Arc::new(WorkspaceClient::new(
+        runtime.clone(),
+        WorkspaceSnapshot::default(),
+    ));
+    // The watcher is registered before the one fetch below. A database write
+    // racing with window startup is therefore either in that fetch or queued
+    // by inotify, rather than being silently lost.
+    let workspace_updates = workspace_client
+        .watch(&paths.database_file)
+        .inspect_err(|error| tracing::warn!(%error, "live workspace updates are unavailable"))
+        .ok();
+    let workspace_model = workspace_client.refresh()?;
     let workspace_action_sink = {
         let workspace_client = Arc::clone(&workspace_client);
         Arc::new(move |action| {
@@ -131,24 +133,16 @@ fn main() -> anyhow::Result<()> {
             _ => Err("the daemon did not answer the shortcut capture".into()),
         }
     });
-    let model =
-        ShellViewModel::from_app_snapshot(Route::Home, snapshot).with_workspace(workspace_model);
-    match workspace_updates {
-        Some(updates) => run_settings_shell_with_workspace_actions_and_updates(
-            model,
-            settings,
-            settings_sink,
-            hotkey_capture,
-            workspace_action_sink,
-            updates,
-        ),
-        None => run_settings_shell_with_workspace_actions(
-            model,
-            settings,
-            settings_sink,
-            hotkey_capture,
-            workspace_action_sink,
-        ),
-    }
+    run_settings_window(SettingsWindow {
+        model: ShellViewModel::from_app_snapshot(Route::Home, snapshot)
+            .with_workspace(workspace_model),
+        settings,
+        settings_sink,
+        hotkey_capture,
+        action_sink: workspace_action_sink,
+        workspace_updates,
+        raise_requests,
+    });
+    drop(window_lock);
     Ok(())
 }

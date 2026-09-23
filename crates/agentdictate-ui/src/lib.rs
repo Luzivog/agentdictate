@@ -24,8 +24,7 @@ pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
     APPLICATION_ID, HotkeyCaptureSink, RecordingOverlay, SettingsShell, SettingsSink,
-    run_recording_overlay, run_settings_shell_with_workspace_actions,
-    run_settings_shell_with_workspace_actions_and_updates,
+    SettingsWindow, run_recording_overlay, run_settings_window,
 };
 pub use history::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, RecoveryViewModel, TranscriptViewModel,
