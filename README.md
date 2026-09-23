@@ -5,178 +5,108 @@
 <h1 align="center">AgentDictate</h1>
 
 <p align="center">
-  <strong>Experimental STT using the ChatGPT account signed into Codex.</strong><br>
-  By default, press <kbd>Ctrl</kbd> + <kbd>Space</kbd> once to start and again to
-  stop. AgentDictate copies the transcript and submits one paste shortcut to
-  the focused app on Wayland or X11. The undocumented route may not be enabled
-  for every account.
+  <strong>Fast dictation for Linux, built for talking to AI coding agents.</strong><br>
+  Press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and press it again.
+  AgentDictate transcribes your speech with OpenAI and pastes the text into the
+  app you are using, on Wayland or X11.
 </p>
+
+AgentDictate runs in the background with a global shortcut. A small overlay at the
+bottom of your screen shows that it is listening. When you stop, the audio goes to
+OpenAI's `gpt-transcribe` model with your API key, and the text is pasted into the
+focused window. If anything goes wrong, the recording is kept so you can try again.
+An experimental option can use the ChatGPT account signed into the Codex CLI
+instead of an API key.
+
+## Requirements
+
+- Linux with a Wayland or X11 desktop session; Wayland needs XWayland. Tested on
+  GNOME with Ubuntu 24.04.
+- PipeWire and a systemd user session, which current Ubuntu and Debian have.
+- An [OpenAI Platform](https://platform.openai.com/) API key. You pay OpenAI per
+  minute of audio.
+
+The [install guide](docs/INSTALL.md#requirements) lists the packages to install.
 
 ## Install
 
-These steps are tested on Ubuntu 24.04. The
-[system requirements](docs/INSTALL.md#requirements)
-cover both distributions. A graphical session with a working systemd user
-manager, a running PipeWire session, and Rust 1.95.0 through
-[rustup](https://rustup.rs/) are required.
+From source, with [Rust](https://rustup.rs/) and the packages above installed:
 
-1. Install the requirements for your distribution.
-2. Install the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli), run
-   `codex login`, and choose **Sign in with ChatGPT**. Confirm the active login:
+```bash
+git clone https://github.com/Luzivog/agentdictate.git
+cd agentdictate
+./install.sh
+```
 
-   ```bash
-   codex login status
-   ```
+AgentDictate needs permission to read the keyboard for its shortcut and to type the
+paste shortcut. If the installer says access is missing, run the command it prints:
 
-   It must report `Logged in using ChatGPT`. An API-key login cannot
-   authenticate this route.
+```bash
+./install.sh --setup-native-access
+```
 
-3. Build and install AgentDictate:
+It shows the one `sudo` command it needs and asks before running it. You may need
+to log out and back in afterwards.
 
-   ```bash
-   git clone https://github.com/luzivog/agentdictate.git
-   cd agentdictate
-   ./install.sh
-   ```
+A Debian package and an AppImage are also published on the
+[releases page](https://github.com/Luzivog/agentdictate/releases), though they can
+lag behind this repository. See [packages](docs/INSTALL.md#packages).
 
-   The installer copies the app before it checks native input access. Exit
-   status 2 means the app is installed, but native access still needs setup.
-   Exit status 3 means it works, but another app's udev rule makes input
-   devices world-accessible. The installer does not start the daemon. Opening
-   the app does, and the daemon imports eligible ChatGPT desktop dictation
-   transcripts and metadata into local SQLite. Read [Local storage](#local-storage)
-   before opening it.
-4. Native access can expose every keypress and synthesize arbitrary input for
-   the active desktop session. Run `./install.sh --setup-native-access`, which
-   shows the `sudo` command it needs and asks first, or follow the
-   [repository native-access steps](packaging/NATIVE_ACCESS.md#repository-user-install).
-   After any logout and login, return to the cloned `agentdictate` directory.
-   Then verify the result:
+## First use
 
-   ```bash
-   ./install.sh --check-native-access
-   ```
+1. Open **AgentDictate** from your app menu, or run `agentdictate`. This starts the
+   background service, which also starts with every later login while **Start on
+   login** is on.
+2. In **Settings**, paste your OpenAI API key and click **Save key**.
+3. Click into any text field, press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and
+   press it again. Keep that field focused until the text appears.
 
-   Continue only when the final line is `Native input readiness: ready`.
+Press <kbd>Esc</kbd> while recording to throw the recording away. You can close the
+window; dictation keeps working. To stop AgentDictate, choose **Quit AgentDictate**
+in the tray menu.
 
-## Data and billing
+## Everyday use
 
-When **ChatGPT subscription** is selected, AgentDictate uses an undocumented
-Codex App Server auth-status method to get an in-memory ChatGPT bearer token,
-derives the account ID from its claims, then sends the recording and any
-configured language to an undocumented ChatGPT endpoint as `Codex Desktop`.
-The request authenticates with the bearer token and account ID. AgentDictate
-does not write the token to its own files. Codex manages its login cache
-separately and may store credentials unencrypted in `$CODEX_HOME/auth.json`. See
-[Codex credential storage](https://learn.chatgpt.com/docs/auth#credential-storage).
+- **Shortcut.** Change it, or switch from press-to-toggle to hold-to-talk, under
+  **Settings**, **Recording & audio**.
+- **Spelling of names.** Add product and project names to **Vocabulary**, one per
+  line. `kubectl = cube control` also fixes a spoken form every time. See
+  [dictation output](docs/dictation-output.md).
+- **Exact text.** **Start literal dictation** in the tray skips vocabulary and
+  context for one recording.
+- **Something failed.** Open **History**. Items under **Recovery** kept their audio;
+  **Transcribe again** or **Paste again** copies the text so you can paste it with
+  <kbd>Ctrl</kbd> + <kbd>V</kbd>.
 
-OpenAI says ordinary Codex use in a ChatGPT Enterprise workspace follows that
-workspace's retention and residency settings. It does not document whether
-those policies or training controls cover AgentDictate's direct call, whether
-third-party clients may make it, which accounts can access it, or how requests
-are limited or billed. The route can stop working without notice.
+## Privacy
 
-OpenAI API transcription uploads the recording to `gpt-transcribe` with any
-applicable language, context, or vocabulary hints. Optional streaming sends audio
-while recording to `gpt-live-transcribe`. Both require an OpenAI Platform API
-key and can incur Platform charges outside a ChatGPT subscription. A failed live
-stream falls back to `gpt-transcribe`, which can add a second transcription
-charge.
-Subscription failures never fall back to the paid API route.
+- Your audio is sent to OpenAI for each dictation, with your language, context, and
+  vocabulary hints. Nothing is sent while you are not recording.
+- Your API key is stored unencrypted in `~/.config/agentdictate/config.json`,
+  readable only by you.
+- After a successful paste, AgentDictate keeps the text only in History, and only
+  while **Save history** is on. Deleting a History item deletes it for good. The
+  audio is deleted too, unless you turn on **Preserve temporary audio**.
+- Usage numbers, such as minutes and estimated cost, are kept without text.
+- AgentDictate also imports the dictations saved by the ChatGPT desktop app into
+  History. This cannot be turned off yet.
+- Logs can contain transcript text.
 
-## Local storage
-
-The Platform API key is stored unencrypted in
-`$XDG_CONFIG_HOME/agentdictate/config.json` (default
-`~/.config/agentdictate/config.json`) with user-only `0600` permissions.
-The SQLite database and retained WAV files are also unencrypted. Local Unix
-permissions restrict their access.
-
-While a dictation is in progress, its text is kept in a job row in
-`$XDG_DATA_HOME/agentdictate/agentdictate.sqlite` (default
-`~/.local/share/agentdictate/agentdictate.sqlite`). After the paste,
-AgentDictate deletes that row. It keeps the usage numbers (length, word count,
-model, and estimated cost, but no text) and, only when **Save history** is on,
-the transcript in History. Deleting a History item, or clearing History,
-removes it, and it stays deleted after a restart. A dictation that fails keeps
-its text and recording in Recovery until you retry or delete it. Deleting it
-from Recovery removes both.
-
-While the daemon runs, AgentDictate imports existing and new completed ChatGPT
-desktop dictation records that contain a duration and a nonblank transcript.
-Other records are skipped. The source directory is
-`$CODEX_HOME/dictation-history` (default `~/.codex/dictation-history`).
-AgentDictate stores each imported record in SQLite, including the transcript,
-dictation ID, creation time, duration, derived end time, and import time. The
-transcript, derived end time, and duration appear in History. The creation date,
-word count, and duration contribute to usage totals. There is no in-app opt-out
-or purge, and **Save history** does not disable the import. Deleting
-AgentDictate's database does not delete the source metadata. The next daemon
-start imports it again.
-
-Recordings are created under `$XDG_DATA_HOME/agentdictate/recordings` (default
-`~/.local/share/agentdictate/recordings`). Audio is normally deleted after paste
-submission. Failed or interrupted recordings remain for recovery, and
-**Preserve temporary audio** also keeps recordings after successful shortcut
-submission. Unless that setting is on, each daemon start also deletes leftover
-recordings that no dictation needs.
-
-Development, packaging, and local data paths are in the
-[installation and development guide](docs/INSTALL.md).
-
-## Start and use
-
-1. Start AgentDictate. This also starts the automatic ChatGPT desktop history
-   import described above.
-
-   ```bash
-   ~/.local/bin/agentdictate
-   ```
-
-2. Subscription STT does not require an OpenAI Platform API key. For the
-   no-key path, select **ChatGPT subscription** and click **Save changes**.
-3. Press `Ctrl+Space` once to start recording. Before pressing it again, focus
-   the destination app. Keep that app focused until AgentDictate copies the
-   transcript and submits the paste shortcut. The shortcut targets the app
-   focused at paste time. AgentDictate confirms the clipboard write and shortcut
-   submission, not insertion into the target app.
-
-Closing the settings window leaves the daemon, global shortcut, and history
-import running. Stop them with **Quit AgentDictate** in the tray or
-`systemctl --user stop agentdictated.service`.
-
-**Start on login** enables the `agentdictated.service` user unit for your
-desktop session. Turning it off disables the unit for future logins; it does
-not stop a running daemon. Reinstalls preserve the setting.
-
-## Architecture
-
-AgentDictate ships two binaries. `agentdictated` is the background daemon and
-owns the hotkey, recording, STT, history, and paste workflow. `agentdictate` is
-the GPUI desktop client. It sends commands to the daemon through a private Unix
-socket. The daemon runs as a user service for the current graphical session.
-
-| Crate | Owns |
-| --- | --- |
-| `agentdictate-core` | Settings, protocol types, and workflow state |
-| `agentdictate-runtime` | SQLite, recovery, usage, and IPC |
-| `agentdictate-linux` | Recording, hotkeys, focus, clipboard, and paste |
-| `agentdictate-ui` | GPUI windows and view models |
-| `agentdictate-app` | Process composition and both binaries |
-
-See the [full architecture overview](docs/architecture.md).
-
-See [dictation output and evaluation](docs/dictation-output.md) for vocabulary,
-Literal mode, streaming, empty-capture handling, and audio replay.
-
-For repository work, use the [development and verification workflow](docs/DEVELOPMENT.md).
+The [install guide](docs/INSTALL.md#local-data-and-network-use) has the details.
 
 ## Uninstall
 
-Stop and remove the app before removing the host udev rule that grants the
-active local session keyboard-event and uinput access. Follow the
-[uninstall steps](docs/INSTALL.md#uninstall). They keep any saved unencrypted
-Platform API key, transcripts, retained recordings, logs, and cache until you
-run the separate delete-all-data step.
+Follow the [uninstall steps](docs/INSTALL.md#uninstall). They keep your settings,
+API key, and history until you run the separate step that deletes all data.
+
+## Documentation
+
+- [Install guide](docs/INSTALL.md): requirements, packages, data, and uninstall.
+- [Native input access](packaging/NATIVE_ACCESS.md): the keyboard and paste
+  permission.
+- [Dictation output](docs/dictation-output.md): vocabulary, Literal mode, streaming,
+  failures, and evaluation.
+- [Architecture](docs/architecture.md): processes, crates, pipeline, and decisions.
+- [Development](docs/DEVELOPMENT.md): building, testing, and debugging.
 
 Licensed under the [MIT License](LICENSE).
