@@ -143,10 +143,9 @@ Closing the settings window leaves the daemon, global shortcut, and history
 import running. Stop them with **Quit AgentDictate** in the tray or
 `systemctl --user stop agentdictated.service`.
 
-The fresh-install behavior above comes from an XDG autostart entry. Turn off
-**Start on login** to prevent the AgentDictate daemon from starting at future
-logins. This does not stop a running daemon. Reinstalls preserve the AgentDictate
-setting.
+**Start on login** enables the `agentdictated.service` user unit for your
+desktop session. Turning it off disables the unit for future logins; it does
+not stop a running daemon. Reinstalls preserve the setting.
 
 ## Architecture
 

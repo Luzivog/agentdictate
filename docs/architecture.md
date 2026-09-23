@@ -127,9 +127,9 @@ complete and non-retryable rather than falsely reported as confirmed.
 
 Runtime data lives under XDG directories, each created with mode 0700:
 
-- `~/.config/agentdictate/config.json` — settings; login bootstrap at
-  `~/.config/autostart/local.agentdictate.AgentDictate.desktop` and daemon unit
-  at `~/.local/share/systemd/user/agentdictated.service`.
+- `~/.config/agentdictate/config.json` — settings. The app writes the daemon
+  unit to `~/.local/share/systemd/user/agentdictated.service` (only when its
+  text changes); **Start on login** enables it for `graphical-session.target`.
 - `~/.local/share/agentdictate/` — SQLite history database (`agentdictate.sqlite`)
   and retained audio under `recordings/`.
 - `~/.local/state/agentdictate/logs/` — daily logs; the newest 14 files are

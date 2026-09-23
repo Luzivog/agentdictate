@@ -106,7 +106,8 @@ it and its safety contract is documented next to the boundary.
 ## Packaging and Installation
 
 - `./install.sh`: builds the release desktop binaries and installs them, the
-  desktop entry, autostart entry, and icon into the user profile.
+  desktop entry, icon, and native-access files into the user profile. The app
+  writes its own `agentdictated.service` user unit.
 - `packaging/build-deb.sh`: builds the Debian package in `dist/`.
 - `packaging/build-appimage.sh`: builds `dist/AppDir` and an AppImage when
   `appimagetool` is available.

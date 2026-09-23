@@ -1,285 +1,281 @@
+//! Runs the daemon as the `agentdictated.service` systemd user unit.
+//!
+//! The unit is rendered from the running install (the AppImage file, or the
+//! `agentdictated` beside this binary) and written only when that text
+//! changes, so an unchanged install never reloads the user manager. "Start on
+//! login" is the unit's `graphical-session.target` enablement.
+
 use std::{
     ffi::OsString,
     fs, io,
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
 
-use agentdictate_core::{ClientCommand, ServerMessageKind};
+use agentdictate_core::ServerMessage;
 use agentdictate_linux::command::{
     PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner,
 };
 use agentdictate_runtime::{IpcClient, IpcError, write_atomic};
-use sha2::{Digest, Sha256};
+
+use crate::{AppPaths, DaemonSupervision};
 
 pub const DAEMON_SERVICE_NAME: &str = "agentdictated.service";
-pub const START_SERVICE_ARGUMENT: &str = "--start-service";
+/// Runs the daemon itself; the unit's `ExecStart` passes it.
 pub const SERVICE_ARGUMENT: &str = "--service";
-const APPIMAGE_BOOTSTRAP_ARGUMENT: &str = "--background";
-const SERVICE_ROUTE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_ROUTE";
-const SERVICE_IDENTITY_FILE_ENVIRONMENT: &str = "AGENTDICTATE_SERVICE_IDENTITY_FILE";
+/// Run at login by the XDG autostart entries older versions installed.
+pub const START_SERVICE_ARGUMENT: &str = "--start-service";
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct StartupCommand {
-    executable: PathBuf,
-    arguments: Vec<String>,
-    identity_files: Vec<PathBuf>,
+/// Runs `systemctl --user <arguments>` and returns its trimmed stdout.
+trait Systemctl {
+    fn user(&self, arguments: &[&str]) -> io::Result<String>;
 }
 
-trait UserServiceManager {
-    fn daemon_reload(&self) -> io::Result<()>;
-    fn is_active(&self) -> io::Result<bool>;
-    fn start(&self) -> io::Result<()>;
-    fn restart(&self) -> io::Result<()>;
-    fn owns_process(&self, pid: u32) -> io::Result<bool>;
-    fn process_route_identity(&self, pid: u32) -> io::Result<Option<String>>;
-}
-
-struct SystemctlServiceManager<'a> {
-    command: &'a Path,
-}
-
-impl UserServiceManager for SystemctlServiceManager<'_> {
-    fn daemon_reload(&self) -> io::Result<()> {
-        run_systemctl(self.command, &["--user", "daemon-reload"])
-    }
-
-    fn is_active(&self) -> io::Result<bool> {
-        service_is_active(self.command)
-    }
-
-    fn start(&self) -> io::Result<()> {
-        run_systemctl(self.command, &["--user", "start", DAEMON_SERVICE_NAME])
-    }
-
-    fn restart(&self) -> io::Result<()> {
-        run_systemctl(self.command, &["--user", "restart", DAEMON_SERVICE_NAME])
-    }
-
-    fn owns_process(&self, pid: u32) -> io::Result<bool> {
-        let control_group = systemctl_value(self.command, "ControlGroup")?;
-        if control_group.is_empty() || control_group == "/" {
-            return Ok(false);
-        }
-        let process_groups = fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
-        Ok(process_groups.lines().any(|line| {
-            let mut fields = line.splitn(3, ':');
-            let _hierarchy = fields.next();
-            let controllers = fields.next();
-            let path = fields.next();
-            matches!((controllers, path), (Some(""), Some(path)) if cgroup_contains(&control_group, path))
-                || matches!((controllers, path), (Some(controllers), Some(path)) if controllers.split(',').any(|controller| controller == "name=systemd") && cgroup_contains(&control_group, path))
-        }))
-    }
-
-    fn process_route_identity(&self, pid: u32) -> io::Result<Option<String>> {
-        process_environment_value(pid, SERVICE_ROUTE_ENVIRONMENT)
+/// The systemctl executable at this path, bounded by `SYSTEMCTL_TIMEOUT` so a
+/// stuck user manager cannot hang the daemon or the settings window.
+impl Systemctl for Path {
+    fn user(&self, arguments: &[&str]) -> io::Result<String> {
+        let arguments = std::iter::once("--user")
+            .chain(arguments.iter().copied())
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let stdout = SystemCommandRunner
+            .run_output(
+                PlatformCapability::ServiceManagement,
+                &PlatformExecutable::at(PlatformTool::Systemctl, self),
+                &arguments,
+                Instant::now() + SYSTEMCTL_TIMEOUT,
+            )
+            .map_err(io::Error::other)?;
+        Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
     }
 }
 
-pub fn sync_startup_with_systemctl(
-    entry: &Path,
-    service: &Path,
-    enabled: bool,
-    daemon: &Path,
-    systemctl: &Path,
-) -> io::Result<()> {
-    let (daemon, bootstrap) = startup_commands(daemon);
-    sync_startup_commands_with_manager(
-        entry,
-        service,
-        enabled,
-        &daemon,
-        &bootstrap,
-        &SystemctlServiceManager { command: systemctl },
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn sync_startup_command(
-    entry: &Path,
-    service: &Path,
-    enabled: bool,
-    daemon_executable: &Path,
-    daemon_arguments: &[String],
-    bootstrap_executable: &Path,
-    bootstrap_arguments: &[String],
-    systemctl: &Path,
-) -> io::Result<()> {
-    let daemon = StartupCommand {
-        executable: daemon_executable.to_owned(),
-        arguments: daemon_arguments.to_owned(),
-        identity_files: vec![daemon_executable.to_owned()],
-    };
-    let bootstrap = StartupCommand {
-        executable: bootstrap_executable.to_owned(),
-        arguments: bootstrap_arguments.to_owned(),
-        identity_files: Vec::new(),
-    };
-    sync_startup_commands_with_manager(
-        entry,
-        service,
-        enabled,
-        &daemon,
-        &bootstrap,
-        &SystemctlServiceManager { command: systemctl },
-    )
-}
-
-fn sync_startup_commands_with_manager(
-    entry: &Path,
-    service: &Path,
-    enabled: bool,
-    daemon: &StartupCommand,
-    bootstrap: &StartupCommand,
-    manager: &impl UserServiceManager,
-) -> io::Result<()> {
-    write_daemon_service(service, daemon)?;
-    write_autostart_entry(entry, enabled, &bootstrap.executable, &bootstrap.arguments)?;
-    manager.daemon_reload()
-}
-
-/// Converges legacy direct launches onto the named user service, then waits
-/// until that service owns the AgentDictate IPC endpoint.
-pub fn bootstrap_daemon_service(
-    runtime_directory: &Path,
-    service: &Path,
-    daemon: &Path,
-) -> anyhow::Result<()> {
-    let (daemon, _) = startup_commands(daemon);
-    let manager = SystemctlServiceManager {
-        command: Path::new("systemctl"),
-    };
-    let route_identity = prepare_daemon_service_command(service, &daemon, &manager)?;
-    bootstrap_daemon_service_with_manager(
-        runtime_directory,
-        &manager,
-        &route_identity,
+/// Connects to the daemon, starting it first when none answers.
+///
+/// A daemon that speaks this build's protocol is used as it is, so an
+/// ordinary window launch runs no systemctl at all. One that speaks another
+/// protocol is an upgrade the service has not picked up yet, so the service
+/// is restarted. An unsupervised (`AGENTDICTATE_HOME`) instance only waits
+/// for the daemon `./run.sh` starts.
+pub fn connect_or_start_daemon(paths: &AppPaths) -> anyhow::Result<(IpcClient, ServerMessage)> {
+    let daemon = std::env::current_exe()?.with_file_name("agentdictated");
+    connect_or_start(
+        &paths.runtime,
+        &paths.daemon_supervision,
+        &service_executable(&daemon),
+        Path::new("systemctl"),
         DAEMON_STARTUP_TIMEOUT,
     )
 }
 
-fn prepare_daemon_service_command(
-    service: &Path,
-    daemon: &StartupCommand,
-    manager: &impl UserServiceManager,
-) -> io::Result<String> {
-    let route_identity = write_daemon_service(service, daemon)?;
-    manager.daemon_reload()?;
-    Ok(route_identity)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceAction {
+    Start,
+    Restart,
 }
 
-fn bootstrap_daemon_service_with_manager(
-    runtime_directory: &Path,
-    manager: &impl UserServiceManager,
-    expected_route_identity: &str,
+fn connect_or_start(
+    runtime: &Path,
+    supervision: &DaemonSupervision,
+    executable: &Path,
+    systemctl: &(impl Systemctl + ?Sized),
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(IpcClient, ServerMessage)> {
     let deadline = Instant::now() + timeout;
-    let active = manager.is_active()?;
-    let mut endpoint = inspect_daemon(runtime_directory, manager, expected_route_identity)?;
-    if active && endpoint.is_none() {
-        endpoint = Some(wait_for_endpoint(
-            runtime_directory,
-            manager,
-            expected_route_identity,
-            deadline,
-        )?);
-    }
-    match endpoint {
-        Some(DaemonEndpoint::Expected(client)) if active && manager.is_active()? => {
-            drop(client);
-            return Ok(());
+    let action = match IpcClient::connect(runtime) {
+        Ok(connection) => return Ok(connection),
+        Err(error) if daemon_is_absent(&error) => ServiceAction::Start,
+        Err(IpcError::ProtocolVersion { .. }) => ServiceAction::Restart,
+        Err(error) => {
+            anyhow::bail!("could not talk to the process holding AgentDictate's socket: {error}")
         }
-        Some(DaemonEndpoint::Expected(client))
-        | Some(DaemonEndpoint::Foreign(client))
-        | Some(DaemonEndpoint::WrongRoute(client)) => {
-            stop_daemon(runtime_directory, client, deadline)?;
-            if active {
-                manager.restart()?;
-            } else {
-                manager.start()?;
+    };
+    match (supervision, action) {
+        (DaemonSupervision::SystemdUser { unit_file }, action) => {
+            write_unit(unit_file, executable, systemctl)?;
+            let verb = match action {
+                ServiceAction::Start => "start",
+                ServiceAction::Restart => "restart",
+            };
+            systemctl.user(&[verb, DAEMON_SERVICE_NAME])?;
+        }
+        (DaemonSupervision::Unsupervised, ServiceAction::Start) => {}
+        (DaemonSupervision::Unsupervised, ServiceAction::Restart) => anyhow::bail!(
+            "an AgentDictate daemon from another build answers at {}; stop it first",
+            runtime.display()
+        ),
+    }
+    wait_for_daemon(runtime, supervision, deadline)
+}
+
+/// Polls the socket until a daemon speaking this build's protocol answers.
+fn wait_for_daemon(
+    runtime: &Path,
+    supervision: &DaemonSupervision,
+    deadline: Instant,
+) -> anyhow::Result<(IpcClient, ServerMessage)> {
+    loop {
+        let error = match IpcClient::connect(runtime) {
+            Ok(connection) => return Ok(connection),
+            // Not bound yet, or the replaced daemon is still exiting.
+            Err(error)
+                if daemon_is_absent(&error)
+                    || matches!(
+                        error,
+                        IpcError::ProtocolVersion { .. } | IpcError::Disconnected
+                    ) =>
+            {
+                error
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if Instant::now() >= deadline {
+            match supervision {
+                DaemonSupervision::SystemdUser { .. } => anyhow::bail!(
+                    "AgentDictate's background service did not start ({error}); \
+                     see `journalctl --user -u {DAEMON_SERVICE_NAME}`"
+                ),
+                DaemonSupervision::Unsupervised => anyhow::bail!(
+                    "no AgentDictate daemon answered at {} ({error}); \
+                     start one with `./run.sh --service`",
+                    runtime.display()
+                ),
             }
         }
-        None => manager.start()?,
+        thread::sleep(Duration::from_millis(10));
     }
-    wait_for_daemon(
-        runtime_directory,
-        manager,
-        expected_route_identity,
-        deadline,
+}
+
+fn daemon_is_absent(error: &IpcError) -> bool {
+    matches!(
+        error,
+        IpcError::Io(error)
+            if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
     )
 }
 
-fn startup_commands(daemon: &Path) -> (StartupCommand, StartupCommand) {
-    if let Some(app_image) = std::env::var_os("APPIMAGE") {
-        let executable = PathBuf::from(app_image);
-        return (
-            StartupCommand {
-                executable: executable.clone(),
-                arguments: vec![SERVICE_ARGUMENT.to_owned()],
-                identity_files: vec![executable.clone()],
-            },
-            StartupCommand {
-                executable,
-                arguments: vec![APPIMAGE_BOOTSTRAP_ARGUMENT.to_owned()],
-                identity_files: Vec::new(),
-            },
-        );
+/// Keeps `agentdictated.service` in step with the "Start on login" setting.
+#[derive(Clone, Debug)]
+pub(crate) struct LoginStartup {
+    pub(crate) supervision: DaemonSupervision,
+    pub(crate) legacy_autostart_file: PathBuf,
+    /// The systemctl to run; tests point it at a stand-in.
+    pub(crate) systemctl: PathBuf,
+}
+
+impl LoginStartup {
+    pub(crate) fn new(paths: &AppPaths) -> Self {
+        Self {
+            supervision: paths.daemon_supervision.clone(),
+            legacy_autostart_file: paths.legacy_autostart_file.clone(),
+            systemctl: PathBuf::from("systemctl"),
+        }
     }
-    if let Some(executable) = std::env::var_os("AGENTDICTATE_AUTOSTART_EXEC") {
-        let executable = PathBuf::from(executable);
-        let bootstrap_argument = std::env::var("AGENTDICTATE_AUTOSTART_ARG")
-            .ok()
-            .filter(|argument| !argument.is_empty())
-            .unwrap_or_else(|| APPIMAGE_BOOTSTRAP_ARGUMENT.to_owned());
-        let service_executable = std::env::var_os("AGENTDICTATE_SERVICE_EXEC")
-            .map_or_else(|| executable.clone(), PathBuf::from);
-        let service_argument = std::env::var("AGENTDICTATE_SERVICE_ARG")
-            .ok()
-            .filter(|argument| !argument.is_empty())
-            .unwrap_or_else(|| SERVICE_ARGUMENT.to_owned());
-        let identity_file = std::env::var_os(SERVICE_IDENTITY_FILE_ENVIRONMENT)
-            .map_or_else(|| service_executable.clone(), PathBuf::from);
-        return (
-            StartupCommand {
-                executable: service_executable,
-                arguments: vec![service_argument],
-                identity_files: vec![identity_file],
-            },
-            StartupCommand {
-                executable,
-                arguments: vec![bootstrap_argument],
-                identity_files: Vec::new(),
-            },
-        );
+
+    /// Run by the daemon at startup and whenever the setting changes: writes
+    /// the unit if the install changed, enables or disables it to match
+    /// `start_on_login`, then deletes the XDG autostart entry older versions
+    /// used instead. An unsupervised daemon has no unit and does nothing.
+    pub(crate) fn sync(&self, start_on_login: bool) -> io::Result<()> {
+        let DaemonSupervision::SystemdUser { unit_file } = &self.supervision else {
+            return Ok(());
+        };
+        let executable = service_executable(&std::env::current_exe()?);
+        sync_enablement(
+            unit_file,
+            &executable,
+            start_on_login,
+            self.systemctl.as_path(),
+        )?;
+        match fs::remove_file(&self.legacy_autostart_file) {
+            Ok(()) => {
+                tracing::info!("replaced the old login autostart entry with the service unit");
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
-    (
-        StartupCommand {
-            executable: daemon.to_owned(),
-            arguments: vec![SERVICE_ARGUMENT.to_owned()],
-            identity_files: vec![daemon.to_owned()],
-        },
-        StartupCommand {
-            executable: daemon.to_owned(),
-            arguments: vec![START_SERVICE_ARGUMENT.to_owned()],
-            identity_files: Vec::new(),
-        },
+}
+
+/// Calls `enable`/`disable` only when the unit's enablement differs from
+/// `start_on_login`. Neither uses `--now`: this runs inside the daemon, which
+/// is already running and must not stop itself.
+fn sync_enablement(
+    unit_file: &Path,
+    executable: &Path,
+    start_on_login: bool,
+    systemctl: &(impl Systemctl + ?Sized),
+) -> io::Result<()> {
+    write_unit(unit_file, executable, systemctl)?;
+    let state = systemctl.user(&[
+        "show",
+        DAEMON_SERVICE_NAME,
+        "--property",
+        "UnitFileState",
+        "--value",
+    ])?;
+    let enabled = matches!(state.as_str(), "enabled" | "enabled-runtime");
+    if enabled != start_on_login {
+        let verb = if start_on_login { "enable" } else { "disable" };
+        systemctl.user(&[verb, DAEMON_SERVICE_NAME])?;
+    }
+    Ok(())
+}
+
+/// What the unit runs: `daemon`, or the AppImage file when `daemon` sits in
+/// that AppImage's mount, whose path changes on every launch.
+fn service_executable(daemon: &Path) -> PathBuf {
+    running_app_image(daemon).unwrap_or_else(|| daemon.to_owned())
+}
+
+/// The AppImage file `executable` was mounted from. Every child process of
+/// any AppImage inherits `APPIMAGE` and `APPDIR`, so they count only when
+/// `APPDIR` really contains `executable`.
+pub(crate) fn running_app_image(executable: &Path) -> Option<PathBuf> {
+    app_image_containing(
+        executable,
+        std::env::var_os("APPIMAGE"),
+        std::env::var_os("APPDIR"),
     )
 }
 
-fn write_daemon_service(service: &Path, daemon: &StartupCommand) -> io::Result<String> {
-    let route_identity = service_route_identity(daemon);
-    let mut command = quote_systemd_exec_value(&daemon.executable.to_string_lossy());
-    for argument in &daemon.arguments {
-        command.push(' ');
-        command.push_str(&quote_systemd_exec_value(argument));
+fn app_image_containing(
+    executable: &Path,
+    app_image: Option<OsString>,
+    app_dir: Option<OsString>,
+) -> Option<PathBuf> {
+    let app_dir = PathBuf::from(app_dir?);
+    (!app_dir.as_os_str().is_empty() && executable.starts_with(&app_dir))
+        .then(|| app_image.map(PathBuf::from))
+        .flatten()
+}
+
+/// Writes the unit and reloads the user manager, but only when the rendered
+/// text differs from the file on disk. Returns whether it wrote.
+fn write_unit(
+    unit_file: &Path,
+    executable: &Path,
+    systemctl: &(impl Systemctl + ?Sized),
+) -> io::Result<bool> {
+    let contents = render_unit(executable);
+    if fs::read(unit_file).is_ok_and(|current| current == contents.as_bytes()) {
+        return Ok(false);
     }
-    let contents = format!(
+    write_atomic(unit_file, contents.as_bytes(), 0o600)?;
+    systemctl.user(&["daemon-reload"])?;
+    Ok(true)
+}
+
+/// `PartOf` stops the daemon with the desktop session; `WantedBy` is what
+/// "Start on login" enables.
+fn render_unit(executable: &Path) -> String {
+    let executable = quote_systemd_exec_value(&executable.to_string_lossy());
+    format!(
         "[Unit]\n\
 Description=AgentDictate background service\n\
 PartOf=graphical-session.target\n\
@@ -288,277 +284,27 @@ After=graphical-session.target\n\
 [Service]\n\
 Type=simple\n\
 UMask=0077\n\
-Environment={SERVICE_ROUTE_ENVIRONMENT}={route_identity}\n\
-ExecStart={command}\n\
+ExecStart={executable} {SERVICE_ARGUMENT}\n\
 Restart=on-failure\n\
-RestartSec=1s\n"
-    );
-    write_atomic(service, contents.as_bytes(), 0o600)?;
-    Ok(route_identity)
-}
-
-fn write_autostart_entry(
-    entry: &Path,
-    enabled: bool,
-    executable: &Path,
-    arguments: &[String],
-) -> io::Result<()> {
-    let contents = if enabled {
-        let mut command = quote_desktop_exec_value(&executable.to_string_lossy());
-        for argument in arguments {
-            command.push(' ');
-            command.push_str(&quote_desktop_exec_value(argument));
-        }
-        format!(
-            "[Desktop Entry]\n\
-Type=Application\n\
-Name=AgentDictate background service\n\
-Comment=Keep the AgentDictate global shortcut ready\n\
-Exec={command}\n\
-Icon=agentdictate\n\
-Terminal=false\n\
-NoDisplay=true\n\
-X-GNOME-Autostart-enabled=true\n"
-        )
-    } else {
-        // A Hidden user entry is the freedesktop override for package-level
-        // entries installed under /etc/xdg/autostart.
-        "[Desktop Entry]\nType=Application\nName=AgentDictate background service\nHidden=true\n"
-            .to_owned()
-    };
-    write_atomic(entry, contents.as_bytes(), 0o600)
-}
-
-fn service_is_active(systemctl: &Path) -> io::Result<bool> {
-    match systemctl_value(systemctl, "ActiveState")?.as_str() {
-        "active" | "activating" | "reloading" => Ok(true),
-        "inactive" | "failed" | "deactivating" => Ok(false),
-        state => Err(io::Error::other(format!(
-            "agentdictated.service has unrecognized active state {state:?}"
-        ))),
-    }
-}
-
-enum DaemonEndpoint {
-    Expected(IpcClient),
-    Foreign(IpcClient),
-    WrongRoute(IpcClient),
-}
-
-fn inspect_daemon(
-    runtime_directory: &Path,
-    manager: &impl UserServiceManager,
-    expected_route_identity: &str,
-) -> anyhow::Result<Option<DaemonEndpoint>> {
-    let (client, _) = match IpcClient::connect(runtime_directory) {
-        Ok(connection) => connection,
-        Err(IpcError::Io(error))
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => {
-            return Err(anyhow::anyhow!(
-                "could not identify the daemon already holding AgentDictate IPC: {error}"
-            ));
-        }
-    };
-    let peer_pid = client.peer_pid()?;
-    if !manager.owns_process(peer_pid)? {
-        return Ok(Some(DaemonEndpoint::Foreign(client)));
-    }
-    let actual_route = manager.process_route_identity(peer_pid)?;
-    if actual_route.as_deref() == Some(expected_route_identity) {
-        Ok(Some(DaemonEndpoint::Expected(client)))
-    } else {
-        Ok(Some(DaemonEndpoint::WrongRoute(client)))
-    }
-}
-
-fn stop_daemon(
-    runtime_directory: &Path,
-    mut client: IpcClient,
-    deadline: Instant,
-) -> anyhow::Result<()> {
-    let socket = runtime_directory.join("agentdictate.sock");
-    let socket_metadata = fs::symlink_metadata(&socket)?;
-    let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
-    let response = client.send(ClientCommand::quit(1))?;
-    if let ServerMessageKind::CommandRejected { error, .. } = response.kind {
-        anyhow::bail!("AgentDictate daemon refused shutdown: {error}")
-    }
-    drop(client);
-    loop {
-        match fs::symlink_metadata(&socket) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.into()),
-            Ok(metadata) if (metadata.dev(), metadata.ino()) != socket_identity => return Ok(()),
-            Ok(_) if Instant::now() >= deadline => {
-                anyhow::bail!("AgentDictate daemon did not release its IPC socket")
-            }
-            Ok(_) => thread::sleep(Duration::from_millis(10)),
-        }
-    }
-}
-
-fn wait_for_daemon(
-    runtime_directory: &Path,
-    manager: &impl UserServiceManager,
-    expected_route_identity: &str,
-    deadline: Instant,
-) -> anyhow::Result<()> {
-    loop {
-        match inspect_daemon(runtime_directory, manager, expected_route_identity)? {
-            Some(DaemonEndpoint::Expected(_)) if manager.is_active()? => return Ok(()),
-            Some(DaemonEndpoint::Expected(_)) if Instant::now() >= deadline => {
-                anyhow::bail!("AgentDictate IPC is ready but agentdictated.service is not active")
-            }
-            Some(DaemonEndpoint::Expected(_)) => thread::sleep(Duration::from_millis(10)),
-            Some(DaemonEndpoint::Foreign(_)) => {
-                anyhow::bail!("a process outside agentdictated.service owns AgentDictate IPC")
-            }
-            Some(DaemonEndpoint::WrongRoute(_)) => {
-                anyhow::bail!("agentdictated.service started the wrong AgentDictate artifact")
-            }
-            None if Instant::now() >= deadline => {
-                anyhow::bail!("AgentDictate service did not become ready")
-            }
-            None => thread::sleep(Duration::from_millis(10)),
-        }
-    }
-}
-
-fn wait_for_endpoint(
-    runtime_directory: &Path,
-    manager: &impl UserServiceManager,
-    expected_route_identity: &str,
-    deadline: Instant,
-) -> anyhow::Result<DaemonEndpoint> {
-    loop {
-        if let Some(endpoint) = inspect_daemon(runtime_directory, manager, expected_route_identity)?
-        {
-            return Ok(endpoint);
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!("active agentdictated.service did not open AgentDictate IPC")
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn service_route_identity(command: &StartupCommand) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"agentdictate-service-route-v1\0");
-    hash_bytes(&mut digest, command.executable.as_os_str().as_bytes());
-    for argument in &command.arguments {
-        hash_bytes(&mut digest, argument.as_bytes());
-    }
-    for identity_file in &command.identity_files {
-        hash_bytes(&mut digest, identity_file.as_os_str().as_bytes());
-        match fs::metadata(identity_file) {
-            Ok(metadata) => {
-                digest.update(b"present\0");
-                for value in [
-                    metadata.dev(),
-                    metadata.ino(),
-                    metadata.size(),
-                    metadata.mtime() as u64,
-                    metadata.mtime_nsec() as u64,
-                    metadata.ctime() as u64,
-                    metadata.ctime_nsec() as u64,
-                ] {
-                    digest.update(value.to_le_bytes());
-                }
-            }
-            Err(error) => {
-                digest.update(b"missing\0");
-                digest.update(error.raw_os_error().unwrap_or_default().to_le_bytes());
-            }
-        }
-    }
-    format!("{:x}", digest.finalize())
-}
-
-fn hash_bytes(digest: &mut Sha256, value: &[u8]) {
-    digest.update(value.len().to_le_bytes());
-    digest.update(value);
-}
-
-fn systemctl_value(systemctl: &Path, property: &str) -> io::Result<String> {
-    systemctl_output(
-        systemctl,
-        &[
-            "--user",
-            "show",
-            DAEMON_SERVICE_NAME,
-            "--property",
-            property,
-            "--value",
-        ],
+RestartSec=1s\n\
+\n\
+[Install]\n\
+WantedBy=graphical-session.target\n"
     )
 }
 
-fn cgroup_contains(service_group: &str, process_group: &str) -> bool {
-    process_group == service_group
-        || process_group
-            .strip_prefix(service_group)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
-fn process_environment_value(pid: u32, name: &str) -> io::Result<Option<String>> {
-    let environment = fs::read(format!("/proc/{pid}/environ"))?;
-    let prefix = format!("{name}=");
-    Ok(environment
-        .split(|byte| *byte == 0)
-        .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
-        .map(|value| String::from_utf8_lossy(value).into_owned()))
-}
-
-fn run_systemctl(systemctl: &Path, arguments: &[&str]) -> io::Result<()> {
-    systemctl_output(systemctl, arguments).map(|_| ())
-}
-
-/// Runs systemctl bounded by `SYSTEMCTL_TIMEOUT`, so a stuck user manager
-/// cannot hang the daemon or the settings window.
-fn systemctl_output(systemctl: &Path, arguments: &[&str]) -> io::Result<String> {
-    let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-    let stdout = SystemCommandRunner
-        .run_output(
-            PlatformCapability::ServiceManagement,
-            &PlatformExecutable::at(PlatformTool::Systemctl, systemctl),
-            &arguments,
-            Instant::now() + SYSTEMCTL_TIMEOUT,
-        )
-        .map_err(io::Error::other)?;
-    Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
-}
-
-fn quote_desktop_exec_value(value: &str) -> String {
-    quote_exec_value(value, false)
-}
-
+/// Quotes one `ExecStart` word, escaping systemd's `$` and `%` expansion.
 fn quote_systemd_exec_value(value: &str) -> String {
-    quote_exec_value(value, true)
-}
-
-fn quote_exec_value(value: &str, systemd: bool) -> String {
     if value.chars().all(|character| {
         character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-')
     }) {
         return value.to_owned();
     }
-    let mut escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    if systemd {
-        escaped = escaped.replace('$', "$$").replace('%', "%%");
-    } else {
-        escaped = escaped
-            .replace('`', "\\`")
-            .replace('$', "\\$")
-            .replace('%', "%%");
-    }
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "$$")
+        .replace('%', "%%");
     format!("\"{escaped}\"")
 }
 
@@ -571,433 +317,269 @@ mod tests {
     };
 
     use agentdictate_core::{
-        AppSnapshot, ClientCommandKind, HotkeyReadiness, ServerMessage, Settings, Workflow,
+        AppSnapshot, ClientCommand, HotkeyReadiness, PROTOCOL_VERSION, Settings, Workflow,
     };
     use agentdictate_runtime::{IpcHandler, IpcServer};
     use tempfile::tempdir;
 
     use super::*;
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum ServiceAction {
-        Reload,
-        CheckActive,
-        Start,
-        Restart,
-        CheckOwnership,
-        ReadRoute,
+    type Launch = Box<dyn FnOnce() + Send>;
+
+    /// Records every `systemctl --user` call. `start` and `restart` run the
+    /// `launch` closure, which stands in for systemd running the daemon.
+    struct FakeSystemctl {
+        calls: Mutex<Vec<String>>,
+        unit_file_state: &'static str,
+        launch: Mutex<Option<Launch>>,
     }
 
-    struct MockServiceState {
-        active: bool,
-        owns_process: bool,
-        route_identity: Option<String>,
-    }
-
-    struct MockServiceManager {
-        state: Mutex<MockServiceState>,
-        actions: Mutex<Vec<ServiceAction>>,
-        start: Option<mpsc::Sender<()>>,
-        expected_route_identity: String,
-    }
-
-    impl MockServiceManager {
-        fn new(
-            active: bool,
-            start: Option<mpsc::Sender<()>>,
-            expected_route_identity: &str,
-        ) -> Self {
+    impl FakeSystemctl {
+        fn new(unit_file_state: &'static str) -> Self {
             Self {
-                state: Mutex::new(MockServiceState {
-                    active,
-                    owns_process: active,
-                    route_identity: active.then(|| expected_route_identity.to_owned()),
-                }),
-                actions: Mutex::new(Vec::new()),
-                start,
-                expected_route_identity: expected_route_identity.to_owned(),
+                calls: Mutex::new(Vec::new()),
+                unit_file_state,
+                launch: Mutex::new(None),
             }
         }
 
-        fn with_active_route(actual: &str, expected: &str, start: mpsc::Sender<()>) -> Self {
-            Self {
-                state: Mutex::new(MockServiceState {
-                    active: true,
-                    owns_process: true,
-                    route_identity: Some(actual.to_owned()),
-                }),
-                actions: Mutex::new(Vec::new()),
-                start: Some(start),
-                expected_route_identity: expected.to_owned(),
-            }
+        fn on_launch(self, launch: impl FnOnce() + Send + 'static) -> Self {
+            *self.launch.lock().unwrap() = Some(Box::new(launch));
+            self
         }
 
-        fn actions(&self) -> Vec<ServiceAction> {
-            self.actions.lock().unwrap().clone()
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
         }
     }
 
-    impl UserServiceManager for MockServiceManager {
-        fn daemon_reload(&self) -> io::Result<()> {
-            self.actions.lock().unwrap().push(ServiceAction::Reload);
-            Ok(())
+    impl Systemctl for FakeSystemctl {
+        fn user(&self, arguments: &[&str]) -> io::Result<String> {
+            self.calls.lock().unwrap().push(arguments.join(" "));
+            match arguments.first().copied() {
+                Some("start" | "restart") => {
+                    if let Some(launch) = self.launch.lock().unwrap().take() {
+                        launch();
+                    }
+                    Ok(String::new())
+                }
+                Some("show") => Ok(self.unit_file_state.to_owned()),
+                _ => Ok(String::new()),
+            }
         }
+    }
 
-        fn is_active(&self) -> io::Result<bool> {
-            self.actions
-                .lock()
+    fn supervised(root: &Path) -> DaemonSupervision {
+        DaemonSupervision::SystemdUser {
+            unit_file: root.join("systemd/user/agentdictated.service"),
+        }
+    }
+
+    /// A daemon that binds after `delay` and serves one session.
+    fn daemon(runtime: PathBuf, delay: Duration) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            thread::sleep(delay);
+            IpcServer::bind(runtime)
                 .unwrap()
-                .push(ServiceAction::CheckActive);
-            Ok(self.state.lock().unwrap().active)
-        }
-
-        fn start(&self) -> io::Result<()> {
-            self.actions.lock().unwrap().push(ServiceAction::Start);
-            self.mark_launched();
-            if let Some(start) = &self.start {
-                start.send(()).unwrap();
-            }
-            Ok(())
-        }
-
-        fn restart(&self) -> io::Result<()> {
-            self.actions.lock().unwrap().push(ServiceAction::Restart);
-            self.mark_launched();
-            if let Some(start) = &self.start {
-                start.send(()).unwrap();
-            }
-            Ok(())
-        }
-
-        fn owns_process(&self, _pid: u32) -> io::Result<bool> {
-            self.actions
-                .lock()
-                .unwrap()
-                .push(ServiceAction::CheckOwnership);
-            Ok(self.state.lock().unwrap().owns_process)
-        }
-
-        fn process_route_identity(&self, _pid: u32) -> io::Result<Option<String>> {
-            self.actions.lock().unwrap().push(ServiceAction::ReadRoute);
-            Ok(self.state.lock().unwrap().route_identity.clone())
-        }
-    }
-
-    impl MockServiceManager {
-        fn mark_launched(&self) {
-            let mut state = self.state.lock().unwrap();
-            state.active = true;
-            state.owns_process = true;
-            state.route_identity = Some(self.expected_route_identity.clone());
-        }
-    }
-
-    #[test]
-    fn startup_files_are_reloaded_after_both_routes_are_written() {
-        let directory = tempdir().unwrap();
-        let manager = MockServiceManager::new(false, None, "test-route");
-
-        sync_startup_commands_with_manager(
-            &directory.path().join("autostart/agentdictate.desktop"),
-            &directory.path().join("systemd/agentdictated.service"),
-            true,
-            &StartupCommand {
-                executable: PathBuf::from("/usr/bin/agentdictated"),
-                arguments: vec![SERVICE_ARGUMENT.to_owned()],
-                identity_files: vec![PathBuf::from("/usr/bin/agentdictated")],
-            },
-            &StartupCommand {
-                executable: PathBuf::from("/usr/bin/agentdictated"),
-                arguments: vec![START_SERVICE_ARGUMENT.to_owned()],
-                identity_files: Vec::new(),
-            },
-            &manager,
-        )
-        .unwrap();
-
-        assert_eq!(manager.actions(), [ServiceAction::Reload]);
-    }
-
-    #[test]
-    fn concurrent_startup_writes_never_share_a_temporary_file() {
-        let directory = tempdir().unwrap();
-        let target = directory.path().join("agentdictated.service");
-        let writers = (0..16)
-            .map(|index| {
-                let target = target.clone();
-                thread::spawn(move || {
-                    let contents = format!("writer-{index}\n").repeat(128);
-                    write_atomic(&target, contents.as_bytes(), 0o600).unwrap();
-                    contents
-                })
-            })
-            .collect::<Vec<_>>();
-        let complete_outputs = writers
-            .into_iter()
-            .map(|writer| writer.join().unwrap())
-            .collect::<Vec<_>>();
-
-        let result = fs::read_to_string(&target).unwrap();
-        assert!(complete_outputs.contains(&result));
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn bootstrap_stops_a_legacy_daemon_before_starting_the_named_service() {
-        let directory = tempdir().unwrap();
-        let runtime = directory.path().join("runtime");
-        let legacy_server = IpcServer::bind(&runtime).unwrap();
-        let (quit_sent, quit_received) = mpsc::channel();
-        let legacy = thread::spawn(move || {
-            legacy_server
-                .serve_next(&mut SnapshotHandler {
-                    quit: Some(quit_sent),
-                    reject_quit: false,
-                })
+                .serve_next(&mut SnapshotHandler)
                 .unwrap();
-        });
-        let (start_sent, start_received) = mpsc::channel();
-        let manager = MockServiceManager::new(false, Some(start_sent), "test-route");
-        let replacement_runtime = runtime.clone();
-        let replacement = thread::spawn(move || {
-            start_received.recv_timeout(Duration::from_secs(1)).unwrap();
-            let server = IpcServer::bind(replacement_runtime).unwrap();
-            server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: false,
-                })
-                .unwrap();
-        });
+        })
+    }
 
-        bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "test-route",
+    fn connect(
+        runtime: &Path,
+        supervision: &DaemonSupervision,
+        systemctl: &FakeSystemctl,
+    ) -> anyhow::Result<(IpcClient, ServerMessage)> {
+        connect_or_start(
+            runtime,
+            supervision,
+            Path::new("/usr/bin/agentdictated"),
+            systemctl,
             Duration::from_secs(1),
         )
-        .unwrap();
-
-        quit_received.recv_timeout(Duration::from_secs(1)).unwrap();
-        legacy.join().unwrap();
-        replacement.join().unwrap();
-        assert_eq!(
-            manager.actions(),
-            [
-                ServiceAction::CheckActive,
-                ServiceAction::CheckOwnership,
-                ServiceAction::Start,
-                ServiceAction::CheckOwnership,
-                ServiceAction::ReadRoute,
-                ServiceAction::CheckActive,
-            ]
-        );
     }
 
     #[test]
-    fn bootstrap_never_competes_when_the_legacy_daemon_refuses_shutdown() {
-        let directory = tempdir().unwrap();
-        let runtime = directory.path().join("runtime");
-        let legacy_server = IpcServer::bind(&runtime).unwrap();
-        let legacy = thread::spawn(move || {
-            legacy_server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: true,
-                })
-                .unwrap();
-        });
-        let manager = MockServiceManager::new(false, None, "test-route");
-
-        let error = bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "test-route",
-            Duration::from_secs(1),
-        )
-        .unwrap_err();
-
-        legacy.join().unwrap();
-        assert!(error.to_string().contains("refused shutdown"));
-        assert_eq!(
-            manager.actions(),
-            [ServiceAction::CheckActive, ServiceAction::CheckOwnership]
-        );
-    }
-
-    #[test]
-    fn repeated_bootstrap_reuses_an_active_named_service() {
+    fn an_answering_daemon_is_used_without_any_systemctl_call() {
         let directory = tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         let server = IpcServer::bind(&runtime).unwrap();
-        let service = thread::spawn(move || {
-            server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: false,
-                })
+        let running = thread::spawn(move || server.serve_next(&mut SnapshotHandler).unwrap());
+        let supervision = supervised(directory.path());
+        let systemctl = FakeSystemctl::new("enabled");
+
+        drop(connect(&runtime, &supervision, &systemctl).unwrap());
+
+        running.join().unwrap();
+        assert!(systemctl.calls().is_empty());
+        let DaemonSupervision::SystemdUser { unit_file } = supervision else {
+            unreachable!()
+        };
+        assert!(!unit_file.exists());
+    }
+
+    #[test]
+    fn a_missing_daemon_is_started_through_a_freshly_written_unit() {
+        let directory = tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        let (started, started_daemon) = mpsc::channel();
+        let service_runtime = runtime.clone();
+        let systemctl = FakeSystemctl::new("disabled").on_launch(move || {
+            started
+                .send(daemon(service_runtime, Duration::ZERO))
                 .unwrap();
         });
-        let manager = MockServiceManager::new(true, None, "test-route");
 
-        bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "test-route",
-            Duration::from_secs(1),
-        )
-        .unwrap();
+        drop(connect(&runtime, &supervised(directory.path()), &systemctl).unwrap());
 
-        service.join().unwrap();
+        started_daemon.recv().unwrap().join().unwrap();
         assert_eq!(
-            manager.actions(),
-            [
-                ServiceAction::CheckActive,
-                ServiceAction::CheckOwnership,
-                ServiceAction::ReadRoute,
-                ServiceAction::CheckActive,
-            ]
+            systemctl.calls(),
+            ["daemon-reload", "start agentdictated.service"]
         );
     }
 
     #[test]
-    fn active_service_hands_off_when_the_requested_artifact_changes() {
-        let directory = tempdir().unwrap();
-        let runtime = directory.path().join("runtime");
-        let old_server = IpcServer::bind(&runtime).unwrap();
-        let old_service = thread::spawn(move || {
-            old_server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: false,
-                })
-                .unwrap();
-        });
-        let (restart_sent, restart_received) = mpsc::channel();
-        let manager = MockServiceManager::with_active_route("old-route", "new-route", restart_sent);
-        let replacement_runtime = runtime.clone();
-        let replacement = thread::spawn(move || {
-            restart_received
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap();
-            let server = IpcServer::bind(replacement_runtime).unwrap();
-            server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: false,
-                })
-                .unwrap();
-        });
-
-        bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "new-route",
-            Duration::from_secs(1),
-        )
-        .unwrap();
-
-        old_service.join().unwrap();
-        replacement.join().unwrap();
-        assert!(manager.actions().contains(&ServiceAction::Restart));
-    }
-
-    #[test]
-    fn concurrent_bootstrap_waits_for_an_active_service_to_bind() {
-        let directory = tempdir().unwrap();
-        let runtime = directory.path().join("runtime");
-        let service_runtime = runtime.clone();
-        let service = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
-            let server = IpcServer::bind(service_runtime).unwrap();
-            server
-                .serve_next(&mut SnapshotHandler {
-                    quit: None,
-                    reject_quit: false,
-                })
-                .unwrap();
-        });
-        let manager = MockServiceManager::new(true, None, "test-route");
-
-        bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "test-route",
-            Duration::from_secs(1),
-        )
-        .unwrap();
-
-        service.join().unwrap();
-        assert!(!manager.actions().contains(&ServiceAction::Restart));
-        assert!(!manager.actions().contains(&ServiceAction::Start));
-    }
-
-    #[test]
-    fn malformed_legacy_handshake_never_starts_a_competing_service() {
+    fn a_daemon_on_another_protocol_is_restarted() {
         let directory = tempdir().unwrap();
         let runtime = directory.path().join("runtime");
         fs::create_dir_all(&runtime).unwrap();
         let listener = UnixListener::bind(runtime.join("agentdictate.sock")).unwrap();
-        let legacy = thread::spawn(move || {
+        let old_daemon = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let greeting = ServerMessage {
+                protocol_version: PROTOCOL_VERSION + 1,
+                ..SnapshotHandler.snapshot(0)
+            };
+            writeln!(stream, "{}", serde_json::to_string(&greeting).unwrap()).unwrap();
+        });
+        let (started, started_daemon) = mpsc::channel();
+        let service_runtime = runtime.clone();
+        // Like `systemctl restart`, the old daemon is gone before it returns.
+        let systemctl = FakeSystemctl::new("enabled").on_launch(move || {
+            old_daemon.join().unwrap();
+            started
+                .send(daemon(service_runtime, Duration::ZERO))
+                .unwrap();
+        });
+
+        drop(connect(&runtime, &supervised(directory.path()), &systemctl).unwrap());
+
+        started_daemon.recv().unwrap().join().unwrap();
+        assert_eq!(
+            systemctl.calls(),
+            ["daemon-reload", "restart agentdictated.service"]
+        );
+    }
+
+    #[test]
+    fn an_unsupervised_instance_waits_for_its_daemon_and_never_runs_systemctl() {
+        let directory = tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        let late_daemon = daemon(runtime.clone(), Duration::from_millis(30));
+        let systemctl = FakeSystemctl::new("enabled");
+
+        drop(connect(&runtime, &DaemonSupervision::Unsupervised, &systemctl).unwrap());
+
+        late_daemon.join().unwrap();
+        assert!(systemctl.calls().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_greeting_never_starts_a_competing_daemon() {
+        let directory = tempdir().unwrap();
+        let runtime = directory.path().join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = UnixListener::bind(runtime.join("agentdictate.sock")).unwrap();
+        let stranger = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream.write_all(b"not-json\n").unwrap();
         });
-        let manager = MockServiceManager::new(false, None, "new-route");
+        let systemctl = FakeSystemctl::new("enabled");
 
-        let error = bootstrap_daemon_service_with_manager(
-            &runtime,
-            &manager,
-            "new-route",
-            Duration::from_secs(1),
-        )
-        .unwrap_err();
-
-        legacy.join().unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("already holding AgentDictate IPC")
-        );
-        assert_eq!(manager.actions(), [ServiceAction::CheckActive]);
-    }
-
-    #[test]
-    fn route_identity_changes_when_the_executable_is_replaced() {
-        let directory = tempdir().unwrap();
-        let executable = directory.path().join("agentdictated");
-        fs::write(&executable, b"first").unwrap();
-        let command = StartupCommand {
-            executable: executable.clone(),
-            arguments: vec![SERVICE_ARGUMENT.to_owned()],
-            identity_files: vec![executable.clone()],
+        let Err(error) = connect(&runtime, &supervised(directory.path()), &systemctl) else {
+            panic!("a malformed greeting must not count as a daemon")
         };
-        let first = service_route_identity(&command);
-        fs::write(&executable, b"a different artifact").unwrap();
 
-        assert_ne!(first, service_route_identity(&command));
+        stranger.join().unwrap();
+        assert!(error.to_string().contains("holding AgentDictate's socket"));
+        assert!(systemctl.calls().is_empty());
     }
 
     #[test]
-    fn service_cgroup_accepts_children_but_not_prefix_collisions() {
-        let service = "/user.slice/app.slice/agentdictated.service";
-        assert!(cgroup_contains(service, service));
-        assert!(cgroup_contains(service, &format!("{service}/worker")));
-        assert!(!cgroup_contains(
-            service,
-            "/user.slice/app.slice/agentdictated.service-old"
-        ));
+    fn the_unit_is_rewritten_and_reloaded_only_when_its_text_changes() {
+        let directory = tempdir().unwrap();
+        let unit_file = directory.path().join("systemd/user/agentdictated.service");
+        let systemctl = FakeSystemctl::new("enabled");
+        let appimage = Path::new("/opt/Agent Dictate.AppImage");
+
+        assert!(write_unit(&unit_file, appimage, &systemctl).unwrap());
+        assert!(!write_unit(&unit_file, appimage, &systemctl).unwrap());
+        assert!(write_unit(&unit_file, Path::new("/usr/bin/agentdictated"), &systemctl).unwrap());
+
+        assert_eq!(systemctl.calls(), ["daemon-reload", "daemon-reload"]);
+        let unit = fs::read_to_string(&unit_file).unwrap();
+        assert!(unit.contains("\nExecStart=/usr/bin/agentdictated --service\n"));
     }
 
     #[test]
-    fn desktop_and_systemd_commands_escape_their_own_expansion_syntax() {
-        assert_eq!(quote_desktop_exec_value("cash$ 50%"), "\"cash\\$ 50%%\"");
-        assert_eq!(quote_systemd_exec_value("cash$ 50%"), "\"cash$$ 50%%\"");
+    fn login_enablement_changes_only_when_it_differs_from_the_setting() {
+        for (state, start_on_login, expected) in [
+            ("enabled", true, None),
+            ("disabled", false, None),
+            ("disabled", true, Some("enable agentdictated.service")),
+            ("static", true, Some("enable agentdictated.service")),
+            ("enabled", false, Some("disable agentdictated.service")),
+        ] {
+            let directory = tempdir().unwrap();
+            let unit_file = directory.path().join("agentdictated.service");
+            let executable = Path::new("/usr/bin/agentdictated");
+            fs::write(&unit_file, render_unit(executable)).unwrap();
+            let systemctl = FakeSystemctl::new(state);
+
+            sync_enablement(&unit_file, executable, start_on_login, &systemctl).unwrap();
+
+            let show = "show agentdictated.service --property UnitFileState --value";
+            let expected_calls = std::iter::once(show).chain(expected).collect::<Vec<_>>();
+            assert_eq!(
+                systemctl.calls(),
+                expected_calls,
+                "{state} -> {start_on_login}"
+            );
+        }
     }
 
-    struct SnapshotHandler {
-        quit: Option<mpsc::Sender<()>>,
-        reject_quit: bool,
+    #[test]
+    fn appimage_variables_inherited_from_another_app_are_ignored() {
+        let mounted = Path::new("/tmp/.mount_AgentDi1/usr/bin/agentdictated");
+        let installed = Path::new("/home/me/.local/bin/agentdictated");
+        let ours = || Some(OsString::from("/home/me/AgentDictate.AppImage"));
+
+        assert_eq!(
+            app_image_containing(mounted, ours(), Some("/tmp/.mount_AgentDi1".into())),
+            Some(PathBuf::from("/home/me/AgentDictate.AppImage"))
+        );
+        assert_eq!(
+            app_image_containing(installed, ours(), Some("/tmp/.mount_Editor42".into())),
+            None
+        );
+        assert_eq!(app_image_containing(installed, ours(), None), None);
     }
+
+    #[test]
+    fn exec_start_escapes_systemd_expansion_syntax() {
+        assert_eq!(
+            quote_systemd_exec_value("/usr/bin/agentdictated"),
+            "/usr/bin/agentdictated"
+        );
+        assert_eq!(
+            quote_systemd_exec_value("/opt/cash$ 50%"),
+            "\"/opt/cash$$ 50%%\""
+        );
+    }
+
+    struct SnapshotHandler;
 
     impl IpcHandler for SnapshotHandler {
         fn snapshot(&self, request_id: u64) -> ServerMessage {
@@ -1013,17 +595,8 @@ mod tests {
             )
         }
 
-        fn handle(&mut self, command: ClientCommand) -> ServerMessage {
-            let ClientCommandKind::Quit { request_id } = command.kind else {
-                panic!("bootstrap sent an unexpected command")
-            };
-            if self.reject_quit {
-                return ServerMessage::command_rejected(request_id, "shutdown checkpoint failed");
-            }
-            if let Some(quit) = self.quit.take() {
-                quit.send(()).unwrap();
-            }
-            self.snapshot(request_id)
+        fn handle(&mut self, _command: ClientCommand) -> ServerMessage {
+            panic!("startup sends no commands")
         }
     }
 }

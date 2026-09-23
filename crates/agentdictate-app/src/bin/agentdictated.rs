@@ -4,12 +4,12 @@ use std::sync::{
 };
 
 use agentdictate_app::{
-    AgentProcess, AppPaths, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
+    AgentProcess, AppPaths, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
     init_file_logging, settings_executable_for_current_process, start_hotkey_listener,
     start_overlay_presenter, start_system_tray,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
-use agentdictate_runtime::{IpcClient, IpcServer};
+use agentdictate_runtime::{IpcClient, IpcServer, load_settings};
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -17,18 +17,23 @@ fn main() -> anyhow::Result<()> {
     let argument = std::env::args().nth(1);
     let paths = AppPaths::from_environment()?;
     let _log_guard = init_file_logging(&paths.logs, "agentdictated.log")?;
-    if argument.as_deref() != Some(SERVICE_ARGUMENT) {
-        if argument.is_some() && argument.as_deref() != Some(START_SERVICE_ARGUMENT) {
-            anyhow::bail!(
-                "unknown agentdictated argument: {}",
-                argument.as_deref().unwrap_or_default()
-            )
-        }
-        tracing::info!("daemon service bootstrap starting");
-        let executable = std::env::current_exe()?;
-        return bootstrap_daemon_service(&paths.runtime, &paths.daemon_service_file, &executable);
+    match argument.as_deref() {
+        Some(SERVICE_ARGUMENT) => run_daemon(paths),
+        None | Some(START_SERVICE_ARGUMENT) => run_legacy_login_entry(&paths),
+        Some(argument) => anyhow::bail!("unknown agentdictated argument: {argument}"),
     }
-    run_daemon(paths)
+}
+
+/// Older versions started the daemon at login from an XDG autostart entry
+/// that runs `agentdictated` or `agentdictated --start-service`. The daemon
+/// deletes that entry once it has enabled its unit; until then, it keeps
+/// working and honours the saved "Start on login" choice.
+fn run_legacy_login_entry(paths: &AppPaths) -> anyhow::Result<()> {
+    if load_settings(&paths.config_file)?.start_on_login {
+        tracing::info!("legacy login entry is starting the daemon service");
+        connect_or_start_daemon(paths)?;
+    }
+    Ok(())
 }
 
 fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {

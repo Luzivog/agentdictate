@@ -26,33 +26,26 @@ BUILD_DIR="${PROJECT_DIR}/dist/deb/agentdictate_${VERSION}_${ARCHITECTURE}"
 PKG_DIR="${BUILD_DIR}/DEBIAN"
 BIN_DIR="${BUILD_DIR}/usr/bin"
 APP_DIR="${BUILD_DIR}/usr/share/applications"
-AUTOSTART_DIR="${BUILD_DIR}/etc/xdg/autostart"
 ICON_DIR="${BUILD_DIR}/usr/share/icons/hicolor/scalable/apps"
 METAINFO_DIR="${BUILD_DIR}/usr/share/metainfo"
 DOC_DIR="${BUILD_DIR}/usr/share/doc/agentdictate"
 UDEV_RULES_DIR="${BUILD_DIR}/usr/lib/udev/rules.d"
-SYSTEMD_USER_DIR="${BUILD_DIR}/usr/lib/systemd/user"
 agentdictate_build_release_binaries
 
 rm -rf "${BUILD_DIR}"
-mkdir -p "${PKG_DIR}" "${BIN_DIR}" "${APP_DIR}" "${AUTOSTART_DIR}" "${ICON_DIR}" \
-  "${METAINFO_DIR}" "${DOC_DIR}" "${UDEV_RULES_DIR}" "${SYSTEMD_USER_DIR}"
+mkdir -p "${PKG_DIR}" "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" \
+  "${METAINFO_DIR}" "${DOC_DIR}" "${UDEV_RULES_DIR}"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${BIN_DIR}/agentdictate"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentdictated"
 agentdictate_install_shared_assets "${BUILD_DIR}"
-install -m 0644 "${PROJECT_DIR}/packaging/agentdictate-autostart.desktop" \
-  "${AUTOSTART_DIR}/${DESKTOP_ID}.desktop"
 install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${DOC_DIR}/NATIVE_ACCESS.md"
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${UDEV_RULES_DIR}/70-agentdictate-input.rules"
-install -m 0644 "${PROJECT_DIR}/packaging/agentdictated.service" \
-  "${SYSTEMD_USER_DIR}/agentdictated.service"
-printf '%s\n' \
-  "/etc/xdg/autostart/${DESKTOP_ID}.desktop" > "${PKG_DIR}/conffiles"
 
-# Apply the package-owned udev policy to existing devices without enabling or
-# starting any per-user service. logind assigns uaccess ACLs to active seats.
+# Apply the package-owned udev policy to existing devices. Each user's
+# agentdictated.service unit is written and enabled by the app on first
+# launch, never by the package. logind assigns uaccess ACLs to active seats.
 cat > "${PKG_DIR}/postinst" <<'EOF'
 #!/bin/sh
 set -e

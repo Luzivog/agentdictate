@@ -12,6 +12,8 @@ use agentdictate_core::{ClientCommand, ServerMessageKind, WorkflowPhase};
 use agentdictate_runtime::IpcClient;
 use ksni::blocking::TrayMethods;
 
+use crate::startup::running_app_image;
+
 static TRAY_REQUEST_ID: AtomicU64 = AtomicU64::new(10_000);
 
 /// User intent emitted by the desktop tray. Menu callbacks only enqueue these
@@ -161,11 +163,8 @@ pub fn start_system_tray(
 
 /// Resolves a stable settings launcher for installed binaries and AppImages.
 pub fn settings_executable_for_current_process() -> std::io::Result<PathBuf> {
-    if let Some(app_image) = std::env::var_os("APPIMAGE") {
-        Ok(app_image.into())
-    } else {
-        Ok(std::env::current_exe()?.with_file_name("agentdictate"))
-    }
+    let executable = std::env::current_exe()?;
+    Ok(running_app_image(&executable).unwrap_or_else(|| executable.with_file_name("agentdictate")))
 }
 
 fn execute_tray_action(

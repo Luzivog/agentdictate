@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use agentdictate_app::{
-    AppPaths, WorkspaceClient, WorkspaceError, bootstrap_daemon_service, init_file_logging,
+    AppPaths, WorkspaceClient, WorkspaceError, connect_or_start_daemon, init_file_logging,
     is_overlay_helper_argument, run_overlay_helper,
 };
 use agentdictate_core::{ClientCommand, ServerMessageKind};
@@ -118,12 +118,4 @@ fn main() -> anyhow::Result<()> {
         ),
     }
     Ok(())
-}
-
-fn connect_or_start_daemon(
-    paths: &AppPaths,
-) -> anyhow::Result<(IpcClient, agentdictate_core::ServerMessage)> {
-    let daemon = std::env::current_exe()?.with_file_name("agentdictated");
-    bootstrap_daemon_service(&paths.runtime, &paths.daemon_service_file, &daemon)?;
-    IpcClient::connect(&paths.runtime).map_err(Into::into)
 }

@@ -129,8 +129,6 @@ fi
   fail "runtime shim was not created when /usr/sbin was absent from PATH"
 
 RULE="${PROJECT_DIR}/packaging/70-agentdictate-input.rules"
-DAEMON_SERVICE="${PROJECT_DIR}/packaging/agentdictated.service"
-AUTOSTART="${PROJECT_DIR}/packaging/agentdictate-autostart.desktop"
 GUIDE="${PROJECT_DIR}/packaging/NATIVE_ACCESS.md"
 assert_file_contains "${RULE}" 'ENV{ID_INPUT_KEYBOARD}=="1"'
 assert_file_contains "${RULE}" 'TAG+="uaccess"'
@@ -138,20 +136,8 @@ assert_file_contains "${RULE}" 'MODE="0660"'
 if grep -Eq 'MODE="?0?666"?|chmod[[:space:]]+0?666' "${RULE}" "${GUIDE}"; then
   fail "native access assets must never grant world-write access"
 fi
-assert_file_contains "${DAEMON_SERVICE}" "PartOf=graphical-session.target"
-assert_file_contains "${DAEMON_SERVICE}" "After=graphical-session.target"
-assert_file_contains "${DAEMON_SERVICE}" "ExecStart=/usr/bin/agentdictated --service"
-assert_file_contains "${DAEMON_SERVICE}" "Restart=on-failure"
-if grep -Fq 'WantedBy=graphical-session.target' "${DAEMON_SERVICE}"; then
-  fail "daemon service must start from XDG autostart after session initialization"
-fi
-assert_file_contains "${AUTOSTART}" "Exec=agentdictated --start-service"
 assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
   'usr/lib/udev/rules.d'
-assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
-  'usr/lib/systemd/user'
-assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
-  'agentdictated.service'
 assert_file_contains "${PROJECT_DIR}/packaging/build-deb.sh" \
   '${PKG_DIR}/postrm'
 if grep -Eq 'systemctl([^#\n]*)(enable|start|restart)' \
@@ -164,9 +150,5 @@ assert_file_contains "${PROJECT_DIR}/packaging/build-appimage.sh" \
   'agentdictated" --service'
 assert_file_contains "${PROJECT_DIR}/install.sh" \
   '--check-native-access'
-assert_file_contains "${PROJECT_DIR}/install.sh" \
-  'agentdictated.service'
-assert_file_contains "${PROJECT_DIR}/install.sh" \
-  "grep -Fxq 'Hidden=true'"
 
 echo "Native install readiness checks passed."

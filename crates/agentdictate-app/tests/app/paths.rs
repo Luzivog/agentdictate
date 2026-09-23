@@ -1,4 +1,4 @@
-use agentdictate_app::AppPaths;
+use agentdictate_app::{AppPaths, DaemonSupervision};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -33,9 +33,30 @@ fn app_paths_preserve_the_existing_xdg_layout() {
     assert_eq!(paths.cache, PathBuf::from("/tmp/cache/agentdictate"));
     assert_eq!(paths.runtime, PathBuf::from("/tmp/runtime/agentdictate"));
     assert_eq!(
-        paths.daemon_service_file,
-        PathBuf::from("/tmp/data/systemd/user/agentdictated.service")
+        paths.daemon_supervision,
+        DaemonSupervision::SystemdUser {
+            unit_file: PathBuf::from("/tmp/data/systemd/user/agentdictated.service")
+        }
     );
+}
+
+#[test]
+fn an_isolated_instance_keeps_every_root_under_its_home_and_leaves_systemd_alone() {
+    let paths = AppPaths::isolated("/tmp/dev-home");
+
+    for path in [
+        &paths.config_file,
+        &paths.legacy_autostart_file,
+        &paths.database_file,
+        &paths.recordings,
+        &paths.logs,
+        &paths.ducking_state_file,
+        &paths.cache,
+        &paths.runtime,
+    ] {
+        assert!(path.starts_with("/tmp/dev-home"), "{}", path.display());
+    }
+    assert_eq!(paths.daemon_supervision, DaemonSupervision::Unsupervised);
 }
 
 #[test]

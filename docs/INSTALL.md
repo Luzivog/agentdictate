@@ -37,12 +37,14 @@ cd agentdictate
 ```
 
 The installer builds the release binaries and copies the app, desktop entry,
-graphical-session user service, login bootstrap, icon, and native-input support
-files into your user profile. It does not use `sudo` or start services.
+icon, and native-input support files into your user profile. It does not use
+`sudo` or start services.
 
-On a fresh install, the login bootstrap starts the daemon at the next desktop
-login. That imports eligible ChatGPT desktop dictation transcripts and metadata
-into local SQLite. Before starting the daemon manually or logging out, read
+On a fresh install, nothing runs until you open AgentDictate. The app then
+writes its `agentdictated.service` user unit, starts the daemon, and, while
+**Start on login** is on, enables the unit for later desktop logins. The daemon
+imports eligible ChatGPT desktop dictation transcripts and metadata into local
+SQLite. Before opening the app, read
 [Local data and network use](#local-data-and-network-use).
 
 On a clean machine, installation can finish with exit status 2 after the files

@@ -10,7 +10,6 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 APP_DIR="${DATA_HOME}/applications"
 AUTOSTART_DIR="${CONFIG_HOME}/autostart"
 ICON_DIR="${DATA_HOME}/icons/hicolor/scalable/apps"
-SYSTEMD_USER_DIR="${DATA_HOME}/systemd/user"
 NATIVE_ACCESS_DIR="${DATA_HOME}/agentdictate/native-access"
 
 case "${1:-}" in
@@ -28,20 +27,16 @@ esac
 source "${PROJECT_DIR}/packaging/linker-runtime-fallback.sh"
 agentdictate_build_release_binaries
 
-mkdir -p "${BIN_DIR}" "${APP_DIR}" "${AUTOSTART_DIR}" "${ICON_DIR}" \
-  "${SYSTEMD_USER_DIR}" "${NATIVE_ACCESS_DIR}"
+mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${NATIVE_ACCESS_DIR}"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictate" "${BIN_DIR}/agentdictate"
 install -m 0755 "${PROJECT_DIR}/target/release/agentdictated" "${BIN_DIR}/agentdictated"
 
-# Desktop launchers do not guarantee that ~/.local/bin is in PATH. Render
-# absolute paths for both entry points so launch and autostart are reliable.
+# Desktop launchers do not guarantee that ~/.local/bin is in PATH, so the
+# entry uses an absolute path. The app writes its own systemd user unit
+# (agentdictated.service) on first launch and enables it for login itself.
 DESKTOP_TARGET="${APP_DIR}/${DESKTOP_ID}.desktop"
-AUTOSTART_TARGET="${AUTOSTART_DIR}/${DESKTOP_ID}.desktop"
-SERVICE_TARGET="${SYSTEMD_USER_DIR}/agentdictated.service"
 DESKTOP_TEMP="$(mktemp "${APP_DIR}/.${DESKTOP_ID}.XXXXXX")"
-AUTOSTART_TEMP="$(mktemp "${AUTOSTART_DIR}/.${DESKTOP_ID}.XXXXXX")"
-SERVICE_TEMP="$(mktemp "${SYSTEMD_USER_DIR}/.agentdictated.service.XXXXXX")"
-trap 'rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}" "${SERVICE_TEMP}"' EXIT
+trap 'rm -f -- "${DESKTOP_TEMP}"' EXIT
 while IFS= read -r line || [[ -n "${line}" ]]; do
   if [[ "${line}" == "Exec=agentdictate" ]]; then
     printf 'Exec="%s"\n' "${BIN_DIR}/agentdictate"
@@ -49,29 +44,8 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
     printf '%s\n' "${line}"
   fi
 done < "${PROJECT_DIR}/agentdictate.desktop" > "${DESKTOP_TEMP}"
-while IFS= read -r line || [[ -n "${line}" ]]; do
-  if [[ "${line}" == "Exec=agentdictated --start-service" ]]; then
-    printf 'Exec="%s" --start-service\n' "${BIN_DIR}/agentdictated"
-  else
-    printf '%s\n' "${line}"
-  fi
-done < "${PROJECT_DIR}/packaging/agentdictate-autostart.desktop" > "${AUTOSTART_TEMP}"
-while IFS= read -r line || [[ -n "${line}" ]]; do
-  if [[ "${line}" == "ExecStart=/usr/bin/agentdictated --service" ]]; then
-    printf 'ExecStart="%s" --service\n' "${BIN_DIR}/agentdictated"
-  else
-    printf '%s\n' "${line}"
-  fi
-done < "${PROJECT_DIR}/packaging/agentdictated.service" > "${SERVICE_TEMP}"
 install -m 0644 "${DESKTOP_TEMP}" "${DESKTOP_TARGET}"
-# Hidden=true is the persisted user override for Start on login. An upgrade
-# must not silently replace that choice with the package default.
-if [[ ! -f "${AUTOSTART_TARGET}" ]] || \
-  ! grep -Fxq 'Hidden=true' "${AUTOSTART_TARGET}"; then
-  install -m 0644 "${AUTOSTART_TEMP}" "${AUTOSTART_TARGET}"
-fi
-install -m 0644 "${SERVICE_TEMP}" "${SERVICE_TARGET}"
-rm -f -- "${DESKTOP_TEMP}" "${AUTOSTART_TEMP}" "${SERVICE_TEMP}"
+rm -f -- "${DESKTOP_TEMP}"
 trap - EXIT
 
 install -m 0644 "${PROJECT_DIR}/assets/agentdictate.svg" \
@@ -82,10 +56,6 @@ install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
   "${NATIVE_ACCESS_DIR}/NATIVE_ACCESS.md"
 
 rm -f "${APP_DIR}/agentdictate.desktop" "${AUTOSTART_DIR}/agentdictate.desktop"
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user daemon-reload >/dev/null 2>&1 || \
-    echo "Warning: could not reload the user service manager" >&2
-fi
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "${APP_DIR}" >/dev/null 2>&1 || true
 fi
@@ -97,7 +67,6 @@ fi
 echo "Installed native AgentDictate:"
 echo "  ${BIN_DIR}/agentdictate"
 echo "  ${BIN_DIR}/agentdictated"
-echo "  ${SERVICE_TARGET}"
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "Warning: ffmpeg is missing, so recordings upload uncompressed (about 8x larger); install it with: sudo apt install ffmpeg" >&2
 fi

@@ -14,7 +14,7 @@ use agentdictate_runtime::{
 use crate::{
     AppPaths, CodexSubscriptionTransport, Daemon, OverlayController, ReqwestOpenAiTransport,
     SpeechRouter, SystemDeliverer, SystemRecordingController, TranscriptionPipeline,
-    chatgpt_dictation_import::start_chatgpt_dictation_importer, sync_startup_with_systemctl,
+    chatgpt_dictation_import::start_chatgpt_dictation_importer, startup::LoginStartup,
 };
 
 pub type ProductionTranscriber =
@@ -31,9 +31,7 @@ pub trait HotkeyReconfigurer: Send + Sync {
 pub struct AgentProcess {
     daemon: ProductionDaemon,
     config_file: PathBuf,
-    autostart_file: PathBuf,
-    daemon_service_file: PathBuf,
-    systemctl_command: PathBuf,
+    login_startup: LoginStartup,
     database_file: PathBuf,
     recordings_directory: PathBuf,
     runtime_directory: PathBuf,
@@ -71,10 +69,8 @@ impl AgentProcess {
                 transcriber,
                 deliverer,
             ),
+            login_startup: LoginStartup::new(&paths),
             config_file: paths.config_file,
-            autostart_file: paths.autostart_file,
-            daemon_service_file: paths.daemon_service_file,
-            systemctl_command: PathBuf::from("systemctl"),
             database_file: paths.database_file,
             recordings_directory: paths.recordings,
             runtime_directory: paths.runtime,
@@ -133,9 +129,7 @@ impl AgentProcess {
     /// and the daemon remains available.
     pub fn start_post_listener_maintenance(&self) -> std::io::Result<std::thread::JoinHandle<()>> {
         let settings = self.daemon.settings().clone();
-        let autostart_file = self.autostart_file.clone();
-        let daemon_service_file = self.daemon_service_file.clone();
-        let systemctl_command = self.systemctl_command.clone();
+        let login_startup = self.login_startup.clone();
         let database_file = self.database_file.clone();
         let recordings_directory = self.recordings_directory.clone();
         let history_index_maintenance = self.history_index_maintenance.clone();
@@ -144,9 +138,7 @@ impl AgentProcess {
             .spawn(move || {
                 run_post_listener_maintenance(
                     &settings,
-                    &autostart_file,
-                    &daemon_service_file,
-                    &systemctl_command,
+                    &login_startup,
                     &database_file,
                     &recordings_directory,
                     &history_index_maintenance,
@@ -220,24 +212,10 @@ impl AgentProcess {
             }
             return Err(error.into());
         }
-        if start_on_login_changed {
-            match std::env::current_exe() {
-                Ok(executable) => {
-                    let daemon_executable = executable.with_file_name("agentdictated");
-                    if let Err(error) = sync_startup_with_systemctl(
-                        &self.autostart_file,
-                        &self.daemon_service_file,
-                        settings.start_on_login,
-                        &daemon_executable,
-                        &self.systemctl_command,
-                    ) {
-                        tracing::warn!(%error, "settings saved but login startup reconciliation failed");
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "settings saved but daemon executable was not found");
-                }
-            }
+        if start_on_login_changed
+            && let Err(error) = self.login_startup.sync(settings.start_on_login)
+        {
+            tracing::warn!(%error, "settings saved but login startup reconciliation failed");
         }
         self.daemon
             .transcriber_mut()
@@ -289,27 +267,13 @@ impl AgentProcess {
 
 fn run_post_listener_maintenance(
     settings: &Settings,
-    autostart_file: &std::path::Path,
-    daemon_service_file: &std::path::Path,
-    systemctl_command: &std::path::Path,
+    login_startup: &LoginStartup,
     database_file: &std::path::Path,
     recordings_directory: &std::path::Path,
     history_index_maintenance: &HistoryIndexMaintenance,
 ) {
-    match std::env::current_exe() {
-        Ok(executable) => {
-            let daemon_executable = executable.with_file_name("agentdictated");
-            if let Err(error) = sync_startup_with_systemctl(
-                autostart_file,
-                daemon_service_file,
-                settings.start_on_login,
-                &daemon_executable,
-                systemctl_command,
-            ) {
-                tracing::warn!(%error, "could not reconcile login startup");
-            }
-        }
-        Err(error) => tracing::warn!(%error, "could not locate daemon for autostart"),
+    if let Err(error) = login_startup.sync(settings.start_on_login) {
+        tracing::warn!(%error, "could not reconcile login startup");
     }
     // The listener is already live, so a recording may have started. The
     // reconciling `Runtime::open` would mark it interrupted.
@@ -552,6 +516,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::DaemonSupervision;
 
     #[derive(Default)]
     struct RejectingHotkeyControl {
@@ -700,21 +665,33 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_shortcut_process_does_not_run_nonessential_maintenance() {
+    fn startup_maintenance_replaces_the_legacy_login_entry_with_the_unit() {
         let directory = tempdir().unwrap();
-        let paths = app_paths(directory.path());
+        let root = directory.path();
+        let paths = AppPaths::from_roots(
+            root.join("config"),
+            root.join("data"),
+            root.join("state"),
+            root.join("cache"),
+            root.join("runtime"),
+        );
+        let DaemonSupervision::SystemdUser { unit_file } = paths.daemon_supervision.clone() else {
+            unreachable!()
+        };
+        std::fs::create_dir_all(paths.legacy_autostart_file.parent().unwrap()).unwrap();
+        std::fs::write(&paths.legacy_autostart_file, "[Desktop Entry]\n").unwrap();
 
         let mut process = AgentProcess::open(paths.clone()).unwrap();
-        process.systemctl_command = PathBuf::from("/bin/true");
+        process.login_startup.systemctl = PathBuf::from("/bin/true");
+        assert!(!unit_file.exists());
 
-        assert!(!paths.autostart_file.exists());
         process
             .start_post_listener_maintenance()
             .unwrap()
             .join()
             .unwrap();
-        assert!(paths.autostart_file.exists());
-        assert!(paths.daemon_service_file.exists());
+        assert!(unit_file.exists());
+        assert!(!paths.legacy_autostart_file.exists());
     }
 
     struct StartedRecorder;
@@ -729,8 +706,7 @@ mod tests {
     fn startup_maintenance_leaves_a_recording_that_started_before_it_alone() {
         let directory = tempdir().unwrap();
         let paths = app_paths(directory.path());
-        let mut process = AgentProcess::open(paths.clone()).unwrap();
-        process.systemctl_command = PathBuf::from("/bin/true");
+        let process = AgentProcess::open(paths.clone()).unwrap();
         // A hotkey press lands between the listener going live and maintenance.
         let recording = Runtime::open_background_writer(&paths.database_file)
             .unwrap()
@@ -760,13 +736,8 @@ mod tests {
         );
     }
 
+    /// An isolated instance, so no test can reach the host's systemd.
     fn app_paths(root: &Path) -> AppPaths {
-        AppPaths::from_roots(
-            root.join("config"),
-            root.join("data"),
-            root.join("state"),
-            root.join("cache"),
-            root.join("runtime"),
-        )
+        AppPaths::isolated(root)
     }
 }

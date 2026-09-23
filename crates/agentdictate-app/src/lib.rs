@@ -36,8 +36,7 @@ pub use overlay_process::{
 };
 pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
 pub use startup::{
-    DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, bootstrap_daemon_service,
-    sync_startup_command, sync_startup_with_systemctl,
+    DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
 };
 pub use system::{SystemDeliverer, SystemRecordingController};
 pub use tray::{
@@ -46,11 +45,28 @@ pub use tray::{
 };
 pub use workspace::{WorkspaceClient, WorkspaceError};
 
+/// Set by `./run.sh`: roots an isolated instance (config, data, state, cache
+/// and IPC socket) in this directory, with a daemon that systemd never manages.
+const AGENTDICTATE_HOME_ENVIRONMENT: &str = "AGENTDICTATE_HOME";
+
+/// Who starts and supervises the daemon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DaemonSupervision {
+    /// Installed builds: the `agentdictated.service` user unit at `unit_file`.
+    SystemdUser { unit_file: PathBuf },
+    /// An `AGENTDICTATE_HOME` instance, whose daemon the developer runs
+    /// directly. Nothing may call systemctl: the user manager would act on
+    /// the installed service of the same name.
+    Unsupervised,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppPaths {
     pub config_file: PathBuf,
-    pub autostart_file: PathBuf,
-    pub daemon_service_file: PathBuf,
+    /// The XDG autostart entry older versions used for "Start on login". The
+    /// daemon deletes it once the unit's enablement has taken over.
+    pub legacy_autostart_file: PathBuf,
+    pub daemon_supervision: DaemonSupervision,
     pub database_file: PathBuf,
     pub recordings: PathBuf,
     pub logs: PathBuf,
@@ -62,6 +78,11 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn from_environment() -> io::Result<Self> {
+        if let Some(home) =
+            std::env::var_os(AGENTDICTATE_HOME_ENVIRONMENT).filter(|home| !home.is_empty())
+        {
+            return Ok(Self::isolated(home));
+        }
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
@@ -119,14 +140,34 @@ impl AppPaths {
         let runtime = runtime_root.into().join("agentdictate");
         Self {
             config_file: config.join("config.json"),
-            autostart_file: config_root.join("autostart/local.agentdictate.AgentDictate.desktop"),
-            daemon_service_file: data_root.join("systemd/user/agentdictated.service"),
+            legacy_autostart_file: config_root
+                .join("autostart/local.agentdictate.AgentDictate.desktop"),
+            daemon_supervision: DaemonSupervision::SystemdUser {
+                unit_file: data_root.join("systemd/user/agentdictated.service"),
+            },
             database_file: data.join("agentdictate.sqlite"),
             recordings: data.join("recordings"),
             logs: state.join("logs"),
             ducking_state_file: state.join("ducking.json"),
             cache,
             runtime,
+        }
+    }
+
+    /// The layout of an `AGENTDICTATE_HOME` instance: every root lives under
+    /// `home`, and the daemon is unsupervised.
+    #[must_use]
+    pub fn isolated(home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        Self {
+            daemon_supervision: DaemonSupervision::Unsupervised,
+            ..Self::from_roots(
+                home.join("config"),
+                home.join("data"),
+                home.join("state"),
+                home.join("cache"),
+                home.join("runtime"),
+            )
         }
     }
 }
