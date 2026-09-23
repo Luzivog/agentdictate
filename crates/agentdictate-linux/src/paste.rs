@@ -1,12 +1,14 @@
+/// Whether the focused window is a native Wayland one, or an X11 one
+/// (under XWayland too).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClipboardProtocol {
+pub enum WindowProtocol {
     Wayland,
     X11,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FocusTarget {
-    protocol: ClipboardProtocol,
+    protocol: WindowProtocol,
     /// The X11 window id; native Wayland targets have none.
     identity: Option<u32>,
     window_class: String,
@@ -37,7 +39,7 @@ pub fn resolve_focus_target(
 impl FocusTarget {
     pub fn x11(window: u32, window_class: impl Into<String>) -> Self {
         Self {
-            protocol: ClipboardProtocol::X11,
+            protocol: WindowProtocol::X11,
             identity: Some(window),
             window_class: window_class.into(),
         }
@@ -45,13 +47,13 @@ impl FocusTarget {
 
     pub fn wayland() -> Self {
         Self {
-            protocol: ClipboardProtocol::Wayland,
+            protocol: WindowProtocol::Wayland,
             identity: None,
             window_class: String::new(),
         }
     }
 
-    pub const fn protocol(&self) -> ClipboardProtocol {
+    pub const fn protocol(&self) -> WindowProtocol {
         self.protocol
     }
 
@@ -69,8 +71,8 @@ impl FocusTarget {
             return false;
         }
         match self.protocol {
-            ClipboardProtocol::X11 => self.identity == other.identity,
-            ClipboardProtocol::Wayland => true,
+            WindowProtocol::X11 => self.identity == other.identity,
+            WindowProtocol::Wayland => true,
         }
     }
 }
@@ -119,7 +121,9 @@ pub struct DeliveryResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryAction {
     ObserveFocus,
-    PublishClipboard(ClipboardProtocol),
+    /// Publish the text on the X11 selections, which the compositor also
+    /// offers to native Wayland windows.
+    PublishClipboard,
     InjectPaste {
         target: FocusTarget,
         shortcut: PasteShortcut,
@@ -130,7 +134,7 @@ pub enum DeliveryAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryObservation {
     Focus(FocusTarget),
-    ClipboardReady(ClipboardProtocol),
+    ClipboardReady,
     ClipboardUnavailable,
     /// The paste chord was sent; `consumed` records whether the target then
     /// requested the text.
@@ -146,7 +150,6 @@ pub enum DeliveryObservation {
 pub struct PasteDelivery {
     shortcut_mode: ShortcutMode,
     target: Option<FocusTarget>,
-    clipboard_protocol: Option<ClipboardProtocol>,
     clipboard_ready: bool,
     action: DeliveryAction,
 }
@@ -156,7 +159,6 @@ impl PasteDelivery {
         Self {
             shortcut_mode,
             target: None,
-            clipboard_protocol: None,
             clipboard_ready: false,
             action: DeliveryAction::ObserveFocus,
         }
@@ -172,15 +174,14 @@ impl PasteDelivery {
         }
         match observation {
             DeliveryObservation::Focus(target) => self.focus_observed(target),
-            DeliveryObservation::ClipboardReady(protocol) => {
-                if self.action == DeliveryAction::PublishClipboard(protocol) {
-                    self.clipboard_protocol = Some(protocol);
+            DeliveryObservation::ClipboardReady => {
+                if self.action == DeliveryAction::PublishClipboard {
                     self.clipboard_ready = true;
                     self.action = DeliveryAction::ObserveFocus;
                 }
             }
             DeliveryObservation::ClipboardUnavailable => {
-                if matches!(self.action, DeliveryAction::PublishClipboard(_)) {
+                if self.action == DeliveryAction::PublishClipboard {
                     self.action = DeliveryAction::Finished(DeliveryResult {
                         copied: false,
                         paste_triggered: false,
@@ -228,9 +229,10 @@ impl PasteDelivery {
         self.action()
     }
 
+    /// Pastes once the clipboard is ready and two looks in a row saw the
+    /// same focused window; otherwise publishes the text, or looks again.
     fn focus_observed(&mut self, target: FocusTarget) {
         if self.clipboard_ready
-            && self.clipboard_protocol == Some(target.protocol)
             && self
                 .target
                 .as_ref()
@@ -242,14 +244,11 @@ impl PasteDelivery {
             };
             return;
         }
-
-        self.clipboard_ready =
-            self.clipboard_protocol == Some(target.protocol) && self.clipboard_ready;
-        self.target = Some(target.clone());
+        self.target = Some(target);
         self.action = if self.clipboard_ready {
             DeliveryAction::ObserveFocus
         } else {
-            DeliveryAction::PublishClipboard(target.protocol)
+            DeliveryAction::PublishClipboard
         };
     }
 }

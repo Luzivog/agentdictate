@@ -1,6 +1,6 @@
 use agentdictate_linux::{
     focus::focus_observation,
-    paste::{ClipboardProtocol, FocusTarget, resolve_focus_target},
+    paste::{FocusTarget, WindowProtocol, resolve_focus_target},
 };
 
 const FOCUSED: u32 = 401;
@@ -38,7 +38,7 @@ fn wayland_session_trusts_only_an_xwayland_window_that_holds_focus() {
 
     assert_eq!(
         resolve_focus_target(true, Some(focused)).protocol(),
-        ClipboardProtocol::X11
+        WindowProtocol::X11
     );
     assert_eq!(
         resolve_focus_target(true, Some(stale)),

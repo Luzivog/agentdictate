@@ -544,7 +544,7 @@ impl SystemDeliverer {
                         }
                     }
                 }
-                DeliveryAction::PublishClipboard(protocol) => {
+                DeliveryAction::PublishClipboard => {
                     let started = Instant::now();
                     let published = self.publish_delivery_text(&job.final_text, deadline);
                     clipboard_time += started.elapsed();
@@ -557,7 +557,7 @@ impl SystemDeliverer {
                         };
                     }
                     copied_this_attempt = true;
-                    delivery.advance(DeliveryObservation::ClipboardReady(protocol))
+                    delivery.advance(DeliveryObservation::ClipboardReady)
                 }
                 DeliveryAction::InjectPaste { target, shortcut } => {
                     // This is deliberately exactly one injection. Once the

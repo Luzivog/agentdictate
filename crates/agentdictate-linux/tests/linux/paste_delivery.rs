@@ -1,6 +1,6 @@
 use agentdictate_linux::paste::{
-    ClipboardProtocol, DeliveryAction, DeliveryFailure, DeliveryObservation, DeliveryResult,
-    FocusTarget, PasteDelivery, PasteShortcut, ShortcutMode,
+    DeliveryAction, DeliveryFailure, DeliveryObservation, DeliveryResult, FocusTarget,
+    PasteDelivery, PasteShortcut, ShortcutMode,
 };
 
 #[test]
@@ -11,10 +11,10 @@ fn paste_is_not_injected_until_clipboard_readiness_is_observed() {
     assert_eq!(delivery.action(), DeliveryAction::ObserveFocus);
     assert_eq!(
         delivery.advance(DeliveryObservation::Focus(target.clone())),
-        DeliveryAction::PublishClipboard(ClipboardProtocol::X11)
+        DeliveryAction::PublishClipboard
     );
     assert_eq!(
-        delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11)),
+        delivery.advance(DeliveryObservation::ClipboardReady),
         DeliveryAction::ObserveFocus
     );
     assert_eq!(
@@ -35,7 +35,7 @@ fn auto_mode_uses_universal_paste_for_every_target() {
     ] {
         let mut delivery = PasteDelivery::new(ShortcutMode::Auto);
         delivery.advance(DeliveryObservation::Focus(target.clone()));
-        delivery.advance(DeliveryObservation::ClipboardReady(target.protocol()));
+        delivery.advance(DeliveryObservation::ClipboardReady);
 
         assert_eq!(
             delivery.advance(DeliveryObservation::Focus(target.clone())),
@@ -52,7 +52,7 @@ fn ambiguous_injection_failure_is_final_and_never_retried() {
     let target = FocusTarget::x11(42, "chatgpt Chatgpt");
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    delivery.advance(DeliveryObservation::ClipboardReady);
     delivery.advance(DeliveryObservation::Focus(target.clone()));
 
     let finished = DeliveryAction::Finished(DeliveryResult {
@@ -76,9 +76,7 @@ fn deadline_after_injection_begins_is_ambiguous_not_safe_to_retry() {
     let target = FocusTarget::wayland();
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(
-        ClipboardProtocol::Wayland,
-    ));
+    delivery.advance(DeliveryObservation::ClipboardReady);
     delivery.advance(DeliveryObservation::Focus(target));
 
     assert_eq!(
@@ -99,7 +97,7 @@ fn deadline_with_changing_focus_keeps_the_copy_but_skips_paste() {
         42,
         "chatgpt Chatgpt",
     )));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    delivery.advance(DeliveryObservation::ClipboardReady);
     delivery.advance(DeliveryObservation::Focus(FocusTarget::x11(
         84,
         "kitty kitty",
@@ -152,7 +150,7 @@ fn clipboard_failure_never_attempts_paste() {
 fn x11_focus_identity_is_the_window_id_not_mutable_class_metadata() {
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(FocusTarget::x11(42, "")));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    delivery.advance(DeliveryObservation::ClipboardReady);
     let same_window = FocusTarget::x11(42, "chatgpt Chatgpt");
 
     assert_eq!(
@@ -164,22 +162,21 @@ fn x11_focus_identity_is_the_window_id_not_mutable_class_metadata() {
     );
 }
 
+/// The published text serves X11 and Wayland windows alike, so a focus
+/// change only needs a second look at the new window before the paste.
 #[test]
-fn protocol_change_republishes_before_pasting_to_current_focus() {
+fn a_focus_change_is_confirmed_by_a_second_look_before_pasting() {
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(FocusTarget::x11(
         42,
         "chatgpt Chatgpt",
     )));
-    delivery.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    delivery.advance(DeliveryObservation::ClipboardReady);
 
     assert_eq!(
         delivery.advance(DeliveryObservation::Focus(FocusTarget::wayland())),
-        DeliveryAction::PublishClipboard(ClipboardProtocol::Wayland)
+        DeliveryAction::ObserveFocus
     );
-    delivery.advance(DeliveryObservation::ClipboardReady(
-        ClipboardProtocol::Wayland,
-    ));
     assert_eq!(
         delivery.advance(DeliveryObservation::Focus(FocusTarget::wayland())),
         DeliveryAction::InjectPaste {
@@ -194,9 +191,7 @@ fn sent_paste_completes_as_copied_triggered_and_acknowledged_by_the_target() {
     let target = FocusTarget::wayland();
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(target.clone()));
-    delivery.advance(DeliveryObservation::ClipboardReady(
-        ClipboardProtocol::Wayland,
-    ));
+    delivery.advance(DeliveryObservation::ClipboardReady);
     delivery.advance(DeliveryObservation::Focus(target));
 
     assert_eq!(
@@ -215,7 +210,7 @@ fn explicit_modes_pin_their_shortcut_regardless_of_window_class() {
     let terminal = FocusTarget::x11(84, "kitty kitty");
     let mut standard = PasteDelivery::new(ShortcutMode::Standard);
     standard.advance(DeliveryObservation::Focus(terminal.clone()));
-    standard.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    standard.advance(DeliveryObservation::ClipboardReady);
     assert_eq!(
         standard.advance(DeliveryObservation::Focus(terminal.clone())),
         DeliveryAction::InjectPaste {
@@ -226,7 +221,7 @@ fn explicit_modes_pin_their_shortcut_regardless_of_window_class() {
 
     let mut forced_terminal = PasteDelivery::new(ShortcutMode::Terminal);
     forced_terminal.advance(DeliveryObservation::Focus(terminal.clone()));
-    forced_terminal.advance(DeliveryObservation::ClipboardReady(ClipboardProtocol::X11));
+    forced_terminal.advance(DeliveryObservation::ClipboardReady);
     assert_eq!(
         forced_terminal.advance(DeliveryObservation::Focus(terminal.clone())),
         DeliveryAction::InjectPaste {
