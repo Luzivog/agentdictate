@@ -23,9 +23,9 @@ use agentdictate_ui::{
     UsageViewModel, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
 };
 use gpui::{
-    AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
-    Size, StyledText, TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point,
-    prelude::*, px, size,
+    AppContext, Bounds, ClipboardItem, Entity, Modifiers, MouseButton, Pixels, ScrollDelta,
+    ScrollWheelEvent, Size, StyledText, TestAppContext, VisualTestContext, WindowBounds,
+    WindowOptions, point, prelude::*, px, size,
 };
 use gpui_component::{Root, Theme};
 
@@ -1091,6 +1091,39 @@ fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mu
         actions.lock().unwrap().last(),
         Some(&WorkspaceAction::SearchHistory {
             query: "needle".to_owned(),
+        })
+    );
+}
+
+/// Automatic paste presses Shift+Insert, so a dictation reaches
+/// AgentDictate's own text boxes too.
+#[gpui::test]
+fn shift_insert_pastes_into_a_text_box(cx: &mut TestAppContext) {
+    let model = ShellViewModel::new(Route::History);
+    let refreshed = model.workspace.clone();
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&actions);
+    let mut harness = Harness::open_model_with_actions(
+        cx,
+        size(px(1_100.), px(780.)),
+        model,
+        Arc::new(move |action| {
+            captured.lock().unwrap().push(action);
+            Ok(refreshed.clone())
+        }),
+    );
+    harness.click("history-search-input");
+
+    harness
+        .cx
+        .write_to_clipboard(ClipboardItem::new_string("hello world".to_owned()));
+    harness.cx.simulate_keystrokes("shift-insert");
+    harness.cx.run_until_parked();
+
+    assert_eq!(
+        actions.lock().unwrap().last(),
+        Some(&WorkspaceAction::SearchHistory {
+            query: "hello world".to_owned(),
         })
     );
 }

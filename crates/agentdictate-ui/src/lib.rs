@@ -56,7 +56,7 @@ pub use workspace::{UiActionError, WorkspaceAction, WorkspaceActionSink, Workspa
 pub mod test_support {
     /// Initialize GPUI Component inside a headless rendered-interaction test.
     pub fn initialize(cx: &mut gpui::TestAppContext) {
-        cx.update(crate::theme::initialize_gpui_theme);
+        cx.update(crate::desktop::initialize);
     }
 
     /// Render the production single-line clipping primitive around an

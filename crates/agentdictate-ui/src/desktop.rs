@@ -1,7 +1,7 @@
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, Bounds, Subscription, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
-    WindowKind, WindowOptions, point, prelude::*, px, size,
+    App, Bounds, KeyBinding, Subscription, WindowBackgroundAppearance, WindowBounds,
+    WindowDecorations, WindowKind, WindowOptions, point, prelude::*, px, size,
 };
 use gpui_component::{Root, TitleBar};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -70,6 +70,19 @@ pub struct SettingsWindow {
     pub raise_requests: Option<Receiver<()>>,
 }
 
+/// Sets up gpui-component for the settings window: the app's theme, and
+/// Shift+Insert to paste into text boxes. Automatic paste presses
+/// Shift+Insert, which gpui-component does not bind, so a dictation into
+/// AgentDictate's own window would otherwise type nothing.
+pub(crate) fn initialize(cx: &mut App) {
+    crate::theme::initialize_gpui_theme(cx);
+    cx.bind_keys([KeyBinding::new(
+        "shift-insert",
+        gpui_component::input::Paste,
+        Some("Input"),
+    )]);
+}
+
 /// Opens the settings window and runs until it closes.
 pub fn run_settings_window(settings_window: SettingsWindow) {
     let SettingsWindow {
@@ -84,7 +97,7 @@ pub fn run_settings_window(settings_window: SettingsWindow) {
     gpui_platform::application()
         .with_assets(crate::AgentDictateAssets)
         .run(move |cx: &mut App| {
-            crate::theme::initialize_gpui_theme(cx);
+            initialize(cx);
             let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
             let shell_slot = Rc::new(RefCell::new(None));
             let window_shell_slot = Rc::clone(&shell_slot);
