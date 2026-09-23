@@ -131,8 +131,8 @@ fn main() -> anyhow::Result<()> {
             _ => Err("the daemon did not answer the shortcut capture".into()),
         }
     });
-    let model = ShellViewModel::from_app_snapshot(Route::Overview, snapshot)
-        .with_workspace(workspace_model);
+    let model =
+        ShellViewModel::from_app_snapshot(Route::Home, snapshot).with_workspace(workspace_model);
     match workspace_updates {
         Some(updates) => run_settings_shell_with_workspace_actions_and_updates(
             model,

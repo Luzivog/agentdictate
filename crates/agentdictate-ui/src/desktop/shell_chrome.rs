@@ -35,7 +35,7 @@ pub(super) fn sidebar_view(
                 .px_4()
                 .text_sm()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Agent Dictate"),
+                .child("AgentDictate"),
         )
         .children(navigation.into_iter().map(|item| {
             let route = item.route;
@@ -83,7 +83,7 @@ pub(super) fn sidebar_view(
 
 fn route_accent(route: Route, theme: ThemeTokens) -> Color {
     match route {
-        Route::Overview => theme.accent,
+        Route::Home => theme.accent,
         Route::History => theme.info,
         Route::Words => theme.success,
         Route::Settings => theme.highlight,

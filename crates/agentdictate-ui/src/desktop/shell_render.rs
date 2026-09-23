@@ -30,7 +30,7 @@ struct RouteViewportModel {
 }
 
 enum RoutePageModel {
-    Overview {
+    Home {
         usage: UsageViewModel,
         history: HistoryViewModel,
         recent_transcripts: Vec<TranscriptViewModel>,
@@ -46,7 +46,7 @@ impl RoutePageModel {
     fn from_shell(shell: &SettingsShell, cx: &Context<SettingsShell>) -> Self {
         let workspace = &shell.model.workspace;
         match shell.model.active_route {
-            Route::Overview => Self::Overview {
+            Route::Home => Self::Home {
                 usage: workspace.usage.clone(),
                 history: workspace.history.clone(),
                 recent_transcripts: workspace.recent_transcripts.clone(),
@@ -110,7 +110,7 @@ impl RoutePageModel {
 
     const fn route(&self) -> Route {
         match self {
-            Self::Overview { .. } => Route::Overview,
+            Self::Home { .. } => Route::Home,
             Self::History(_) => Route::History,
             Self::Words(_) => Route::Words,
             Self::Settings(_) => Route::Settings,
@@ -120,13 +120,13 @@ impl RoutePageModel {
     fn embeds_feedback(&self) -> bool {
         match self {
             Self::Settings(_) | Self::History(_) | Self::Words(_) => true,
-            Self::Overview { .. } => false,
+            Self::Home { .. } => false,
         }
     }
 
     fn surface(self, theme: ThemeTokens, cx: &mut Context<SettingsShell>) -> gpui::Div {
         match self {
-            Self::Overview {
+            Self::Home {
                 usage,
                 history,
                 recent_transcripts,

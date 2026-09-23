@@ -97,7 +97,7 @@ impl RouteUiState {
 
 pub(super) const fn route_index(route: Route) -> usize {
     match route {
-        Route::Overview => 0,
+        Route::Home => 0,
         Route::History => 1,
         Route::Words => 2,
         Route::Settings => 3,

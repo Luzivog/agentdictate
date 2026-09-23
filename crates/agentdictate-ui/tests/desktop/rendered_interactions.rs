@@ -96,7 +96,7 @@ impl Harness {
 
     fn open_with_size(cx: &mut TestAppContext, viewport: Size<Pixels>) -> Self {
         let model = ShellViewModel::from_snapshot(
-            Route::Overview,
+            Route::Home,
             WorkflowSnapshot {
                 phase: WorkflowPhase::Ready,
             },
@@ -486,7 +486,7 @@ fn overview_charts_activity_switches_periods_and_links_to_history(cx: &mut TestA
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured_actions = Arc::clone(&actions);
     let model = ShellViewModel::from_snapshot(
-        Route::Overview,
+        Route::Home,
         WorkflowSnapshot {
             phase: WorkflowPhase::Ready,
         },
@@ -583,7 +583,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
         })
         .collect();
     let model = ShellViewModel::from_snapshot(
-        Route::Overview,
+        Route::Home,
         WorkflowSnapshot {
             phase: WorkflowPhase::Ready,
         },
@@ -594,7 +594,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
             vec![TranscriptViewModel::new(
                 77,
                 "Yesterday, 09:10",
-                "A search result must not replace Overview recents.",
+                "A search result must not replace Home's recent transcripts.",
                 8,
                 "0:05",
             )],
@@ -656,7 +656,7 @@ fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_ope
     cx: &mut TestAppContext,
 ) {
     let model = ShellViewModel::from_snapshot(
-        Route::Overview,
+        Route::Home,
         WorkflowSnapshot {
             phase: WorkflowPhase::Ready,
         },
@@ -714,7 +714,7 @@ fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_ope
 #[gpui::test]
 fn failed_workspace_refresh_preserves_the_previous_usage_snapshot(cx: &mut TestAppContext) {
     let model = ShellViewModel::from_snapshot(
-        Route::Overview,
+        Route::Home,
         WorkflowSnapshot {
             phase: WorkflowPhase::Ready,
         },
@@ -768,8 +768,8 @@ fn content_fills_the_frame_and_buttons_click_after_every_resize_zone(cx: &mut Te
         assert_eq!(harness.active_route(), Route::History, "after {edge}");
 
         harness.move_to(edge);
-        harness.click_direct(Route::Overview.navigation_id());
-        assert_eq!(harness.active_route(), Route::Overview, "after {edge}");
+        harness.click_direct(Route::Home.navigation_id());
+        assert_eq!(harness.active_route(), Route::Home, "after {edge}");
     }
 }
 

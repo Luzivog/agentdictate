@@ -17,12 +17,7 @@ fn shell_view_model_derives_navigation_and_recording_status_from_domain_state() 
     assert_eq!(model.active_route, Route::History);
     assert_eq!(
         model.navigation.map(|item| item.route),
-        [
-            Route::Overview,
-            Route::History,
-            Route::Words,
-            Route::Settings
-        ]
+        [Route::Home, Route::History, Route::Words, Route::Settings]
     );
     assert_eq!(
         model
@@ -42,7 +37,7 @@ fn shell_view_model_derives_navigation_and_recording_status_from_domain_state() 
 #[test]
 fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
     let model = ShellViewModel::from_app_snapshot(
-        Route::Overview,
+        Route::Home,
         AppSnapshot {
             workflow: WorkflowSnapshot {
                 phase: WorkflowPhase::Ready,
@@ -66,7 +61,7 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
 #[test]
 fn selecting_a_route_updates_the_route_and_navigation_atomically() {
     let mut model = ShellViewModel::from_snapshot(
-        Route::Overview,
+        Route::Home,
         WorkflowSnapshot {
             phase: WorkflowPhase::Ready,
         },
