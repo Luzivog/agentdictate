@@ -6,7 +6,7 @@ use agentdictate_app::{
     run_overlay_helper,
 };
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, HotkeyCaptureOutcome, ServerMessageKind, WorkspaceSnapshot,
+    ClientCommand, ClientCommandKind, HotkeyCaptureOutcome, ServerMessageKind,
 };
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
@@ -77,15 +77,18 @@ fn main() -> anyhow::Result<()> {
     };
     let settings = *settings;
     let runtime = paths.runtime.clone();
+    // History, usage and Recovery are read from the database directly; the
+    // daemon only carries out changes.
     let workspace_client = Arc::new(WorkspaceClient::new(
         runtime.clone(),
-        WorkspaceSnapshot::default(),
+        paths.database_file.clone(),
+        snapshot.clone(),
     ));
-    // The watcher is registered before the one fetch below. A database write
-    // racing with window startup is therefore either in that fetch or queued
+    // The watcher is registered before the one read below. A database write
+    // racing with window startup is therefore either in that read or queued
     // by inotify, rather than being silently lost.
     let workspace_updates = workspace_client
-        .watch(&paths.database_file)
+        .watch()
         .inspect_err(|error| tracing::warn!(%error, "live workspace updates are unavailable"))
         .ok();
     let workspace_model = workspace_client.refresh()?;

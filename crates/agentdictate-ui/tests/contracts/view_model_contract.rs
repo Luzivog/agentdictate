@@ -47,6 +47,8 @@ fn app_snapshot_projects_hotkey_failure_and_recovery_into_the_shell() {
             },
             recoverable_count: 3,
             last_transcript: Some("Safe transcript".to_owned()),
+            overlay_unavailable: false,
+            history_set_aside: None,
         },
     );
 

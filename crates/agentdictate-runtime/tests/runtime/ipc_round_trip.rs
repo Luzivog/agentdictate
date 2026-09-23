@@ -52,6 +52,8 @@ fn start_recording_round_trip_and_reconnect_snapshot_use_a_private_socket() {
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 2,
         last_transcript: Some("previous words".to_owned()),
+        overlay_unavailable: false,
+        history_set_aside: None,
     }));
     let handler = TestHandler {
         snapshot: Arc::clone(&snapshot),
@@ -120,6 +122,8 @@ fn silent_client_does_not_block_a_second_command_session() {
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
         last_transcript: None,
+        overlay_unavailable: false,
+        history_set_aside: None,
     }));
     let handler = TestHandler {
         snapshot,
@@ -160,6 +164,8 @@ impl IpcHandler for CapturingHandler {
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 0,
             last_transcript: None,
+            overlay_unavailable: false,
+            history_set_aside: None,
         };
         ServerMessage::snapshot(snapshot, &Settings::default())
     }
@@ -287,6 +293,8 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
         hotkey: HotkeyReadiness::Ready,
         recoverable_count: 0,
         last_transcript: None,
+        overlay_unavailable: false,
+        history_set_aside: None,
     }));
     let handler = TestHandler {
         snapshot,
@@ -327,6 +335,8 @@ fn idle_session_is_closed_after_the_read_timeout() {
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 0,
             last_transcript: None,
+            overlay_unavailable: false,
+            history_set_aside: None,
         })),
         settings: Settings::default(),
         workflow: Arc::new(Mutex::new(workflow)),
@@ -345,4 +355,30 @@ fn idle_session_is_closed_after_the_read_timeout() {
             .send(ClientCommand::new(ClientCommandKind::GetSnapshot))
             .is_err()
     );
+}
+
+/// A daemon from another release is reported as such even when its messages
+/// no longer parse, so the window can say it was updated.
+#[test]
+fn a_peer_from_another_release_is_a_protocol_mismatch_whatever_it_sends() {
+    let directory = TempDir::new().unwrap();
+    fs::create_dir_all(directory.path()).unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(directory.path().join("agentdictate.sock")).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        io::Write::write_all(
+            &mut stream,
+            b"{\"protocol_version\":9999,\"message\":\"reshaped\",\"new\":{}}\n",
+        )
+        .unwrap();
+    });
+
+    let error = IpcClient::connect(directory.path()).err().unwrap();
+
+    assert!(matches!(
+        error,
+        IpcError::ProtocolVersion { received: 9999, .. }
+    ));
+    server.join().unwrap();
 }

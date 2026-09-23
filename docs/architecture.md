@@ -96,17 +96,18 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   alias normalization, and the per-minute price table.
 - **agentdictate-runtime**: durable state. The SQLite schema and its numbered
   migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
-  the `dictations` table behind History search and usage, startup cleanup, settings
-  load and save, the IPC server and client, and the port traits (`Deliverer`,
-  `DeliveryGate`, `Recorder`) that the app implements. It writes checkpoints and
-  never calls the network.
+  the `dictations` table behind History search and usage, the settings window's
+  read-only `DatabaseObserver`, startup cleanup, settings load and save, the IPC
+  server and client, and the port traits (`Deliverer`, `DeliveryGate`, `Recorder`)
+  that the app implements. It writes checkpoints and never calls the network.
 - **agentdictate-linux**: desktop integration. `pw-record` capture, the evdev hotkey
   listener, which watches `/dev/input` for new keyboards, the uinput paste keyboard,
   the in-process X11 selection owner, X11 focus reading, the paste delivery state
   machine, `pactl` audio ducking, overlay placement, and a subprocess runner with
   deadlines.
-- **agentdictate-ui**: toolkit-free view models, plus the GPUI settings window and
-  overlay view behind the `desktop` feature.
+- **agentdictate-ui**: toolkit-free view models, built from core's snapshots with
+  times on the local clock, plus the GPUI settings window and overlay view behind the
+  `desktop` feature.
 - **agentdictate-app**: composition. The daemon and the `DaemonHandle` that shares
   it between threads, the `Transcriber` and its per-job processing tickets, the
   OpenAI speech transport, optional live streaming, the overlay supervisor and
@@ -241,12 +242,19 @@ it guarantees one daemon. Messages are newline-delimited JSON, and every message
 carries `protocol_version`, which must equal `PROTOCOL_VERSION` on both sides. Bump it
 whenever the wire format changes. Each reply answers the command just sent on the
 same connection. Every session runs on its own thread and ends after 60 s without a
-command. On connect the daemon sends a full snapshot first, so a reconnect never
-depends on replayed events. The settings window uses short-lived connections and
-watches the SQLite database and `overlay-health` with inotify, so daemon writes
-appear without polling. Settings changes are per setting: each control sends one
-`change_setting` command, and the daemon applies it to the settings it holds, so two
-clients never overwrite each other's changes. `agentdictate stop` returns once the
+command. On connect the daemon sends its status snapshot first, so a reconnect never
+depends on replayed events. IPC carries commands and that snapshot only. The
+settings window reads History, usage, and Recovery straight from the database, with
+a read-only connection, so a dictation in progress never delays them. It watches
+the database and `overlay-health` with inotify and collects events for 30 ms after
+the first. Then a commit, detected with `PRAGMA data_version`, re-reads the
+database, and an `overlay-health` change asks the daemon for its status. A daemon on
+another protocol version, or a database with a newer schema, makes the window say
+"AgentDictate was updated — reopen this window" and stop reading. Its changes, such
+as Delete or Transcribe again, are commands, after which it reads the database
+again. Settings changes are per setting: each control sends one `change_setting`
+command, and the daemon applies it to the settings it holds, so two clients never
+overwrite each other's changes. `agentdictate stop` returns once the
 recording is stopped; the paste follows. A Recovery retry's reply waits for the
 copied text, and a shortcut capture's reply for the key press, both without holding
 the daemon lock.

@@ -21,10 +21,13 @@ type Migration = fn(&Transaction<'_>) -> rusqlite::Result<()>;
 /// first N; append new steps and never edit a released one.
 const MIGRATIONS: &[Migration] = &[merge_dictations];
 
+/// The schema version this build migrates databases to.
+pub(crate) const LATEST_VERSION: usize = MIGRATIONS.len();
+
 /// Brings the database behind `connection`, stored at `path`, to the latest
 /// version. A new, empty database is migrated without a backup.
 pub(crate) fn migrate(connection: &mut Connection, path: &Path) -> Result<(), RuntimeError> {
-    let latest = MIGRATIONS.len();
+    let latest = LATEST_VERSION;
     let version = user_version(connection)?;
     let pending = usize::try_from(version)
         .ok()

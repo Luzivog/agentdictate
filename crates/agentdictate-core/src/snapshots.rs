@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+//! What the settings window reads from the database. None of these cross
+//! the IPC seam: the window queries the database itself.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::workflow::{JobId, JobStage};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RecoverySnapshot {
     pub job_id: JobId,
     pub stage: JobStage,
@@ -21,8 +21,8 @@ pub struct RecoverySnapshot {
 }
 
 /// One History row. A page carries every row's whole text (transcripts are
-/// a few KB at most) so the window can expand a row without another request.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// a few KB at most) so the window can expand a row without another query.
+#[derive(Clone, Debug, PartialEq)]
 pub struct HistorySnapshot {
     pub id: i64,
     pub created_at: DateTime<Utc>,
@@ -34,17 +34,15 @@ pub struct HistorySnapshot {
     pub duration_seconds: f64,
 }
 
-/// Rows in a first History page. The workspace's page also fills the
-/// overview's recent list.
+/// Rows in a first History page, and in Home's list of recent transcripts.
 pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 30;
 pub const HISTORY_CONTINUATION_PAGE_SIZE: usize = 50;
 
-/// Opaque continuation token returned by the daemon for a specific history query.
+/// Opaque continuation token that a History page returns for its query.
 ///
-/// Clients must round-trip this value unchanged rather than inspecting or constructing
+/// Callers pass it back unchanged rather than inspecting or constructing
 /// database pagination state themselves.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryPageCursor(String);
 
 impl HistoryPageCursor {
@@ -59,7 +57,7 @@ impl HistoryPageCursor {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryPageRequest {
     pub search: String,
     pub page_size: usize,
@@ -76,7 +74,7 @@ impl Default for HistoryPageRequest {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HistoryPageSnapshot {
     pub search: String,
     pub total_matches: u64,
@@ -86,7 +84,7 @@ pub struct HistoryPageSnapshot {
     pub rows: Vec<HistorySnapshot>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UsageTotalsSnapshot {
     pub dictations: u64,
     pub words: u64,
@@ -119,13 +117,13 @@ impl std::iter::Sum for UsageTotalsSnapshot {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UsageDaySnapshot {
     pub date: NaiveDate,
     pub totals: UsageTotalsSnapshot,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageSnapshot {
     pub last_7_days: UsageTotalsSnapshot,
     pub last_30_days: UsageTotalsSnapshot,
@@ -134,14 +132,13 @@ pub struct UsageSnapshot {
     pub weekly_activity: Vec<UsageDaySnapshot>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Everything the settings window shows from the database.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkspaceSnapshot {
-    pub overlay_unavailable: bool,
-    /// Where the daemon moved a history database it could not read when it
-    /// started; a fresh one replaced it. Shown until the daemon restarts.
-    pub history_set_aside: Option<PathBuf>,
     pub recoveries: Vec<RecoverySnapshot>,
-    /// The newest transcripts, unfiltered.
+    /// Home's newest transcripts, unfiltered.
+    pub recent: HistoryPageSnapshot,
+    /// The History page's rows: its search, with every page shown so far.
     pub history: HistoryPageSnapshot,
     pub usage: UsageSnapshot,
 }

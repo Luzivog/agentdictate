@@ -250,7 +250,7 @@ fn cancel_during_processing_detaches_and_allows_a_new_recording() {
     let directory = tempdir().unwrap();
     let transcriber = GatedTranscriber::default();
     let gate = transcriber.gate.clone();
-    let (handle, _paths) = handle_with(directory.path(), transcriber);
+    let (handle, paths) = handle_with(directory.path(), transcriber);
     record_and_stop(&handle);
     gate.wait_until_entered();
 
@@ -264,8 +264,10 @@ fn cancel_during_processing_detaches_and_allows_a_new_recording() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let recovery = loop {
-        let recoveries = handle
-            .with_process(|process| process.daemon().workspace_snapshot().unwrap().recoveries);
+        let recoveries = Runtime::open_observer(&paths.database_file)
+            .unwrap()
+            .recoveries()
+            .unwrap();
         if let Some(recovery) = recoveries.into_iter().next() {
             break recovery;
         }
@@ -333,7 +335,7 @@ fn quit_leaves_a_transcription_that_outlasts_the_grace_for_recovery() {
 #[test]
 fn processing_panic_is_reported_as_a_failed_job() {
     let directory = tempdir().unwrap();
-    let (handle, _paths) = handle_with(directory.path(), PanickingTranscriber);
+    let (handle, paths) = handle_with(directory.path(), PanickingTranscriber);
     record_and_stop(&handle);
 
     wait_for(&handle, |phase| {
@@ -346,14 +348,11 @@ fn processing_panic_is_reported_as_a_failed_job() {
         )
     });
 
-    let recovery = handle.with_process(|process| {
-        process
-            .daemon()
-            .workspace_snapshot()
-            .unwrap()
-            .recoveries
-            .remove(0)
-    });
+    let recovery = Runtime::open_observer(&paths.database_file)
+        .unwrap()
+        .recoveries()
+        .unwrap()
+        .remove(0);
     assert_eq!(recovery.stage, JobStage::Failed);
     assert!(
         recovery

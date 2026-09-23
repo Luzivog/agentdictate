@@ -14,14 +14,13 @@ use agentdictate_app::{
     RecordingController, Transcriber, TranscriptionCompletion, start_overlay_presenter,
 };
 use agentdictate_core::{
-    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage, Settings,
-    WorkflowPhase, parse_vocabulary,
+    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage,
+    RecoverySnapshot, Settings, WorkflowPhase, parse_vocabulary,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob, Runtime,
     Transcript,
 };
-use rusqlite::params;
 use tempfile::tempdir;
 
 use super::support::{FailingStartRecorder, FixedTranscriber, InspectingRecorder, finish};
@@ -116,7 +115,7 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
     assert_eq!(daemon.snapshot().recoverable_count, 0);
     assert_eq!(daemon.deliverer().attempts, 0);
     assert!(!finished.audio_path.exists());
-    assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+    assert!(recoveries(&paths).is_empty());
     let observer = Runtime::open_observer(&paths.database_file).unwrap();
     assert!(history_rows(&observer).is_empty());
     assert!(observer.recoverable_jobs().unwrap().is_empty());
@@ -241,7 +240,7 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
         WorkflowPhase::Recording { job_id } if job_id == started.id
     ));
     assert_eq!(daemon.snapshot().recoverable_count, 0);
-    assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+    assert!(recoveries(&paths).is_empty());
 
     let delivered = finish(&mut daemon);
 
@@ -607,7 +606,7 @@ fn escape_discards_a_short_dictation_and_keeps_its_audio_only_when_retention_is_
         assert_eq!(started.audio_path.exists(), preserve_temp_audio);
         assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
         assert_eq!(daemon.snapshot().recoverable_count, 0);
-        assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
+        assert!(recoveries(&paths).is_empty());
         let observer = Runtime::open_observer(&paths.database_file).unwrap();
         assert!(observer.job(started.id).unwrap().is_none());
     }
@@ -628,7 +627,7 @@ fn escape_after_a_long_recording_keeps_it_in_recovery_and_transcribing_it_copies
     assert!(started.audio_path.is_file());
     assert_eq!(daemon.phase(), WorkflowPhase::Ready);
     assert_eq!(daemon.snapshot().recoverable_count, 1);
-    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    let recovery = recoveries(&paths).remove(0);
     assert_eq!(recovery.job_id, started.id);
     assert_eq!(recovery.stage, JobStage::Cancelled);
     assert_eq!(
@@ -878,59 +877,6 @@ fn graceful_shutdown_finalizes_and_preserves_active_audio_for_recovery() {
     assert_eq!(daemon.snapshot().recoverable_count, 1);
 }
 
-#[test]
-fn workspace_history_is_bounded_even_when_the_archive_is_large() {
-    let directory = tempdir().unwrap();
-    let paths = app_paths(directory.path());
-    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
-    drop(Runtime::open(&paths.database_file).unwrap());
-    let mut connection = rusqlite::Connection::open(&paths.database_file).unwrap();
-    let transaction = connection.transaction().unwrap();
-    let full_body = "é".repeat(200);
-    for index in 0..251 {
-        let timestamp = format!("2026-08-18T12:{:02}:{:02}Z", index / 60, index % 60);
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dictations (
-                    started_at, ended_at, duration_seconds, transcription_provider,
-                    transcription_model, word_count, character_count, estimated_cost,
-                    final_text
-                ) VALUES (?1, ?1, 1, 'openai_api', 'test-model', 1, ?2, 0, ?3)
-                "#,
-                params![timestamp, full_body.chars().count() as u64, full_body],
-            )
-            .unwrap();
-    }
-    transaction.commit().unwrap();
-    drop(connection);
-    let runtime = Runtime::open(&paths.database_file).unwrap();
-    let daemon = Daemon::new(
-        runtime,
-        Settings::default(),
-        paths.clone(),
-        InspectingRecorder {
-            database: paths.database_file,
-            started_after_checkpoint: false,
-        },
-        FixedTranscriber,
-        SubmittedDelivery::default(),
-    );
-
-    let workspace = daemon.workspace_snapshot().unwrap();
-
-    let history = workspace.history;
-    assert_eq!(history.rows.len(), 30);
-    assert_eq!(history.total_matches, 251);
-    assert!(history.next_cursor.is_some());
-    assert!(!history.rows.iter().any(|entry| entry.id == 1));
-    assert!(history.rows.iter().all(|entry| {
-        entry.preview_text.chars().count() == 161
-            && entry.preview_text.ends_with('…')
-            && entry.text == full_body
-    }));
-}
-
 /// Replies with its script in order, counting calls across clones, and
 /// reports the API key it was configured with when the job started.
 #[derive(Clone, Default)]
@@ -1030,7 +976,7 @@ fn cancel_during_processing_keeps_the_transcript_for_recovery_and_never_pastes()
     assert_eq!(daemon.deliverer().attempts, 0);
     assert_eq!(stored.stage, JobStage::ReadyToDeliver);
     assert!(stored.audio_path.is_file());
-    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    let recovery = recoveries(&paths).remove(0);
     assert_eq!(recovery.job_id, started.id);
     assert_eq!(recovery.final_text, "Final transcript.");
     assert_eq!(
@@ -1237,10 +1183,7 @@ fn panicking_transcription_fails_the_job_and_frees_the_daemon() {
 
     assert_eq!(failed.stage, JobStage::Failed);
     assert!(failed.audio_path.is_file());
-    assert_eq!(
-        daemon.workspace_snapshot().unwrap().recoveries[0].job_id,
-        job_id
-    );
+    assert_eq!(recoveries(&paths)[0].job_id, job_id);
     daemon.start_recording().unwrap();
 }
 
@@ -1309,7 +1252,7 @@ fn stalled_recorder_preserves_audio_for_recovery() {
         daemon.phase(),
         WorkflowPhase::NeedsAttention { job_id, at: JobStage::Interrupted } if job_id == started.id
     ));
-    let recovery = daemon.workspace_snapshot().unwrap().recoveries.remove(0);
+    let recovery = recoveries(&paths).remove(0);
     assert_eq!(recovery.stage, JobStage::Interrupted);
     assert!(recovery.audio_present);
     assert!(
@@ -1357,6 +1300,14 @@ fn reject_capture_checkpoint(connection: &rusqlite::Connection) {
             "#,
         )
         .unwrap();
+}
+
+/// What Recovery lists, as the settings window reads it.
+fn recoveries(paths: &AppPaths) -> Vec<RecoverySnapshot> {
+    Runtime::open_observer(&paths.database_file)
+        .unwrap()
+        .recoveries()
+        .unwrap()
 }
 
 /// Every History row the History page lists, newest first.

@@ -1,3 +1,6 @@
+use agentdictate_core::{
+    HistoryPageSnapshot, HistorySnapshot, JobStage, RecoverySnapshot, format_duration_clock,
+};
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 
 /// Formats when a dictation happened in `now`'s time zone, the way History
@@ -16,6 +19,26 @@ where
         _ => "%b %-d, %Y",
     };
     local.format(format).to_string()
+}
+
+/// Says how long until a Recovery item is deleted, rounded to the nearest
+/// hour below 36 hours and to the nearest day above: "Expires in 7 days",
+/// "Expires in 24 hours", "Expires in less than an hour".
+pub fn format_expiry<Tz: TimeZone>(expires_at: DateTime<Utc>, now: &DateTime<Tz>) -> String {
+    const HOUR: i64 = 60;
+    const DAY: i64 = 24 * HOUR;
+    let minutes = (expires_at - now.with_timezone(&Utc)).num_minutes();
+    if minutes < HOUR {
+        "Expires in less than an hour".to_owned()
+    } else if minutes < 36 * HOUR {
+        let hours = (minutes + HOUR / 2) / HOUR;
+        format!(
+            "Expires in {hours} hour{}",
+            if hours == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("Expires in {} days", (minutes + DAY / 2) / DAY)
+    }
 }
 
 /// What a Recovery item needs, which decides its label and its button.
@@ -53,9 +76,42 @@ pub struct RecoveryItemViewModel {
     pub duration: String,
     pub error: String,
     pub transcript_preview: Option<String>,
+    /// When the item is deleted unless the user acts, such as "Expires in
+    /// 7 days".
+    pub expires: Option<String>,
 }
 
 impl RecoveryItemViewModel {
+    /// Presents a Recovery item with times on `now`'s clock. Stored text
+    /// that failed to paste offers "Paste again"; anything else is
+    /// transcribed again.
+    pub fn from_snapshot<Tz: TimeZone>(entry: &RecoverySnapshot, now: &DateTime<Tz>) -> Self
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let has_text = !entry.final_text.trim().is_empty();
+        let stage = match entry.stage {
+            JobStage::Cancelled => RecoveryStage::Cancelled,
+            JobStage::ReadyToDeliver | JobStage::Failed if has_text => RecoveryStage::Delivery,
+            _ if has_text && entry.delivery_ambiguous => RecoveryStage::Delivery,
+            _ => RecoveryStage::Transcription,
+        };
+        Self {
+            expires: Some(format_expiry(entry.expires_at, now)),
+            ..Self::new(
+                entry.job_id.to_string(),
+                stage,
+                format_history_time(entry.updated_at, now),
+                format_duration_clock(entry.duration_seconds),
+                entry
+                    .error_message
+                    .clone()
+                    .unwrap_or_else(|| "Recording saved safely".to_owned()),
+                has_text.then(|| entry.final_text.clone()),
+            )
+        }
+    }
+
     pub fn new(
         id: impl Into<String>,
         stage: RecoveryStage,
@@ -71,6 +127,7 @@ impl RecoveryItemViewModel {
             duration: duration.into(),
             error: error.into(),
             transcript_preview,
+            expires: None,
         }
     }
 
@@ -120,12 +177,27 @@ impl TranscriptViewModel {
         }
     }
 
-    /// Replaces the collapsed line, e.g. with the daemon's excerpt around a
-    /// search match.
+    /// Replaces the collapsed line, e.g. with the excerpt around a search
+    /// match.
     #[must_use]
     pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
         self.preview = preview.into();
         self
+    }
+
+    /// Presents a History row with its time on `now`'s clock.
+    pub fn from_snapshot<Tz: TimeZone>(entry: &HistorySnapshot, now: &DateTime<Tz>) -> Self
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        Self::new(
+            entry.id,
+            format_history_time(entry.created_at, now),
+            entry.text.clone(),
+            entry.word_count,
+            format_duration_clock(entry.duration_seconds),
+        )
+        .with_preview(entry.preview_text.clone())
     }
 }
 
@@ -184,6 +256,30 @@ impl HistoryViewModel {
         }
     }
 
+    /// Presents Recovery and one History page with times on `now`'s clock.
+    pub fn from_snapshots<Tz: TimeZone>(
+        recoveries: &[RecoverySnapshot],
+        page: &HistoryPageSnapshot,
+        now: &DateTime<Tz>,
+    ) -> Self
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        Self::from_page(
+            recoveries
+                .iter()
+                .map(|entry| RecoveryItemViewModel::from_snapshot(entry, now))
+                .collect(),
+            page.rows
+                .iter()
+                .map(|entry| TranscriptViewModel::from_snapshot(entry, now))
+                .collect(),
+            page.total_matches,
+            page.search.clone(),
+            page.next_cursor.is_some(),
+        )
+    }
+
     pub fn from_page(
         recovery_items: Vec<RecoveryItemViewModel>,
         transcripts: Vec<TranscriptViewModel>,
@@ -209,9 +305,9 @@ impl Default for HistoryViewModel {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{FixedOffset, TimeZone, Utc};
+    use chrono::{FixedOffset, TimeDelta, TimeZone, Utc};
 
-    use super::format_history_time;
+    use super::{format_expiry, format_history_time};
 
     /// Wednesday 23 September 2026, 10:00 at UTC+2.
     fn now() -> chrono::DateTime<FixedOffset> {
@@ -249,5 +345,24 @@ mod tests {
     #[test]
     fn a_timestamp_from_a_later_day_shows_its_date() {
         assert_eq!(format_utc(2026, 9, 24, 12, 0), "Sep 24");
+    }
+
+    #[test]
+    fn expiry_counts_hours_within_a_day_and_a_half_and_days_after() {
+        let expiring_in = |hours: i64, minutes: i64| {
+            let now = now();
+            let expires_at =
+                now.with_timezone(&Utc) + TimeDelta::hours(hours) + TimeDelta::minutes(minutes);
+            format_expiry(expires_at, &now)
+        };
+
+        assert_eq!(expiring_in(7 * 24, 0), "Expires in 7 days");
+        assert_eq!(expiring_in(6 * 24, -1), "Expires in 6 days");
+        assert_eq!(expiring_in(36, 0), "Expires in 2 days");
+        assert_eq!(expiring_in(35, 59), "Expires in 36 hours");
+        assert_eq!(expiring_in(24, 0), "Expires in 24 hours");
+        assert_eq!(expiring_in(1, 0), "Expires in 1 hour");
+        assert_eq!(expiring_in(0, 59), "Expires in less than an hour");
+        assert_eq!(expiring_in(-2, 0), "Expires in less than an hour");
     }
 }

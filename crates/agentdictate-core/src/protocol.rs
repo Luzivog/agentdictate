@@ -1,13 +1,15 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::hotkey::Hotkey;
 use crate::settings::{SecretString, SettingChange, Settings, SettingsSnapshot};
-use crate::snapshots::{
-    HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, WorkspaceSnapshot,
-};
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 13;
+/// The IPC wire format's version. The settings window reads History, usage
+/// and Recovery from the database itself; IPC carries commands and the
+/// status snapshot.
+pub const PROTOCOL_VERSION: u16 = 14;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -42,21 +44,6 @@ impl ClientCommand {
         Self::new(ClientCommandKind::StartRecording { mode: Some(mode) })
     }
 
-    #[must_use]
-    pub fn get_history_page(
-        search: impl Into<String>,
-        page_size: usize,
-        after: Option<HistoryPageCursor>,
-    ) -> Self {
-        Self::new(ClientCommandKind::GetHistoryPage {
-            request: HistoryPageRequest {
-                search: search.into(),
-                page_size,
-                after,
-            },
-        })
-    }
-
     /// Changes one setting; the daemon keeps every other setting it holds.
     #[must_use]
     pub const fn change_setting(change: SettingChange) -> Self {
@@ -72,15 +59,12 @@ impl ClientCommand {
 }
 
 /// Every command a client can send. A reply always answers the command just
-/// sent on the same connection, so commands carry no request id.
+/// sent on the same connection, so commands carry no request id. Unless a
+/// variant says otherwise, success replies with the status snapshot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum ClientCommandKind {
     GetSnapshot,
-    GetWorkspace,
-    GetHistoryPage {
-        request: HistoryPageRequest,
-    },
     StartRecording {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<crate::DictationMode>,
@@ -141,12 +125,18 @@ pub enum HotkeyCaptureOutcome {
     TimedOut,
 }
 
+/// The daemon's status: what the database does not hold.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AppSnapshot {
     pub workflow: WorkflowSnapshot,
     pub hotkey: HotkeyReadiness,
     pub recoverable_count: usize,
     pub last_transcript: Option<String>,
+    /// The recording overlay could not be shown; dictation still works.
+    pub overlay_unavailable: bool,
+    /// Where the daemon moved a history database it could not read when it
+    /// started; a fresh one replaced it. Reported until the daemon restarts.
+    pub history_set_aside: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -173,20 +163,6 @@ impl ServerMessage {
     }
 
     #[must_use]
-    pub fn workspace(workspace: WorkspaceSnapshot) -> Self {
-        Self::new(ServerMessageKind::Workspace {
-            workspace: Box::new(workspace),
-        })
-    }
-
-    #[must_use]
-    pub fn history_page(page: HistoryPageSnapshot) -> Self {
-        Self::new(ServerMessageKind::HistoryPage {
-            page: Box::new(page),
-        })
-    }
-
-    #[must_use]
     pub const fn hotkey_captured(outcome: HotkeyCaptureOutcome) -> Self {
         Self::new(ServerMessageKind::HotkeyCaptured { outcome })
     }
@@ -205,12 +181,6 @@ pub enum ServerMessageKind {
     Snapshot {
         snapshot: AppSnapshot,
         settings: Box<SettingsSnapshot>,
-    },
-    Workspace {
-        workspace: Box<WorkspaceSnapshot>,
-    },
-    HistoryPage {
-        page: Box<HistoryPageSnapshot>,
     },
     HotkeyCaptured {
         outcome: HotkeyCaptureOutcome,

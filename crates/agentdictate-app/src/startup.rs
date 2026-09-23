@@ -589,6 +589,8 @@ mod tests {
                     hotkey: HotkeyReadiness::Ready,
                     recoverable_count: 0,
                     last_transcript: None,
+                    overlay_unavailable: false,
+                    history_set_aside: None,
                 },
                 &Settings::default(),
             )

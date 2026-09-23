@@ -146,17 +146,14 @@ impl ShellViewModel {
     }
 
     pub fn from_app_snapshot(active_route: Route, snapshot: AppSnapshot) -> Self {
-        let AppSnapshot {
-            workflow,
-            hotkey,
-            recoverable_count,
-            last_transcript,
-        } = snapshot;
-        let mut model = Self::from_snapshot(active_route, workflow);
-        model.hotkey = hotkey.into();
-        model.workspace.history =
-            HistoryViewModel::new(0, u64::try_from(recoverable_count).unwrap_or(u64::MAX));
-        model.last_transcript = last_transcript;
+        let mut model = Self::from_snapshot(active_route, snapshot.workflow);
+        model.workspace = WorkspaceViewModel::default().with_status(&snapshot);
+        model.hotkey = snapshot.hotkey.into();
+        model.workspace.history = HistoryViewModel::new(
+            0,
+            u64::try_from(snapshot.recoverable_count).unwrap_or(u64::MAX),
+        );
+        model.last_transcript = snapshot.last_transcript;
         model
     }
 

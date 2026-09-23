@@ -6,9 +6,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
-    AppSnapshot, HistoryPageRequest, HistoryPageSnapshot, HotkeyReadiness, JobId, JobStage,
-    RecordingMode, Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal,
-    WorkflowSnapshot, WorkspaceSnapshot,
+    AppSnapshot, HotkeyReadiness, JobId, JobStage, RecordingMode, Settings, Workflow,
+    WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
@@ -830,23 +829,6 @@ where
         self.workflow.snapshot().phase
     }
 
-    pub fn workspace_snapshot(&self) -> Result<WorkspaceSnapshot, RuntimeError> {
-        Ok(WorkspaceSnapshot {
-            overlay_unavailable: matches!(&self.overlay, OverlayDeliveryGate::Live(controller) if controller.is_unavailable()),
-            history_set_aside: None,
-            recoveries: self.runtime.recoveries()?,
-            history: self.runtime.history_page(&HistoryPageRequest::default())?,
-            usage: self.runtime.usage()?,
-        })
-    }
-
-    pub fn history_page(
-        &self,
-        request: &HistoryPageRequest,
-    ) -> Result<HistoryPageSnapshot, RuntimeError> {
-        self.runtime.history_page(request)
-    }
-
     pub fn delete_history(&mut self, id: i64) -> Result<bool, RuntimeError> {
         self.runtime.delete_history(id)
     }
@@ -859,6 +841,7 @@ where
         self.runtime.transcript_text(id)
     }
 
+    /// The status snapshot. `history_set_aside` is the process's to fill.
     #[must_use]
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
@@ -866,6 +849,11 @@ where
             hotkey: self.status.hotkey_readiness(),
             recoverable_count: self.recoverable_count,
             last_transcript: self.last_transcript.clone(),
+            overlay_unavailable: matches!(
+                &self.overlay,
+                OverlayDeliveryGate::Live(controller) if controller.is_unavailable()
+            ),
+            history_set_aside: None,
         }
     }
 

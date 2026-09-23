@@ -193,10 +193,7 @@ impl IpcClient {
     }
 
     fn read_server_message(&mut self) -> Result<ServerMessage, IpcError> {
-        let message: ServerMessage =
-            read_message(&mut self.reader)?.ok_or(IpcError::Disconnected)?;
-        check_version(message.protocol_version)?;
-        Ok(message)
+        read_message(&mut self.reader)?.ok_or(IpcError::Disconnected)
     }
 }
 
@@ -207,6 +204,9 @@ fn write_message(writer: &mut impl Write, message: &impl serde::Serialize) -> Re
     Ok(())
 }
 
+/// Reads one message. Its `protocol_version` is checked before the rest is
+/// parsed, so a peer from another release is always reported as
+/// `ProtocolVersion`, even when its message no longer parses.
 fn read_message<T: serde::de::DeserializeOwned>(
     reader: &mut impl BufRead,
 ) -> Result<Option<T>, IpcError> {
@@ -224,6 +224,12 @@ fn read_message<T: serde::de::DeserializeOwned>(
         )
         .into());
     }
+    #[derive(serde::Deserialize)]
+    struct Versioned {
+        protocol_version: u16,
+    }
+    let Versioned { protocol_version } = serde_json::from_str(&line)?;
+    check_version(protocol_version)?;
     Ok(Some(serde_json::from_str(&line)?))
 }
 
@@ -253,7 +259,6 @@ fn serve_session(
             }
             Err(error) => return Err(error),
         };
-        check_version(command.protocol_version)?;
         let response = handler.handle(command);
         check_version(response.protocol_version)?;
         write_message(&mut stream, &response)?;

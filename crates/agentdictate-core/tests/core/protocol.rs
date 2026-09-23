@@ -1,17 +1,17 @@
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandKind, HistoryPageCursor, HistoryPageSnapshot,
-    HotkeyReadiness, JobId, ServerMessage, ServerMessageKind, Settings, Workflow,
+    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, JobId, ServerMessage,
+    ServerMessageKind, Settings, Workflow,
 };
 
 #[test]
 fn client_commands_have_a_versioned_stable_wire_shape() {
     assert_eq!(
         serde_json::to_string(&ClientCommand::start_recording()).unwrap(),
-        r#"{"protocol_version":13,"command":"start_recording"}"#
+        r#"{"protocol_version":14,"command":"start_recording"}"#
     );
     assert_eq!(
         serde_json::to_string(&ClientCommand::new(ClientCommandKind::StopRecording)).unwrap(),
-        r#"{"protocol_version":13,"command":"stop_recording"}"#
+        r#"{"protocol_version":14,"command":"stop_recording"}"#
     );
 }
 
@@ -25,7 +25,7 @@ fn rejected_commands_return_an_error_instead_of_looking_successful() {
     ));
     assert_eq!(
         serde_json::to_string(&message).unwrap(),
-        r#"{"protocol_version":13,"message":"command_rejected","error":"microphone unavailable"}"#
+        r#"{"protocol_version":14,"message":"command_rejected","error":"microphone unavailable"}"#
     );
 }
 
@@ -34,7 +34,6 @@ fn commands_round_trip_through_the_wire() {
     let job_id = JobId::new();
     let commands = [
         ClientCommandKind::GetSnapshot,
-        ClientCommandKind::GetWorkspace,
         ClientCommandKind::StopRecording,
         ClientCommandKind::Cancel,
         ClientCommandKind::RetryTranscription { job_id },
@@ -57,43 +56,6 @@ fn commands_round_trip_through_the_wire() {
 }
 
 #[test]
-fn history_page_requests_are_bounded_and_typed_on_the_wire() {
-    let command = ClientCommand::get_history_page(
-        "database migration",
-        20,
-        Some(HistoryPageCursor::new("opaque-page-2")),
-    );
-    let wire = serde_json::to_string(&command).unwrap();
-
-    assert_eq!(
-        wire,
-        r#"{"protocol_version":13,"command":"get_history_page","request":{"search":"database migration","page_size":20,"after":"opaque-page-2"}}"#
-    );
-    assert_eq!(
-        serde_json::from_str::<ClientCommand>(&wire).unwrap(),
-        command
-    );
-}
-
-#[test]
-fn history_page_responses_round_trip_independently_from_the_workspace() {
-    let page = HistoryPageSnapshot {
-        search: "needle".into(),
-        total_matches: 31,
-        cursor_restarted: false,
-        next_cursor: Some(HistoryPageCursor::new("opaque-page-2")),
-        rows: Vec::new(),
-    };
-    let message = ServerMessage::history_page(page.clone());
-    let wire = serde_json::to_string(&message).unwrap();
-
-    assert!(matches!(
-        serde_json::from_str::<ServerMessage>(&wire).unwrap().kind,
-        ServerMessageKind::HistoryPage { page: decoded } if *decoded == page
-    ));
-}
-
-#[test]
 fn snapshot_messages_round_trip_without_secret_settings() {
     let settings = Settings {
         openai_api_key: "sk-must-not-cross-the-seam".into(),
@@ -105,6 +67,8 @@ fn snapshot_messages_round_trip_without_secret_settings() {
             hotkey: HotkeyReadiness::Ready,
             recoverable_count: 3,
             last_transcript: Some("safe transcript".into()),
+            overlay_unavailable: true,
+            history_set_aside: Some("/tmp/agentdictate.sqlite.corrupt-1".into()),
         },
         &settings,
     );

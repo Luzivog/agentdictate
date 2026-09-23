@@ -1,3 +1,5 @@
+use agentdictate_core::{UsageSnapshot, UsageTotalsSnapshot};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UsagePeriod {
     Last7Days,
@@ -32,6 +34,21 @@ pub struct UsageTotals {
     pub words: u64,
     pub audio_seconds: u64,
     pub estimated_cost_usd: f64,
+}
+
+impl From<UsageTotalsSnapshot> for UsageTotals {
+    fn from(totals: UsageTotalsSnapshot) -> Self {
+        Self {
+            dictations: totals.dictations,
+            words: totals.words,
+            audio_seconds: whole_seconds(totals.audio_seconds),
+            estimated_cost_usd: totals.estimated_cost,
+        }
+    }
+}
+
+fn whole_seconds(seconds: f64) -> u64 {
+    seconds.round().max(0.0) as u64
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +92,39 @@ impl UsageViewModel {
             totals,
             activity,
         }
+    }
+
+    /// Presents `period` of `snapshot`: the last 7 or 30 days day by day,
+    /// or all time week by week.
+    pub fn from_snapshot(snapshot: &UsageSnapshot, period: UsagePeriod) -> Self {
+        let (totals, activity, limit, weekly) = match period {
+            UsagePeriod::Last7Days => (snapshot.last_7_days, &snapshot.activity, 7, false),
+            UsagePeriod::Last30Days => (snapshot.last_30_days, &snapshot.activity, 30, false),
+            UsagePeriod::AllTime => (
+                snapshot.all_time,
+                &snapshot.weekly_activity,
+                usize::MAX,
+                true,
+            ),
+        };
+        let activity = activity
+            .iter()
+            .skip(activity.len().saturating_sub(limit))
+            .map(|day| {
+                UsageDayViewModel::new(
+                    if weekly {
+                        format!("Week of {}", day.date.format("%b %-d"))
+                    } else {
+                        day.date.format("%b %-d").to_string()
+                    },
+                    day.totals.dictations,
+                    day.totals.words,
+                    whole_seconds(day.totals.audio_seconds),
+                    day.totals.estimated_cost,
+                )
+            })
+            .collect();
+        Self::new(period, totals.into(), activity)
     }
 
     pub fn dictations_value(&self) -> String {

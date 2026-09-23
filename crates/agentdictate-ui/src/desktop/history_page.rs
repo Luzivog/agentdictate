@@ -244,7 +244,11 @@ fn recovery_row(
         id: item.id.clone(),
     };
     let action_label = item.primary_action_label();
-    let metadata = format!("{} · {}", item.captured_at, item.duration);
+    let mut metadata = format!("{} · {}", item.captured_at, item.duration);
+    if let Some(expires) = &item.expires {
+        metadata.push_str(" · ");
+        metadata.push_str(expires);
+    }
     let metadata_selector = format!("history-recovery-metadata-{}", item.id);
     let error_selector = format!("history-recovery-error-{}", item.id);
     let preview_selector = format!("history-recovery-preview-{}", item.id);

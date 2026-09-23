@@ -27,6 +27,7 @@ struct RouteViewportModel {
     feedback: Option<String>,
     overlay_unavailable: bool,
     history_set_aside: Option<String>,
+    window_outdated: bool,
     scroll: ScrollHandle,
 }
 
@@ -161,6 +162,7 @@ impl Render for SettingsShell {
             feedback: self.routes.entry(route).feedback.clone(),
             overlay_unavailable: self.model.workspace.overlay_unavailable,
             history_set_aside: self.model.workspace.history_set_aside.clone(),
+            window_outdated: self.model.workspace.window_outdated,
             scroll: self.routes.entry(route).scroll.clone(),
         };
 
@@ -207,6 +209,7 @@ fn route_viewport(
         feedback,
         overlay_unavailable,
         history_set_aside,
+        window_outdated,
         scroll,
     } = viewport;
     let route = page.route();
@@ -227,6 +230,9 @@ fn route_viewport(
                 .size_full()
                 .p_6()
                 .gap_5()
+                .when(window_outdated, |content| {
+                    content.child(window_outdated_notice(theme))
+                })
                 .when(overlay_unavailable, |content| {
                     content.child(gpui::div()
                         .debug_selector(|| "overlay-unavailable-notice".to_owned())
@@ -260,6 +266,20 @@ fn route_viewport(
                 .w(px(ROUTE_SCROLLBAR_WIDTH))
                 .child(Scrollbar::vertical(&scroll).id(("route-scrollbar", route_scroll_id))),
         )
+}
+
+/// Shown when the daemon or its database is from a newer AgentDictate than
+/// this window, which then stops refreshing.
+fn window_outdated_notice(theme: ThemeTokens) -> gpui::Div {
+    gpui::div()
+        .debug_selector(|| "window-outdated-notice".to_owned())
+        .rounded_lg()
+        .border_1()
+        .border_color(gpui_color(theme.accent))
+        .p_3()
+        .text_sm()
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .child("AgentDictate was updated — reopen this window")
 }
 
 /// The notice that reports a workspace action's outcome on its route.

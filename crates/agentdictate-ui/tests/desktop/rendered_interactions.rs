@@ -76,6 +76,22 @@ fn history_set_aside_notice_follows_the_workspace(cx: &mut TestAppContext) {
     }
 }
 
+#[gpui::test]
+fn an_outdated_window_asks_to_be_reopened(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
+    assert!(!harness.has("window-outdated-notice"));
+    harness.shell.update(harness.cx, |shell, cx| {
+        let workspace = shell
+            .view_model()
+            .workspace
+            .clone()
+            .with_window_outdated(true);
+        shell.apply_workspace_update(workspace, cx);
+    });
+    harness.cx.run_until_parked();
+    assert!(harness.has("window-outdated-notice"));
+}
+
 /// Root, tooltips and popovers paint from gpui-component's resolved token
 /// copy, which only follows the app palette when the theme setup syncs it.
 #[gpui::test]

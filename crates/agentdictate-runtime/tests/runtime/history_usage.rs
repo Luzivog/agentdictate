@@ -4,8 +4,8 @@ use agentdictate_core::{
     DictationOptions, HistoryPageRequest, KeepTranscripts, Settings, parse_vocabulary,
 };
 use agentdictate_runtime::{
-    Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
-    RecordingJob, Runtime,
+    DatabaseObserver, Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError,
+    HeadlessDeliveryGate, RecordingJob, Runtime, RuntimeError,
 };
 use tempfile::TempDir;
 
@@ -454,4 +454,59 @@ fn deleted_and_cleared_history_text_leaves_the_database_files() {
 
     assert!(!database_files_contain(&database_path, "private note"));
     assert!(tables_containing(&database_path, "private note").is_empty());
+}
+
+/// The settings window reads what the daemon committed straight from the
+/// database, and a file event that committed nothing does not count as a
+/// change.
+#[test]
+fn the_window_sees_each_commit_and_skips_events_that_changed_nothing() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let mut observer = DatabaseObserver::open(&database_path).unwrap();
+    assert!(observer.changed().unwrap());
+    observer.workspace(&HistoryPageRequest::default()).unwrap();
+    assert!(!observer.changed().unwrap());
+
+    let delivered = delivered_job(&mut runtime, &directory);
+    runtime
+        .complete_delivered(delivered.id, &Settings::default())
+        .unwrap();
+
+    assert!(observer.changed().unwrap());
+    let workspace = observer
+        .workspace(&HistoryPageRequest {
+            search: "no such words".into(),
+            ..HistoryPageRequest::default()
+        })
+        .unwrap();
+    assert_eq!(workspace.recent.rows[0].text, "fix the Vercel deploy");
+    assert!(workspace.history.rows.is_empty());
+    assert_eq!(workspace.usage.all_time.dictations, 1);
+    assert!(workspace.recoveries.is_empty());
+    // SQLite's automatic checkpoint writes the database file this way.
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+        .unwrap();
+    assert!(!observer.changed().unwrap());
+}
+
+#[test]
+fn the_window_refuses_a_database_a_newer_release_migrated() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    drop(Runtime::open(&database_path).unwrap());
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .pragma_update(None, "user_version", 99)
+        .unwrap();
+
+    let mut observer = DatabaseObserver::open(&database_path).unwrap();
+
+    assert!(matches!(
+        observer.workspace(&HistoryPageRequest::default()),
+        Err(RuntimeError::NewerDatabase { version: 99, .. })
+    ));
 }

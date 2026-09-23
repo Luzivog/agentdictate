@@ -4,13 +4,11 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use agentdictate_core::{
-    ClientCommandKind, HistoryPageRequest, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness,
-    RecordingMode, ServerMessage, SettingChange, Settings, WorkspaceSnapshot,
+    AppSnapshot, ClientCommandKind, Hotkey, HotkeyCaptureOutcome, HotkeyReadiness, RecordingMode,
+    ServerMessage, SettingChange, Settings,
 };
 use agentdictate_linux::hotkey::HotkeySpec;
-use agentdictate_runtime::{
-    FinishedJobCleanup, Runtime, RuntimeError, load_settings, save_settings,
-};
+use agentdictate_runtime::{FinishedJobCleanup, Runtime, load_settings, save_settings};
 
 use crate::{
     AppPaths, Daemon, DaemonDeliverer, OverlayController, ProcessingTicket, RecorderEvent,
@@ -55,8 +53,6 @@ pub struct AgentProcess<
 /// What an IPC command answers with, rendered once the command's work is done.
 pub(crate) enum Reply {
     Snapshot,
-    Workspace,
-    HistoryPage(HistoryPageRequest),
     HotkeyCaptured(HotkeyCaptureOutcome),
     Rejected(String),
 }
@@ -190,10 +186,6 @@ where
         let daemon = &mut self.daemon;
         let handled: anyhow::Result<(Reply, Followup<T>)> = match command {
             ClientCommandKind::GetSnapshot => Ok((Reply::Snapshot, Followup::None)),
-            ClientCommandKind::GetWorkspace => Ok((Reply::Workspace, Followup::None)),
-            ClientCommandKind::GetHistoryPage { request } => {
-                Ok((Reply::HistoryPage(request), Followup::None))
-            }
             ClientCommandKind::StartRecording { mode } => daemon
                 .start_recording_in_mode(mode)
                 .map(|_| (Reply::Snapshot, Followup::None))
@@ -213,27 +205,27 @@ where
                 .map_err(Into::into),
             ClientCommandKind::RetryTranscription { job_id } => daemon
                 .retry_transcription(job_id)
-                .map(|ticket| (Reply::Workspace, Followup::ProcessThenReply(ticket)))
+                .map(|ticket| (Reply::Snapshot, Followup::ProcessThenReply(ticket)))
                 .map_err(Into::into),
             ClientCommandKind::RetryDelivery { job_id } => daemon
                 .retry_delivery(job_id)
-                .map(|_| (Reply::Workspace, Followup::None))
+                .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
             ClientCommandKind::DeleteRecovery { job_id } => daemon
                 .delete_recovery(job_id)
-                .map(|_| (Reply::Workspace, Followup::None))
+                .map(|_| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
             ClientCommandKind::DeleteHistory { id } => daemon
                 .delete_history(id)
                 .map_err(anyhow::Error::from)
                 .and_then(|deleted| {
                     deleted
-                        .then_some((Reply::Workspace, Followup::None))
+                        .then_some((Reply::Snapshot, Followup::None))
                         .ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
                 }),
             ClientCommandKind::ClearHistory => daemon
                 .clear_history()
-                .map(|()| (Reply::Workspace, Followup::None))
+                .map(|()| (Reply::Snapshot, Followup::None))
                 .map_err(Into::into),
             ClientCommandKind::CopyTranscript { id } => daemon
                 .transcript_text(id)
@@ -242,7 +234,7 @@ where
                     text.ok_or_else(|| anyhow::anyhow!("transcript {id} was not found"))
                 })
                 .and_then(|text| daemon.deliverer_mut().copy_text(&text).map_err(Into::into))
-                .map(|()| (Reply::Workspace, Followup::None)),
+                .map(|()| (Reply::Snapshot, Followup::None)),
             ClientCommandKind::ChangeSetting { change } => self
                 .change_setting(change)
                 .map(|()| (Reply::Snapshot, Followup::None)),
@@ -266,27 +258,20 @@ where
 
     /// Renders an IPC reply from the current state.
     pub(crate) fn render(&self, reply: Reply) -> ServerMessage {
-        let rendered = match reply {
-            Reply::Snapshot => Ok(ServerMessage::snapshot(
-                self.daemon.snapshot(),
-                self.daemon.settings(),
-            )),
-            Reply::Workspace => self.daemon.workspace_snapshot().map(|workspace| {
-                ServerMessage::workspace(WorkspaceSnapshot {
-                    history_set_aside: self.history_set_aside.clone(),
-                    ..workspace
-                })
-            }),
-            Reply::HistoryPage(request) => self
-                .daemon
-                .history_page(&request)
-                .map(ServerMessage::history_page),
-            Reply::HotkeyCaptured(outcome) => Ok(ServerMessage::hotkey_captured(outcome)),
-            Reply::Rejected(error) => Ok(ServerMessage::command_rejected(error)),
-        };
-        rendered.unwrap_or_else(|error: RuntimeError| {
-            ServerMessage::command_rejected(error.to_string())
-        })
+        match reply {
+            Reply::Snapshot => ServerMessage::snapshot(self.snapshot(), self.daemon.settings()),
+            Reply::HotkeyCaptured(outcome) => ServerMessage::hotkey_captured(outcome),
+            Reply::Rejected(error) => ServerMessage::command_rejected(error),
+        }
+    }
+
+    /// The daemon's status snapshot, with where startup set an unreadable
+    /// database aside.
+    fn snapshot(&self) -> AppSnapshot {
+        AppSnapshot {
+            history_set_aside: self.history_set_aside.clone(),
+            ..self.daemon.snapshot()
+        }
     }
 
     /// Applies one setting to the settings the daemon holds.
@@ -764,12 +749,10 @@ mod tests {
 
         let (process, _recorder_events) = AgentProcess::open(paths).unwrap();
 
-        let agentdictate_core::ServerMessageKind::Workspace { workspace } =
-            process.render(Reply::Workspace).kind
-        else {
-            panic!("a fresh database still serves the workspace");
-        };
-        let set_aside = workspace.history_set_aside.expect("the notice is reported");
+        let set_aside = process
+            .snapshot()
+            .history_set_aside
+            .expect("the notice is reported");
         assert_eq!(std::fs::read(set_aside).unwrap(), b"garbage");
     }
 

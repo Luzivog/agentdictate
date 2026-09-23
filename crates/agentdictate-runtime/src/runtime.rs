@@ -62,7 +62,8 @@ impl Runtime {
         }
     }
 
-    /// Opens a read-only view without running startup reconciliation.
+    /// Opens a read-only view without running migrations or startup
+    /// reconciliation; see `DatabaseObserver`.
     pub fn open_observer(path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self { connection })

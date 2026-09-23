@@ -121,9 +121,9 @@ per audio minute for `gpt-live-transcribe` and $0.0045 for `gpt-transcribe`.
 Recovery lives in the **History** page. **Transcribe again** and **Paste again** copy
 the text to the clipboard instead of pasting, because AgentDictate's own window has
 the focus. Press Ctrl+V where you want it. An item nobody retries or deletes expires
-7 days after it last changed, with its audio. A recording longer than 5 seconds that
-you cancelled with Esc also waits there, as **Cancelled — transcribe anyway?**, for
-24 hours.
+7 days after it last changed, with its audio; each item says when. A recording longer
+than 5 seconds that you cancelled with Esc also waits there, as **Cancelled —
+transcribe anyway?**, for 24 hours.
 
 ## Evaluate a change
 
