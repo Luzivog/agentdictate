@@ -386,10 +386,11 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
             if phase == "recording":
                 transparency = assert_transparent_corners(desktop, window, baseline, scale)
             assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
-        # Copying without pasting publishes the clipboard alone.
+        # Copying without pasting publishes the clipboard alone. Mutter offers
+        # a new X selection to Wayland clients a moment after its owner changes.
         assert probe.ask("publish clipboard copied fixture") == "published"
-        copied = target_state(desktop.root)["selections"]
-        assert copied[0] == "copied fixture", copied
+        wait_until(lambda: target_state(desktop.root)["selections"][0] == "copied fixture",
+                   "copied text on the target's clipboard")
         fixture = "overlay clipboard fixture déjà vu"
         assert probe.ask("pressed") == "marked"
         assert probe.ask(f"publish both {fixture}") == "published"
