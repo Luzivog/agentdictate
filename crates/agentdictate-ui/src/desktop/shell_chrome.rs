@@ -14,7 +14,7 @@ const WINDOW_CONTROLS_WIDTH: f32 = 112.;
 
 /// The fixed-width navigation column on the left of the settings window.
 pub(super) fn sidebar_view(
-    navigation: [NavigationItemViewModel; Route::ALL.len()],
+    navigation: [NavigationItemViewModel; Route::NAVIGATION.len()],
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -83,7 +83,7 @@ pub(super) fn sidebar_view(
 
 fn route_accent(route: Route, theme: ThemeTokens) -> Color {
     match route {
-        Route::Home => theme.accent,
+        Route::Home | Route::Setup => theme.accent,
         Route::History => theme.info,
         Route::Words => theme.success,
         Route::Settings => theme.highlight,

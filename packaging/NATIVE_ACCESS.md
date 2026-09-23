@@ -14,7 +14,8 @@ permanently to the broad `input` group.
 
 ## Grant access
 
-Any installation can run:
+The window's **Set up AgentDictate** screen has a **Grant access** button that
+does this for you. Any installation can also run:
 
 ```bash
 agentdictate setup-access

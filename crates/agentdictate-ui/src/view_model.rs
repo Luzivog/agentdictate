@@ -1,6 +1,8 @@
-use agentdictate_core::{AppSnapshot, DesktopReadiness, HotkeyReadiness, MissingTool, Readiness};
+use agentdictate_core::{
+    AppSnapshot, DesktopReadiness, ExposedInput, HotkeyReadiness, MissingTool, Readiness,
+};
 
-use crate::{HistoryViewModel, Route, WorkspaceViewModel};
+use crate::{HistoryViewModel, Route, WorkspaceViewModel, needs_setup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavigationItemViewModel {
@@ -27,8 +29,8 @@ pub enum HomeStatus {
 pub struct ReadinessFix {
     pub title: &'static str,
     pub detail: String,
-    /// The fix is made in Settings, which the card opens.
-    pub opens_settings: bool,
+    /// Setup fixes it, and the card opens Setup.
+    pub opens_setup: bool,
 }
 
 impl ReadinessFix {
@@ -36,12 +38,32 @@ impl ReadinessFix {
         Self {
             title,
             detail: detail.into(),
-            opens_settings: false,
+            opens_setup: false,
+        }
+    }
+
+    fn in_setup(title: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            opens_setup: true,
+            ..Self::new(title, detail)
         }
     }
 }
 
-const SETUP_ACCESS: &str = "Run agentdictate setup-access in a terminal, then log out and back in.";
+/// Why other apps can read the keyboard, and what to do about it. Granting
+/// access cannot override another app's rule, so that rule must go.
+pub(crate) fn exposed_input_detail(exposed: &ExposedInput) -> String {
+    match &exposed.rule {
+        Some(rule) => format!(
+            "{} lets every app read your keyboard. Remove it to keep your typing private.",
+            rule.display()
+        ),
+        None => {
+            "Every app on this computer can read your keyboard. Granting access makes it private again."
+                .to_owned()
+        }
+    }
+}
 
 impl HomeStatus {
     /// What Home says about `readiness`, with `shortcut` the configured
@@ -61,40 +83,33 @@ impl HomeStatus {
         } = readiness;
         let missing = |tool| missing_tools.contains(&tool);
         let fix = if let HotkeyReadiness::Unavailable { .. } = listener {
-            ReadinessFix::new(
+            ReadinessFix::in_setup(
                 "The shortcut isn't working",
-                format!("AgentDictate can't read your keyboard. {SETUP_ACCESS}"),
+                "AgentDictate can't read your keyboard yet. Setup can give it access.",
             )
         } else if !transcription_key {
-            ReadinessFix {
-                opens_settings: true,
-                ..ReadinessFix::new(
-                    "Add your OpenAI API key",
-                    "AgentDictate turns your speech into text with OpenAI. Add your key in Settings.",
-                )
-            }
+            ReadinessFix::in_setup(
+                "Add your OpenAI API key",
+                "AgentDictate turns your speech into text with OpenAI.",
+            )
         } else if missing(MissingTool::PwRecord) {
             ReadinessFix::new(
                 "AgentDictate can't record",
                 "pw-record isn't installed. Install PipeWire's tools (pipewire-bin), then restart AgentDictate.",
             )
         } else if !paste_access {
-            ReadinessFix::new(
+            ReadinessFix::in_setup(
                 "AgentDictate can't paste",
-                format!("Your text will only be copied. {SETUP_ACCESS}"),
+                "Your text is only copied until it can. Setup can give it access.",
             )
         } else if let Some(exposed) = exposed_input {
-            ReadinessFix::new(
-                "Other apps can read your keyboard",
-                match &exposed.rule {
-                    Some(rule) => format!(
-                        "Run agentdictate setup-access or remove the rule from {}.",
-                        rule.display()
-                    ),
-                    None => "Run agentdictate setup-access to make your keyboard private again."
-                        .to_owned(),
-                },
-            )
+            ReadinessFix {
+                opens_setup: exposed.rule.is_none(),
+                ..ReadinessFix::new(
+                    "Other apps can read your keyboard",
+                    exposed_input_detail(exposed),
+                )
+            }
         } else if missing(MissingTool::Ffmpeg) {
             ReadinessFix::new(
                 "Install ffmpeg for faster results",
@@ -119,7 +134,7 @@ impl HomeStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellViewModel {
     pub active_route: Route,
-    pub navigation: [NavigationItemViewModel; Route::ALL.len()],
+    pub navigation: [NavigationItemViewModel; Route::NAVIGATION.len()],
     pub workspace: WorkspaceViewModel,
 }
 
@@ -128,7 +143,7 @@ impl ShellViewModel {
     pub fn new(active_route: Route) -> Self {
         Self {
             active_route,
-            navigation: Route::ALL.map(|route| NavigationItemViewModel {
+            navigation: Route::NAVIGATION.map(|route| NavigationItemViewModel {
                 route,
                 label: route.title(),
                 is_active: route == active_route,
@@ -137,8 +152,15 @@ impl ShellViewModel {
         }
     }
 
-    pub fn from_app_snapshot(active_route: Route, snapshot: AppSnapshot) -> Self {
-        let mut model = Self::new(active_route);
+    /// The window as it opens on the daemon's `snapshot`: on Setup while
+    /// dictation can't work yet, otherwise on Home.
+    pub fn from_app_snapshot(snapshot: AppSnapshot) -> Self {
+        let route = if needs_setup(&snapshot.readiness) {
+            Route::Setup
+        } else {
+            Route::Home
+        };
+        let mut model = Self::new(route);
         model.workspace = WorkspaceViewModel::default().with_status(&snapshot);
         model.workspace.history = HistoryViewModel::new(
             0,

@@ -11,6 +11,7 @@ mod history;
 mod overlay;
 mod route;
 mod settings;
+mod setup;
 mod theme;
 mod usage;
 mod view_model;
@@ -25,7 +26,7 @@ pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
     APPLICATION_ID, HotkeyCaptureSink, RecordingOverlay, SettingsShell, SettingsSink,
-    SettingsWindow, run_recording_overlay, run_settings_window,
+    SettingsWindow, WindowSinks, run_recording_overlay, run_settings_window,
 };
 pub use failure::{
     FailureWording, NoticeWording, failure_wording, notice_wording, recovery_reason,
@@ -43,6 +44,7 @@ pub use overlay::{
 };
 pub use route::Route;
 pub use settings::SettingsRequest;
+pub use setup::{SetupActions, SetupSink, has_input_access, needs_setup};
 pub use theme::{Color, ThemeTokens};
 pub use usage::{UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel};
 pub use view_model::{HomeStatus, NavigationItemViewModel, ReadinessFix, ShellViewModel};

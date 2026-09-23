@@ -157,14 +157,14 @@ fn readiness(status: HomeStatus, theme: ThemeTokens, cx: &mut Context<SettingsSh
                             .child(fix.detail),
                     ),
             )
-            .when(fix.opens_settings, |card| {
+            .when(fix.opens_setup, |card| {
                 card.child(
-                    action_button("home-fix-open-settings")
-                        .debug_selector(|| "home-fix-open-settings".to_owned())
+                    action_button("home-fix-open-setup")
+                        .debug_selector(|| "home-fix-open-setup".to_owned())
                         .small()
-                        .label("Open Settings")
+                        .label("Open setup")
                         .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.select_route(Route::Settings, cx);
+                            shell.select_route(Route::Setup, cx);
                         })),
                 )
             }),

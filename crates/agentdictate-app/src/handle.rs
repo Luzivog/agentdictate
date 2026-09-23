@@ -434,7 +434,8 @@ where
                 }) {
                 Ok(outcome) => Reply::MicrophoneTested(outcome),
                 Err(error) => {
-                    Reply::Rejected(format!("could not listen to the microphone: {error}"))
+                    tracing::warn!(%error, "the microphone test could not listen");
+                    Reply::Rejected(error.to_string())
                 }
             },
             Followup::Quit => match self.quit() {

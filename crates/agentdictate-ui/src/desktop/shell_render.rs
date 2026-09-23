@@ -9,13 +9,14 @@ use super::{
     overview::{self, HomePageModel},
     settings_page::{self, SettingsPageModel},
     settings_shell::{Confirmed, route_index},
+    setup_page::{self, SetupPageModel},
     shell_chrome::{shell_title_bar, sidebar_view},
     words_page::{self, WordsPageModel},
 };
 
 #[derive(Clone, Copy)]
 struct ShellChromeModel {
-    navigation: [NavigationItemViewModel; Route::ALL.len()],
+    navigation: [NavigationItemViewModel; Route::NAVIGATION.len()],
     theme: ThemeTokens,
 }
 
@@ -34,6 +35,7 @@ enum RoutePageModel {
     History(HistoryPageModel),
     Words(WordsPageModel),
     Settings(Box<SettingsPageModel>),
+    Setup(Box<SetupPageModel>),
 }
 
 impl RoutePageModel {
@@ -103,6 +105,24 @@ impl RoutePageModel {
                     pending_destructive_action: shell.routes.pending_destructive_action.clone(),
                 }))
             }
+            Route::Setup => {
+                let setup = &shell.setup;
+                let shown = shell.settings.shown();
+                Self::Setup(Box::new(SetupPageModel {
+                    readiness: workspace.readiness.clone(),
+                    has_api_key: shell.settings.saved.has_api_key,
+                    replacing_key: setup.replacing_key,
+                    api_key: setup.api_key.clone(),
+                    key: setup.key.clone(),
+                    access: setup.access.clone(),
+                    microphone: setup.microphone.clone(),
+                    meter: setup.meter,
+                    shortcut: shown.hotkey.label().to_owned(),
+                    recording_mode: shown.recording_mode,
+                    try_it: setup.try_it.clone(),
+                    tried: setup.tried,
+                }))
+            }
         }
     }
 
@@ -112,13 +132,14 @@ impl RoutePageModel {
             Self::History(_) => Route::History,
             Self::Words(_) => Route::Words,
             Self::Settings(_) => Route::Settings,
+            Self::Setup(_) => Route::Setup,
         }
     }
 
     fn embeds_feedback(&self) -> bool {
         match self {
             Self::Settings(_) | Self::History(_) | Self::Words(_) => true,
-            Self::Home(_) => false,
+            Self::Home(_) | Self::Setup(_) => false,
         }
     }
 
@@ -128,6 +149,7 @@ impl RoutePageModel {
             Self::History(history) => history_page::surface(history, theme, cx),
             Self::Words(words) => words_page::surface(words, theme, cx),
             Self::Settings(settings) => settings_page::surface(*settings, theme, cx),
+            Self::Setup(setup) => setup_page::surface(*setup, theme, cx),
         }
     }
 }

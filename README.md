@@ -55,7 +55,11 @@ lag behind this repository. See [packages](docs/INSTALL.md#packages).
 1. Open **AgentDictate** from your app menu, or run `agentdictate`. This starts the
    background service, which also starts with every later login while **Start
    AgentDictate when I log in** is on.
-2. In **Settings**, paste your OpenAI API key and click **Save key**.
+2. The window opens on **Set up AgentDictate** until dictation can work. Paste
+   your OpenAI API key and click **Check key**; **Grant access** lets AgentDictate
+   read the shortcut and paste after you enter your password; **Say something**
+   tests the microphone; and **Try it** has a box to dictate into. Every step is
+   optional, and **Done** goes to Home.
 3. Click into any text field, press <kbd>Ctrl</kbd> + <kbd>Space</kbd>, speak, and
    press it again. Keep that field focused until the text appears.
 

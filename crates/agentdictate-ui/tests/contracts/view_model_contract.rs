@@ -4,7 +4,7 @@ use agentdictate_core::{
     AppSnapshot, DesktopReadiness, ExposedInput, HotkeyReadiness, MissingTool, Readiness,
     WorkflowPhase, WorkflowSnapshot,
 };
-use agentdictate_ui::{HomeStatus, Route, ShellViewModel};
+use agentdictate_ui::{HomeStatus, Route, ShellViewModel, needs_setup};
 
 fn readiness(change: impl FnOnce(&mut Readiness)) -> Readiness {
     let mut readiness = Readiness {
@@ -43,7 +43,7 @@ fn home_says_ready_with_the_shortcut_or_shows_the_most_important_fix() {
         panic!("a missing key needs a fix");
     };
     assert_eq!(fix.title, "Add your OpenAI API key");
-    assert!(fix.opens_settings);
+    assert!(fix.opens_setup);
 
     let HomeStatus::Fix(fix) = HomeStatus::new(
         &readiness(|readiness| {
@@ -59,8 +59,33 @@ fn home_says_ready_with_the_shortcut_or_shows_the_most_important_fix() {
     assert_eq!(fix.title, "Other apps can read your keyboard");
     assert_eq!(
         fix.detail,
-        "Run agentdictate setup-access or remove the rule from /etc/udev/rules.d/99-vibetyper-uinput.rules."
+        "/etc/udev/rules.d/99-vibetyper-uinput.rules lets every app read your keyboard. Remove it to keep your typing private."
     );
+    // Granting access can't override another app's rule.
+    assert!(!fix.opens_setup);
+}
+
+#[test]
+fn setup_opens_until_the_key_the_shortcut_and_pasting_all_work() {
+    assert!(!needs_setup(&readiness(|_| {})));
+    // A shortcut still starting, a slower upload or a world-readable
+    // keyboard don't stop dictation.
+    assert!(!needs_setup(&readiness(|readiness| {
+        readiness.shortcut = HotkeyReadiness::Starting;
+        readiness.desktop.missing_tools = vec![MissingTool::Ffmpeg];
+        readiness.desktop.exposed_input = Some(ExposedInput { rule: None });
+    })));
+    for broken in [
+        readiness(|readiness| readiness.transcription_key = false),
+        readiness(|readiness| {
+            readiness.shortcut = HotkeyReadiness::Unavailable {
+                message: "no readable keyboard".to_owned(),
+            };
+        }),
+        readiness(|readiness| readiness.desktop.paste_access = false),
+    ] {
+        assert!(needs_setup(&broken), "{broken:?}");
+    }
 }
 
 #[test]
@@ -75,8 +100,10 @@ fn the_status_snapshot_brings_readiness_and_the_recovery_count() {
         history_set_aside: None,
     };
 
-    let model = ShellViewModel::from_app_snapshot(Route::Home, snapshot.clone());
+    let model = ShellViewModel::from_app_snapshot(snapshot.clone());
 
+    // Without a key, the window opens on Setup.
+    assert_eq!(model.active_route, Route::Setup);
     assert_eq!(model.workspace.readiness, snapshot.readiness);
     assert_eq!(model.workspace.history.recovery.item_count, 3);
     assert_eq!(model.workspace.daemon_banner(), None);

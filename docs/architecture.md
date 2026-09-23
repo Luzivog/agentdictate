@@ -49,6 +49,17 @@ same.
 to install and apply the input-access rule. See
 [native input access](../packaging/NATIVE_ACCESS.md).
 
+**Setup screen.** The window opens on **Set up AgentDictate** while dictation
+can't work: no API key, or no access to read the shortcut or paste. Home's fix
+card opens it too. Its four steps are optional. **Check key** asks the daemon to
+check a pasted or saved key with OpenAI, and saves a pasted key only once OpenAI
+accepts it. **Grant access** asks first, then runs the same grant as
+`setup-access` from the window and re-reads the daemon's readiness; it says "Log
+out and back in to finish" only if access is still missing. **Say something**
+runs the daemon's microphone test with a live level meter. **Try it** is a text
+box to dictate into. Automatic paste presses Shift+Insert, which the window binds
+to paste in its text boxes.
+
 **Overlay helper.** When a recording starts, the daemon spawns the sibling
 `agentdictate` binary with `--overlay-helper`. It feeds the helper workflow and
 waveform updates on stdin and reads status lines back. The helper logs into the

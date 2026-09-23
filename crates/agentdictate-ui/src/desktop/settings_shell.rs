@@ -6,9 +6,10 @@ use gpui_component::input::{InputEvent, InputState};
 use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink};
 
 use super::{
-    HotkeyCaptureSink, SettingsShell, SettingsSink,
+    SettingsShell, WindowSinks,
     history_action_lane::HistoryActionLane,
     settings_form::{SettingRow, SettingsForm},
+    setup_actions::SetupState,
     words_actions::{FixWordEditor, WordsUiState},
 };
 
@@ -101,22 +102,26 @@ pub(super) const fn route_index(route: Route) -> usize {
         Route::History => 1,
         Route::Words => 2,
         Route::Settings => 3,
+        Route::Setup => 4,
     }
 }
 
 impl SettingsShell {
     /// Builds the settings window's shell around the daemon's settings and the
-    /// sinks that send settings, shortcut captures and workspace actions back
-    /// to it.
+    /// sinks that reach the daemon and the system.
     pub fn new(
         model: ShellViewModel,
         settings: agentdictate_core::SettingsSnapshot,
-        settings_sink: SettingsSink,
-        hotkey_capture: HotkeyCaptureSink,
-        workspace_action_sink: WorkspaceActionSink,
+        sinks: WindowSinks,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let WindowSinks {
+            settings: settings_sink,
+            hotkey_capture,
+            actions,
+            setup,
+        } = sinks;
         let initial_history_search = model.workspace.history.search.clone();
         let history_search_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -137,6 +142,8 @@ impl SettingsShell {
 
         let (words, words_subscriptions) = WordsUiState::new(window, cx);
         subscriptions.extend(words_subscriptions);
+        let (setup, setup_subscriptions) = SetupState::new(setup, window, cx);
+        subscriptions.extend(setup_subscriptions);
 
         let routes = RouteUiState {
             entries: std::array::from_fn(|_| RouteUiEntry::default()),
@@ -154,11 +161,12 @@ impl SettingsShell {
             theme: ThemeTokens::default(),
             settings,
             workspace_actions: WorkspaceActionState {
-                sink: workspace_action_sink,
+                sink: actions,
                 in_flight: false,
                 history_lane: HistoryActionLane::default(),
             },
             routes,
+            setup,
             _subscriptions: subscriptions,
         }
     }

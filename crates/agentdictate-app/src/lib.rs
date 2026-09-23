@@ -15,6 +15,7 @@ mod opus_encoder;
 mod overlay_process;
 mod process;
 mod processing;
+mod setup;
 mod startup;
 mod status_signal;
 mod system;
@@ -50,6 +51,7 @@ pub use overlay_process::{
 };
 pub use process::{AgentProcess, HotkeyControl, ProductionTranscriber};
 pub use processing::{ProcessingTicket, Transcriber, TranscriptionCompletion};
+pub use setup::SetupClient;
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
 };

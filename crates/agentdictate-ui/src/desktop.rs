@@ -13,7 +13,7 @@ use std::{
 
 use crate::theme::gpui_color;
 use crate::{
-    OverlayPresentation, SettingsRequest, ShellViewModel, ThemeTokens, UiActionError,
+    OverlayPresentation, SettingsRequest, SetupSink, ShellViewModel, ThemeTokens, UiActionError,
     WorkspaceActionSink, WorkspaceViewModel,
 };
 
@@ -26,6 +26,8 @@ mod settings_actions;
 mod settings_form;
 mod settings_page;
 mod settings_shell;
+mod setup_actions;
+mod setup_page;
 mod shell_chrome;
 mod shell_render;
 pub(crate) mod single_line;
@@ -35,6 +37,7 @@ mod workspace_actions;
 
 use settings_form::SettingsForm;
 use settings_shell::{RouteUiState, WorkspaceActionState};
+use setup_actions::SetupState;
 
 pub use overlay_view::RecordingOverlay;
 
@@ -56,13 +59,21 @@ pub type SettingsSink = Arc<
 pub type HotkeyCaptureSink =
     Arc<dyn Fn() -> Result<agentdictate_core::HotkeyCaptureOutcome, UiActionError> + Send + Sync>;
 
+/// How the settings window reaches the daemon and the system. Each sink
+/// blocks, so the window calls it off the UI thread.
+#[derive(Clone)]
+pub struct WindowSinks {
+    pub settings: SettingsSink,
+    pub hotkey_capture: HotkeyCaptureSink,
+    pub actions: WorkspaceActionSink,
+    pub setup: SetupSink,
+}
+
 /// Everything the settings window needs from the process that opens it.
 pub struct SettingsWindow {
     pub model: ShellViewModel,
     pub settings: agentdictate_core::SettingsSnapshot,
-    pub settings_sink: SettingsSink,
-    pub hotkey_capture: HotkeyCaptureSink,
-    pub action_sink: WorkspaceActionSink,
+    pub sinks: WindowSinks,
     /// A fresh workspace after each daemon database write, when watched.
     pub workspace_updates: Option<Receiver<WorkspaceViewModel>>,
     /// One message each time a later launch asks this window to come to the
@@ -88,9 +99,7 @@ pub fn run_settings_window(settings_window: SettingsWindow) {
     let SettingsWindow {
         model,
         settings,
-        settings_sink,
-        hotkey_capture,
-        action_sink,
+        sinks,
         workspace_updates,
         raise_requests,
     } = settings_window;
@@ -113,17 +122,8 @@ pub fn run_settings_window(settings_window: SettingsWindow) {
                         ..Default::default()
                     },
                     move |window, cx| {
-                        let view = cx.new(|cx| {
-                            SettingsShell::new(
-                                model,
-                                settings,
-                                settings_sink,
-                                hotkey_capture,
-                                action_sink,
-                                window,
-                                cx,
-                            )
-                        });
+                        let view =
+                            cx.new(|cx| SettingsShell::new(model, settings, sinks, window, cx));
                         *window_shell_slot.borrow_mut() = Some(view.clone());
                         let frame = cx.new(|_| crate::AgentDictateWindowFrame::new(view));
                         // AgentDictateWindowFrame owns the client-side frame and
@@ -308,5 +308,6 @@ pub struct SettingsShell {
     settings: SettingsForm,
     workspace_actions: WorkspaceActionState,
     routes: RouteUiState,
+    setup: SetupState,
     _subscriptions: Vec<Subscription>,
 }

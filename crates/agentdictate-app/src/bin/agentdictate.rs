@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
 use agentdictate_app::{
-    AppPaths, WindowInstance, WorkspaceClient, WorkspaceError, connect_or_start_daemon,
-    grant_native_access, init_file_logging, is_overlay_helper_argument, raise_open_window,
-    run_overlay_helper,
+    AppPaths, SetupClient, WindowInstance, WorkspaceClient, WorkspaceError,
+    connect_or_start_daemon, grant_native_access, init_file_logging, is_overlay_helper_argument,
+    raise_open_window, run_overlay_helper,
 };
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, HotkeyCaptureOutcome, ServerMessageKind,
 };
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
-    Route, SettingsRequest, SettingsWindow, ShellViewModel, UiActionError, run_settings_window,
+    SettingsRequest, SettingsWindow, ShellViewModel, UiActionError, WindowSinks,
+    run_settings_window,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -140,13 +141,19 @@ fn main() -> anyhow::Result<()> {
             _ => Err("the daemon did not answer the shortcut capture".into()),
         }
     });
+    // Opens on Setup while dictation can't work yet, otherwise on Home.
     run_settings_window(SettingsWindow {
-        model: ShellViewModel::from_app_snapshot(Route::Home, snapshot)
-            .with_workspace(workspace_model),
+        model: ShellViewModel::from_app_snapshot(snapshot).with_workspace(workspace_model),
         settings,
-        settings_sink,
-        hotkey_capture,
-        action_sink: workspace_action_sink,
+        sinks: WindowSinks {
+            settings: settings_sink,
+            hotkey_capture,
+            actions: workspace_action_sink,
+            setup: Arc::new(SetupClient::new(
+                paths.runtime.clone(),
+                paths.native_access.clone(),
+            )),
+        },
         workspace_updates,
         raise_requests,
     });

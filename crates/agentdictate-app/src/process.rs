@@ -803,12 +803,17 @@ mod tests {
         assert_eq!(std::fs::read(set_aside).unwrap(), b"garbage");
     }
 
-    /// A fake pw-record that writes `seconds` of `sample` bytes after a WAV
-    /// header, then keeps its file open for `then_wait` seconds.
-    fn fake_pw_record(directory: &Path, sample: &str, seconds: u32, then_wait: f32) -> PathBuf {
+    /// A daemon whose microphone is a fake pw-record: it writes a WAV header
+    /// and one second of `sample` bytes, then keeps its file open for
+    /// `then_wait` seconds.
+    fn daemon_with_microphone(
+        root: &Path,
+        sample: &str,
+        then_wait: f32,
+    ) -> (crate::DaemonHandle, AppPaths) {
         use std::os::unix::fs::PermissionsExt;
 
-        let recorder = directory.join("fake-pw-record");
+        let recorder = root.join("fake-pw-record");
         std::fs::write(
             &recorder,
             format!(
@@ -816,64 +821,50 @@ mod tests {
                  for output do :; done\n\
                  trap 'exit 0' INT TERM\n\
                  printf 'RIFF\\000\\000\\000\\000WAVEfmt \\020\\000\\000\\000\\001\\000\\001\\000\\200\\076\\000\\000\\000\\175\\000\\000\\002\\000\\020\\000data\\000\\000\\000\\000' > \"$output\"\n\
-                 head -c {bytes} /dev/zero | tr '\\000' '{sample}' >> \"$output\"\n\
-                 sleep {then_wait}\n",
-                bytes = seconds * 32_000,
+                 head -c 32000 /dev/zero | tr '\\000' '{sample}' >> \"$output\"\n\
+                 sleep {then_wait}\n"
             ),
         )
         .unwrap();
         std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
-        recorder
+        let paths = app_paths(root);
+        let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
+        let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
+        handle.with_process(|process| {
+            process.microphone = Arc::new(Microphone::new(
+                recorder,
+                paths.runtime.join(MICROPHONE_TEST_FILE),
+            ));
+        });
+        (handle, paths)
     }
 
-    /// Runs a microphone test on `handle`, collecting its levels until
-    /// `watching` returns false.
-    fn test_microphone(
-        handle: &crate::DaemonHandle,
-        mut watching: impl FnMut(&[u8]) -> bool,
-    ) -> (Vec<u8>, ServerMessageKind) {
-        let mut levels = Vec::new();
-        let reply =
-            handle.handle_reporting(ClientCommandKind::TestMicrophone.into(), &mut |message| {
-                match message.kind {
-                    ServerMessageKind::MicrophoneLevel { level } => {
-                        levels.push(level);
-                        if watching(&levels) {
-                            Ok(())
-                        } else {
-                            Err(agentdictate_runtime::IpcError::Disconnected)
-                        }
-                    }
-                    other => panic!("unexpected interim message {other:?}"),
-                }
-            });
-        (levels, reply.kind)
-    }
-
+    /// The window's Setup screen tests the microphone over IPC.
     #[test]
     fn a_microphone_test_reports_levels_and_keeps_nothing_it_heard() {
+        use agentdictate_ui::SetupActions;
+
         for (sample, expected) in [
             ("0", MicrophoneCheck::Heard),
             ("\\000", MicrophoneCheck::Silent),
         ] {
             let directory = tempdir().unwrap();
-            let paths = app_paths(directory.path());
-            let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
-            let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
-            let recorder = fake_pw_record(directory.path(), sample, 1, 0.2);
-            handle.with_process(|process| {
-                process.microphone = Arc::new(Microphone::new(
-                    recorder,
-                    paths.runtime.join(MICROPHONE_TEST_FILE),
-                ));
-            });
+            let (handle, paths) = daemon_with_microphone(directory.path(), sample, 0.2);
+            let server = agentdictate_runtime::IpcServer::bind(&paths.runtime).unwrap();
+            let serving = {
+                let handle = handle.clone();
+                std::thread::spawn(move || server.serve_next(&handle).unwrap())
+            };
+            let window =
+                crate::SetupClient::new(paths.runtime.clone(), paths.native_access.clone());
 
-            let (levels, reply) = test_microphone(&handle, |_| true);
+            let mut levels = Vec::new();
+            let heard = window
+                .test_microphone(&mut |level| levels.push(level))
+                .unwrap();
 
-            assert_eq!(
-                reply,
-                ServerMessageKind::MicrophoneTested { outcome: expected }
-            );
+            serving.join().unwrap();
+            assert_eq!(heard, expected);
             // One second of audio is twenty 50 ms readings.
             assert_eq!(levels.len(), 20, "{levels:?}");
             assert!(!paths.runtime.join(MICROPHONE_TEST_FILE).exists());
@@ -896,21 +887,20 @@ mod tests {
     #[test]
     fn a_microphone_test_stops_listening_once_its_window_is_gone() {
         let directory = tempdir().unwrap();
-        let paths = app_paths(directory.path());
-        let (process, _recorder_events) = AgentProcess::open(paths.clone()).unwrap();
-        let handle = crate::DaemonHandle::new(process, paths.runtime.clone());
-        let recorder = fake_pw_record(directory.path(), "0", 1, 30.0);
-        handle.with_process(|process| {
-            process.microphone = Arc::new(Microphone::new(
-                recorder,
-                paths.runtime.join(MICROPHONE_TEST_FILE),
-            ));
-        });
+        let (handle, _paths) = daemon_with_microphone(directory.path(), "0", 30.0);
         let started = std::time::Instant::now();
 
-        let (levels, _) = test_microphone(&handle, |levels| levels.len() < 3);
+        let mut levels = 0;
+        handle.handle_reporting(ClientCommandKind::TestMicrophone.into(), &mut |_| {
+            levels += 1;
+            if levels < 3 {
+                Ok(())
+            } else {
+                Err(agentdictate_runtime::IpcError::Disconnected)
+            }
+        });
 
-        assert_eq!(levels.len(), 3);
+        assert_eq!(levels, 3);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

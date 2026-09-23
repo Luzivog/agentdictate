@@ -12,15 +12,17 @@ use std::{
 };
 
 use agentdictate_core::{
-    DesktopReadiness, DictationMode, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, HotkeyReadiness,
-    KeepTranscripts, Readiness, SettingChange, Settings, SettingsSnapshot, VocabularyEntry,
+    ApiKeyCheck, AppSnapshot, DesktopReadiness, DictationMode, ExposedInput, Hotkey,
+    HotkeyCaptureOutcome, HotkeyModifier, HotkeyReadiness, KeepTranscripts, MicrophoneCheck,
+    Readiness, SettingChange, Settings, SettingsSnapshot, VocabularyEntry, Workflow,
     parse_vocabulary,
 };
 use agentdictate_ui::{
     AgentDictateWindowFrame, HistoryViewModel, HotkeyCaptureSink, RecoveryItemViewModel,
-    RecoveryStage, Route, SettingsRequest, SettingsShell, SettingsSink, ShellViewModel,
-    TranscriptViewModel, UiActionError, UsageDayViewModel, UsagePeriod, UsageTotals,
-    UsageViewModel, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
+    RecoveryStage, Route, SettingsRequest, SettingsShell, SettingsSink, SetupActions,
+    ShellViewModel, TranscriptViewModel, UiActionError, UsageDayViewModel, UsagePeriod,
+    UsageTotals, UsageViewModel, WindowSinks, WorkspaceAction, WorkspaceActionSink,
+    WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, ClipboardItem, Entity, Modifiers, MouseButton, Pixels, ScrollDelta,
@@ -62,19 +64,14 @@ fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
 fn home_shows_one_ready_line_or_one_fix_card(cx: &mut TestAppContext) {
     let mut harness = Harness::open(cx);
     assert!(harness.has("home-starting"));
-    let ready = Readiness {
-        shortcut: HotkeyReadiness::Ready,
-        transcription_key: true,
-        desktop: DesktopReadiness::default(),
-    };
-    harness.update_workspace(|workspace| workspace.readiness = ready.clone());
+    harness.update_workspace(|workspace| workspace.readiness = ready());
     assert!(harness.has("home-ready"));
     assert!(!harness.has("home-fix-card"));
 
     harness.update_workspace(|workspace| workspace.readiness.transcription_key = false);
     assert!(!harness.has("home-ready"));
-    harness.click("home-fix-open-settings");
-    assert_eq!(harness.active_route(), Route::Settings);
+    harness.click("home-fix-open-setup");
+    assert_eq!(harness.active_route(), Route::Setup);
 }
 
 /// One banner area says why the window cannot follow the daemon, on every
@@ -204,8 +201,12 @@ impl Harness {
     ) -> Self {
         test_support::initialize(cx);
         let settings = daemon.snapshot();
-        let settings_sink = daemon.sink();
-        let hotkey_capture = daemon.capture_sink();
+        let sinks = WindowSinks {
+            settings: daemon.sink(),
+            hotkey_capture: daemon.capture_sink(),
+            actions: action_sink,
+            setup: Arc::new(daemon.setup.clone()),
+        };
         let shell_slot = Rc::new(RefCell::new(None));
         let window_slot = Rc::clone(&shell_slot);
         let window = cx.update(|cx| {
@@ -218,17 +219,7 @@ impl Harness {
                     ..Default::default()
                 },
                 move |window, cx| {
-                    let shell = cx.new(|cx| {
-                        SettingsShell::new(
-                            model,
-                            settings,
-                            settings_sink,
-                            hotkey_capture,
-                            action_sink,
-                            window,
-                            cx,
-                        )
-                    });
+                    let shell = cx.new(|cx| SettingsShell::new(model, settings, sinks, window, cx));
                     *window_slot.borrow_mut() = Some(shell.clone());
                     let frame = cx.new(|_| AgentDictateWindowFrame::new(shell));
                     cx.new(|cx| Root::new(frame, window, cx))
@@ -328,6 +319,7 @@ struct FakeDaemon {
     requests: Arc<Mutex<Vec<SettingsRequest>>>,
     refused_hotkey: Option<&'static str>,
     capture: HotkeyCaptureOutcome,
+    setup: FakeSetup,
 }
 
 impl FakeDaemon {
@@ -337,6 +329,7 @@ impl FakeDaemon {
             requests: Arc::default(),
             refused_hotkey: None,
             capture: HotkeyCaptureOutcome::Cancelled,
+            setup: FakeSetup::default(),
         }
     }
 
@@ -383,6 +376,61 @@ impl FakeDaemon {
                 _ => None,
             })
             .collect()
+    }
+}
+
+/// Stands in for Setup's checks and grant: each answers at once with what
+/// the test chose, and is recorded.
+#[derive(Clone)]
+struct FakeSetup {
+    /// What OpenAI says about any key.
+    key_check: Arc<Mutex<ApiKeyCheck>>,
+    /// The key each check was asked about; `None` for the saved key.
+    checked_keys: Arc<Mutex<Vec<Option<String>>>>,
+    /// The readiness a grant leaves behind.
+    after_grant: Readiness,
+    grants: Arc<Mutex<usize>>,
+    /// The levels a microphone test hears, and its verdict.
+    levels: Vec<u8>,
+    heard: Arc<Mutex<MicrophoneCheck>>,
+}
+
+impl Default for FakeSetup {
+    fn default() -> Self {
+        Self {
+            key_check: Arc::new(Mutex::new(ApiKeyCheck::Works)),
+            checked_keys: Arc::default(),
+            after_grant: ready(),
+            grants: Arc::default(),
+            levels: Vec::new(),
+            heard: Arc::new(Mutex::new(MicrophoneCheck::Heard)),
+        }
+    }
+}
+
+impl SetupActions for FakeSetup {
+    fn check_api_key(&self, api_key: Option<String>) -> Result<ApiKeyCheck, UiActionError> {
+        self.checked_keys.lock().unwrap().push(api_key);
+        Ok(*self.key_check.lock().unwrap())
+    }
+
+    fn grant_access(&self) -> Result<Readiness, UiActionError> {
+        *self.grants.lock().unwrap() += 1;
+        Ok(self.after_grant.clone())
+    }
+
+    fn test_microphone(&self, level: &mut dyn FnMut(u8)) -> Result<MicrophoneCheck, UiActionError> {
+        self.levels.iter().copied().for_each(level);
+        Ok(*self.heard.lock().unwrap())
+    }
+}
+
+/// Everything in place for dictation.
+fn ready() -> Readiness {
+    Readiness {
+        shortcut: HotkeyReadiness::Ready,
+        transcription_key: true,
+        desktop: DesktopReadiness::default(),
     }
 }
 
@@ -1539,4 +1587,169 @@ fn fix_a_word_in_an_expanded_transcript_adds_what_was_heard_to_words(cx: &mut Te
     );
     assert!(!harness.has("history-fix-word-editor-41"));
     assert!(harness.has("added-history-fix-word-41"));
+}
+
+fn open_setup(cx: &mut TestAppContext, daemon: &FakeDaemon) -> Harness {
+    Harness::open_connected_with(cx, ShellViewModel::new(Route::Setup), daemon)
+}
+
+/// The window opens on Setup while dictation can't work yet; Done leads
+/// Home.
+#[gpui::test]
+fn the_window_opens_on_setup_until_dictation_can_work(cx: &mut TestAppContext) {
+    let snapshot = |readiness| AppSnapshot {
+        workflow: Workflow::new().snapshot(),
+        readiness,
+        recoverable_count: 0,
+        overlay_unavailable: false,
+        history_set_aside: None,
+    };
+    assert_eq!(
+        ShellViewModel::from_app_snapshot(snapshot(ready())).active_route,
+        Route::Home
+    );
+    let keyless = ShellViewModel::from_app_snapshot(snapshot(Readiness {
+        transcription_key: false,
+        ..ready()
+    }));
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = Harness::open_connected_with(cx, keyless, &daemon);
+    assert!(harness.has("setup-page"));
+
+    harness.scroll_to("setup-done");
+    harness.click("setup-done");
+
+    assert_eq!(harness.active_route(), Route::Home);
+}
+
+#[gpui::test]
+fn setup_saves_a_pasted_key_only_once_openai_accepts_it(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    *daemon.setup.key_check.lock().unwrap() = ApiKeyCheck::Rejected;
+    let mut harness = open_setup(cx, &daemon);
+
+    harness.type_text("setup-key-input", "sk-pasted");
+    harness.click("setup-check-key");
+    assert!(harness.has("setup-key-problem"));
+    assert!(daemon.requests().is_empty());
+
+    *daemon.setup.key_check.lock().unwrap() = ApiKeyCheck::Works;
+    harness.click("setup-check-key");
+    assert!(harness.has("setup-key-works"));
+    assert_eq!(
+        daemon.requests(),
+        [SettingsRequest::SetApiKey("sk-pasted".to_owned())]
+    );
+    assert!(harness.has("setup-step-key-done"));
+
+    // The saved key is checked without pasting it again; once OpenAI
+    // refuses it, the step is no longer done.
+    assert!(harness.has("setup-key-saved"));
+    *daemon.setup.key_check.lock().unwrap() = ApiKeyCheck::Rejected;
+    harness.click("setup-check-key");
+    assert_eq!(
+        *daemon.setup.checked_keys.lock().unwrap(),
+        [
+            Some("sk-pasted".to_owned()),
+            Some("sk-pasted".to_owned()),
+            None
+        ]
+    );
+    assert!(harness.has("setup-key-problem"));
+    assert!(!harness.has("setup-step-key-done"));
+}
+
+#[gpui::test]
+fn granting_access_asks_first_and_says_to_log_out_only_while_access_is_missing(
+    cx: &mut TestAppContext,
+) {
+    let no_access = Readiness {
+        shortcut: HotkeyReadiness::Unavailable {
+            message: "no readable keyboard".to_owned(),
+        },
+        desktop: DesktopReadiness {
+            paste_access: false,
+            ..DesktopReadiness::default()
+        },
+        ..ready()
+    };
+    let daemon = FakeDaemon {
+        setup: FakeSetup {
+            after_grant: no_access.clone(),
+            ..FakeSetup::default()
+        },
+        ..FakeDaemon::new(Settings::default())
+    };
+    let mut harness = open_setup(cx, &daemon);
+    harness.update_workspace(|workspace| workspace.readiness = no_access.clone());
+    assert!(harness.has("setup-shortcut-missing"));
+    assert!(harness.has("setup-paste-missing"));
+
+    harness.click("setup-grant-access");
+    assert!(harness.has("setup-grant-confirm"));
+    harness.click("setup-grant-cancel");
+    assert!(!harness.has("setup-grant-confirm"));
+    assert_eq!(*daemon.setup.grants.lock().unwrap(), 0);
+
+    harness.click("setup-grant-access");
+    harness.click("setup-grant-continue");
+    assert_eq!(*daemon.setup.grants.lock().unwrap(), 1);
+    assert!(harness.has("setup-log-out"));
+
+    // The shortcut listener picks up the new access moments later.
+    harness.update_workspace(|workspace| workspace.readiness = ready());
+    assert!(!harness.has("setup-log-out"));
+    assert!(harness.has("setup-step-access-done"));
+    assert!(!harness.has("setup-grant-access"));
+
+    // Another app's rule stays a warning that granting can't fix.
+    harness.update_workspace(|workspace| {
+        workspace.readiness.desktop.exposed_input = Some(ExposedInput {
+            rule: Some("/etc/udev/rules.d/99-vibetyper-uinput.rules".into()),
+        });
+    });
+    assert!(harness.has("setup-exposed-input"));
+    assert!(!harness.has("setup-grant-access"));
+}
+
+#[gpui::test]
+fn the_microphone_test_shows_how_loud_you_were_and_whether_it_heard_you(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon {
+        setup: FakeSetup {
+            levels: vec![20, 80, 40],
+            ..FakeSetup::default()
+        },
+        ..FakeDaemon::new(Settings::default())
+    };
+    let mut harness = open_setup(cx, &daemon);
+    harness.scroll_to("setup-test-microphone");
+
+    harness.click("setup-test-microphone");
+
+    assert!(harness.has("setup-microphone-heard"));
+    assert!(harness.has("setup-step-microphone-done"));
+    let meter = harness.bounds("setup-microphone-meter").size.width;
+    let loudest = harness.bounds("setup-microphone-level").size.width;
+    assert!(
+        (loudest / meter - 0.8).abs() < 0.02,
+        "{loudest:?} of {meter:?}"
+    );
+
+    *daemon.setup.heard.lock().unwrap() = MicrophoneCheck::Silent;
+    harness.click("setup-test-microphone");
+    assert!(harness.has("setup-microphone-silent"));
+    assert!(!harness.has("setup-step-microphone-done"));
+}
+
+#[gpui::test]
+fn text_arriving_in_try_it_completes_the_last_step(cx: &mut TestAppContext) {
+    let daemon = FakeDaemon::new(Settings::default());
+    let mut harness = open_setup(cx, &daemon);
+    harness.scroll_to("setup-try-it-input");
+    assert!(!harness.has("setup-try-it-works"));
+
+    harness.type_text("setup-try-it-input", "hello world");
+
+    assert!(harness.has("setup-try-it-works"));
+    assert!(harness.has("setup-step-try-it-done"));
 }
