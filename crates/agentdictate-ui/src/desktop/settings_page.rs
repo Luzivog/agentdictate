@@ -4,7 +4,7 @@ use gpui_component::{
     Disableable, Selectable, Sizable,
     button::{ButtonCustomVariant, ButtonVariants},
     h_flex,
-    input::{Input, InputState, NumberInput},
+    input::{Input, InputState, NumberInput, Textarea, TextareaState},
     select::Select,
     v_flex,
 };
@@ -881,7 +881,7 @@ fn prompt_row(
     label: &'static str,
     detail: &'static str,
     selector: &'static str,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     disabled: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
@@ -895,7 +895,7 @@ fn prompt_row(
         .child(setting_label(label, detail, theme))
         .child(
             prompt_control_slot(selector)
-                .child(Input::new(&input).small().w_full().disabled(disabled)),
+                .child(Textarea::new(&input).w_full().text_sm().disabled(disabled)),
         )
         .when(disabled, |row| row.opacity(0.48))
 }

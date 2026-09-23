@@ -160,10 +160,10 @@ impl OverlayChild {
             .stderr(Stdio::inherit())
             .process_group(0);
         if std::env::var_os("DISPLAY").is_some() {
-            // The pinned GPUI patch maps X11 PopUp windows as unmanaged
-            // notification surfaces. Its Wayland backend still treats PopUp as
-            // a normal toplevel, so use XWayland to keep this overlay out of
-            // focus handling, the app switcher, and the taskbar.
+            // GPUI maps X11 PopUp windows as override-redirect notification
+            // surfaces (gpui_linux x11/window.rs). Its Wayland backend still
+            // treats PopUp as a normal toplevel, so use XWayland to keep this
+            // overlay out of focus handling, the app switcher, and the taskbar.
             command
                 .env_remove("WAYLAND_DISPLAY")
                 .env("XDG_SESSION_TYPE", "x11");

@@ -93,4 +93,8 @@ pub(crate) fn initialize_gpui_theme(cx: &mut gpui::App) {
     theme.window_border = gpui_color(tokens.border);
     theme.title_bar = gpui_color(tokens.canvas);
     theme.title_bar_border = gpui_color(tokens.canvas);
+    // Root, tooltips and popovers read the resolved token copy, and the Base
+    // layer (scrollbars, resize handles) mirrors the theme only on sync.
+    theme.tokens = gpui_component::theme::ThemeTokens::from(&theme.colors);
+    Theme::sync_base(cx);
 }

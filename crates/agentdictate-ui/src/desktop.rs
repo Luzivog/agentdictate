@@ -1,7 +1,7 @@
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, Application, Bounds, Subscription, WindowBackgroundAppearance, WindowBounds,
-    WindowDecorations, WindowKind, WindowOptions, point, prelude::*, px, size,
+    App, Bounds, Subscription, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
+    WindowKind, WindowOptions, point, prelude::*, px, size,
 };
 use gpui_component::{Root, TitleBar};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -90,7 +90,7 @@ fn run_settings_shell_internal(
     action_sink: WorkspaceActionSink,
     workspace_updates: Option<Receiver<WorkspaceViewModel>>,
 ) {
-    Application::new()
+    gpui_platform::application()
         .with_assets(crate::AgentDictateAssets)
         .run(move |cx: &mut App| {
             crate::theme::initialize_gpui_theme(cx);
@@ -121,7 +121,9 @@ fn run_settings_shell_internal(
                     });
                     *window_shell_slot.borrow_mut() = Some(view.clone());
                     let frame = cx.new(|_| crate::AgentDictateWindowFrame::new(view));
-                    cx.new(|cx| Root::new(frame, window, cx))
+                    // AgentDictateWindowFrame owns the client-side frame and
+                    // its resize zones; Root's own border would add a second.
+                    cx.new(|cx| Root::new(frame, window, cx).bordered(false))
                 },
             )
             .expect("AgentDictate settings window should open");
@@ -169,10 +171,11 @@ pub fn run_recording_overlay(
     on_created: impl FnOnce(u32, f32) + 'static,
     on_frame_submitted: impl FnOnce() + 'static,
 ) {
-    Application::new()
-        .with_assets(crate::AgentDictateAssets)
-        .run(move |cx: &mut App| {
-            crate::theme::initialize_gpui_theme(cx);
+    // A fresh helper opens this popup for every dictation, so skip what it
+    // never uses: AccessKit (the popup is invisible to assistive technology)
+    // and gpui-component (it draws only GPUI primitives, no icons).
+    gpui::Application::new_inaccessible(gpui_platform::current_platform(false)).run(
+        move |cx: &mut App| {
             let (sender, mut receiver) = mpsc::unbounded();
             std::thread::Builder::new()
                 .name("agentdictate-overlay-events".into())
@@ -203,6 +206,11 @@ pub fn run_recording_overlay(
                 show: true,
                 kind: WindowKind::PopUp,
                 is_movable: false,
+                app_owns_titlebar_drag: false,
+                // An override-redirect popup is never the active window, so
+                // the default inactive throttle would cap the waveform and
+                // fades at 30 fps.
+                inactive_frame_interval: None,
                 is_resizable: false,
                 is_minimizable: false,
                 display_id: None,
@@ -212,6 +220,7 @@ pub fn run_recording_overlay(
                 app_id: Some(APPLICATION_ID.to_owned()),
                 window_min_size: None,
                 window_decorations: None,
+                icon: None,
                 tabbing_identifier: None,
             };
             let overlay_window = cx
@@ -259,7 +268,8 @@ pub fn run_recording_overlay(
                 cx.update(|cx| cx.quit())
             })
             .detach();
-        });
+        },
+    );
 }
 
 /// GPUI settings shell built from the toolkit-independent presentation model.

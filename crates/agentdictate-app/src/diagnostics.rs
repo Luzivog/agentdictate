@@ -9,9 +9,10 @@ use tracing_subscriber::{
 };
 
 /// Log levels used unless `RUST_LOG` replaces them. The overlay helper logs
-/// into the daemon's file, and its GPU stack is chatty at info level.
-const DEFAULT_LOG_FILTER: &str = "info,naga=warn,blade_graphics=warn,blade_util=warn,\
-     zed_xim=warn,gpui=warn,wgpu_core=warn,wgpu_hal=warn";
+/// into the daemon's file, and its GPU stack is chatty at info level: GPUI's
+/// renderer lists every adapter each time a helper opens its window.
+const DEFAULT_LOG_FILTER: &str = "info,naga=warn,wgpu_core=warn,wgpu_hal=warn,\
+     gpui_wgpu=warn,zed_xim=warn,gpui=warn";
 /// Daily log files kept per file prefix; older ones are deleted.
 const RETAINED_LOG_FILES: usize = 14;
 

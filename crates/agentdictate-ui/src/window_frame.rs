@@ -32,9 +32,9 @@ impl Render for AgentDictateWindowFrame {
                 .size_full()
                 .bg(gpui_color(theme.canvas))
                 .text_color(gpui_color(theme.text))
-                .capture_any_mouse_down(|event, window, _| {
+                .capture_any_mouse_down(|event, window, cx| {
                     if event.button == MouseButton::Left {
-                        window.blur();
+                        window.blur(cx);
                     }
                 })
                 .child(self.view.clone()),
@@ -83,11 +83,6 @@ impl RenderOnce for ClientFrame {
             .cursor(CursorStyle::Arrow)
             .size_full()
             .overflow_hidden()
-            // gpui-component 0.5.1's Root inserts a full-window Linux resize
-            // hitbox behind its child. Keep that legacy hitbox out of content
-            // hover/click routing; the explicit edge zones below remain above
-            // this surface and are the sole owners of resize input.
-            .occlude()
             .children(self.children);
 
         div()

@@ -1,7 +1,7 @@
 use gpui::{Context, Entity, SharedString, Subscription, Window, prelude::*};
 use gpui_component::{
     IndexPath,
-    input::{InputEvent, InputState, NumberInputEvent, StepAction},
+    input::{InputEvent, InputState, TextareaState},
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 
@@ -157,7 +157,7 @@ macro_rules! define_settings_form {
             $(pub(super) $select_field: Entity<SettingSelectState>,)*
             $(pub(super) $dependent_field: Entity<SettingSelectState>,)*
             $(pub(super) $input_field: Entity<InputState>,)*
-            $(pub(super) $text_area_field: Entity<InputState>,)*
+            $(pub(super) $text_area_field: Entity<TextareaState>,)*
             $(pub(super) $number_field: Entity<InputState>,)*
         }
 
@@ -253,9 +253,12 @@ macro_rules! define_settings_form {
             pub(super) fn inputs(&self) -> Vec<Entity<InputState>> {
                 vec![
                     $(self.$input_field.clone(),)*
-                    $(self.$text_area_field.clone(),)*
                     $(self.$number_field.clone(),)*
                 ]
+            }
+
+            pub(super) fn text_areas(&self) -> Vec<Entity<TextareaState>> {
+                vec![$(self.$text_area_field.clone(),)*]
             }
 
             pub(super) fn selects(&self) -> Vec<Entity<SettingSelectState>> {
@@ -337,23 +340,33 @@ macro_rules! define_settings_form {
 
             }
 
+            // `window` is only needed when the form has dependent selects.
+            #[allow(unused_variables)]
             pub(super) fn subscriptions(
                 &self,
                 window: &mut Window,
                 cx: &mut Context<SettingsShell>,
             ) -> Vec<Subscription> {
+                fn on_input_change(
+                    shell: &mut SettingsShell,
+                    event: &InputEvent,
+                    cx: &mut Context<SettingsShell>,
+                ) {
+                    if matches!(event, InputEvent::Change) {
+                        shell.recompute_settings_dirty(cx);
+                        cx.notify();
+                    }
+                }
                 let mut subscriptions: Vec<Subscription> = self
                     .inputs()
                     .into_iter()
                     .map(|input| {
-                        cx.subscribe(&input, |shell, _, event: &InputEvent, cx| {
-                            if matches!(event, InputEvent::Change) {
-                                shell.recompute_settings_dirty(cx);
-                                cx.notify();
-                            }
-                        })
+                        cx.subscribe(&input, |shell, _, event, cx| on_input_change(shell, event, cx))
                     })
                     .collect();
+                subscriptions.extend(self.text_areas().into_iter().map(|text_area| {
+                    cx.subscribe(&text_area, |shell, _, event, cx| on_input_change(shell, event, cx))
+                }));
                 subscriptions.extend(self.selects().into_iter().map(|select| {
                     cx.subscribe(
                         &select,
@@ -374,23 +387,6 @@ macro_rules! define_settings_form {
                             if matches!(event, SelectEvent::Confirm(Some(_))) {
                                 shell.cleanup_model_selection_changed(window, cx);
                             }
-                        },
-                    ));
-                )*
-                $(
-                    subscriptions.push(cx.subscribe_in(
-                        &self.$number_field,
-                        window,
-                        |_, input, event: &NumberInputEvent, window, cx| {
-                            let NumberInputEvent::Step(step) = event;
-                            input.update(cx, |input, cx| {
-                                let current = input.value().parse::<u64>().unwrap_or_default();
-                                let next = match step {
-                                    StepAction::Increment => current.saturating_add(1).min($number_maximum),
-                                    StepAction::Decrement => current.saturating_sub(1),
-                                };
-                                input.set_value(next.to_string(), window, cx);
-                            });
                         },
                     ));
                 )*
@@ -431,9 +427,9 @@ fn settings_text_area(
     max_rows: usize,
     window: &mut Window,
     cx: &mut Context<SettingsShell>,
-) -> Entity<InputState> {
+) -> Entity<TextareaState> {
     cx.new(|cx| {
-        InputState::new(window, cx)
+        TextareaState::new(window, cx)
             .placeholder(placeholder)
             .default_value(value)
             .auto_grow(min_rows, max_rows)
@@ -447,10 +443,15 @@ fn settings_number_input(
     window: &mut Window,
     cx: &mut Context<SettingsShell>,
 ) -> Entity<InputState> {
+    // With a step and range set, NumberInput steps internally and emits
+    // InputEvent::Change, so stepping marks the draft dirty like typing.
     cx.new(|cx| {
         InputState::new(window, cx)
             .placeholder(placeholder)
             .default_value(value)
+            .step(1.0)
+            .min(0.0)
+            .max(maximum as f64)
             .validate(move |text, _| {
                 text.is_empty()
                     || (text.bytes().all(|byte| byte.is_ascii_digit())

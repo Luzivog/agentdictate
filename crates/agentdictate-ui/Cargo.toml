@@ -7,7 +7,14 @@ license.workspace = true
 
 [features]
 default = []
-desktop = ["dep:futures", "dep:gpui", "dep:gpui-component", "dep:raw-window-handle"]
+desktop = [
+    "dep:font-kit",
+    "dep:futures",
+    "dep:gpui",
+    "dep:gpui_platform",
+    "dep:gpui-component",
+    "dep:raw-window-handle",
+]
 test-support = ["desktop", "gpui/test-support"]
 
 [dependencies]
@@ -15,5 +22,16 @@ raw-window-handle = { version = "0.6", optional = true }
 agentdictate-core.workspace = true
 thiserror.workspace = true
 futures = { version = "0.3", optional = true }
-gpui = { version = "=0.2.2", optional = true }
-gpui-component = { version = "=0.5.1", optional = true }
+# gpui-pre is gpui-component's weekly snapshot of Zed's GPUI (0.3.6 = zed@bcf6582).
+# Bump gpui, gpui_platform and gpui-component together; gpui-component pins
+# gpui-pre exactly. The x11 and wayland features are required: without them
+# the platform panics at startup.
+gpui = { package = "gpui-pre", version = "=0.3.6", optional = true }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", optional = true, features = ["x11", "wayland"] }
+gpui-component = { version = "=0.6.6", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only enables a feature on GPUI's font-kit: GPUI 0.2.2 loaded fontconfig with
+# dlopen, and gpui-pre links it instead, which would make fontconfig's -dev
+# package a build requirement. The .deb already depends on libfontconfig1.
+font-kit = { package = "zed-font-kit", version = "=0.14.1-zed", optional = true, features = ["source-fontconfig-dlopen"] }

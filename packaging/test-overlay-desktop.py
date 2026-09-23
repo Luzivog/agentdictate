@@ -131,6 +131,11 @@ class Desktop:
             'disable() {} }\n')
         self.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", "['overlay-probe@local']"])
         self.run(["gsettings", "set", "org.gnome.shell", "disable-user-extensions", "false"])
+        # A solid mid-tone desktop makes transparent overlay corners easy to
+        # tell apart from the card's near-black fill.
+        for key, value in [("picture-options", "none"), ("color-shading-type", "solid"),
+                           ("primary-color", "#3c5a82")]:
+            self.run(["gsettings", "set", "org.gnome.desktop.background", key, value])
         args = ["gnome-shell", "--wayland", "--headless", "--sm-disable"]
         for monitor in monitors:
             args += ["--virtual-monitor", monitor]
@@ -227,13 +232,32 @@ def expected_frame(desktop, scale, primary=None):
     return [x + (width - w) // 2, y + height - gap - h, w, h]
 
 
+def assert_transparent_corners(desktop, window, baseline, scale):
+    """The window corners outside the rounded card must show the desktop
+    unchanged, and the card body must be dark, so the overlay really composites
+    as a transparent surface rather than an opaque rectangle."""
+    image = desktop.screenshot("transparency.png")
+    x, y, w, h = geometry(desktop, window)
+    corners = {}
+    for cx, cy in [(1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2)]:
+        actual, expected = image.getpixel((x + cx, y + cy)), baseline.getpixel((x + cx, y + cy))
+        assert all(abs(a - e) <= 6 for a, e in zip(actual, expected)), \
+            f"overlay corner ({cx}, {cy}) covers the desktop: {actual}, desktop {expected}"
+        corners[f"{cx},{cy}"] = actual
+    # Card-local (4, 21): inside the card, left of the waveform.
+    card = image.getpixel((x + round(10 * scale), y + round(27 * scale)))
+    assert max(card) < 0x40, f"overlay card body is not dark: {card}"
+    return {"desktop": baseline.getpixel((x + 1, y + 1)), "corners": corners, "card": card}
+
+
 def exercise(desktop, binary, scale, monitors, backend):
     import struct
     audio = desktop.root / "fixture.wav"
     with wave.open(str(audio), "wb") as writer:
         writer.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         writer.writeframes(b"".join(struct.pack("<h", round(16000 * math.sin(i * .07))) for i in range(8000)))
-    env = {**desktop.env, "GPUI_X11_SCALE_FACTOR": str(scale)}
+    # RUST_LOG=info keeps the renderer's adapter choice in the helper log.
+    env = {**desktop.env, "GPUI_X11_SCALE_FACTOR": str(scale), "RUST_LOG": "info"}
     target_env = {**desktop.env, "GDK_BACKEND": backend, "WAYLAND_DISPLAY": next(p.name for p in (desktop.root / "runtime").glob("wayland-*") if not p.name.endswith(".lock"))}
     target = desktop.spawn([sys.executable, str(Path(__file__).resolve()), "--typing-target", backend,
                             str(desktop.root)], f"target-{backend}.log", target_env)
@@ -248,9 +272,12 @@ def exercise(desktop, binary, scale, monitors, backend):
                "typing target focused")
     focus_before = desktop.evaluate("global.display.focus_window?.get_title() ?? null")
     clients_before = desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"])
+    baseline = desktop.screenshot("baseline.png")
+    spawned = time.monotonic()
     helper = subprocess.Popen([str(binary), "--overlay-helper"], env=env, stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     statuses = []
+    status_ms = {}
     def send(phase):
         state = {"phase": phase if phase in {"starting", "recording"} else "processing",
                  "job_id": "00000000-0000-4000-8000-000000000001"}
@@ -276,6 +303,7 @@ def exercise(desktop, binary, scale, monitors, backend):
             while b"\n" in pending:
                 line, pending = pending.split(b"\n", 1)
                 statuses.append(json.loads(line))
+                status_ms.setdefault(statuses[-1]["status"], round((time.monotonic() - spawned) * 1000))
             if any(s["status"] in {"frame_submitted", "ready", "error"} for s in statuses):
                 break
         window = wait_until(lambda: helper_window(desktop), "overlay window")
@@ -306,6 +334,8 @@ def exercise(desktop, binary, scale, monitors, backend):
                 recognized[phase] = text.strip()
                 return {"transcribing": "transcribing", "cleaning": "cleaning"}[phase] in text
             wait_until(visible, f"composited {phase} pixels")
+            if phase == "recording":
+                transparency = assert_transparent_corners(desktop, window, baseline, scale)
             assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
         for selection in ["--clipboard", "--primary"]:
             subprocess.run(["xsel", "--input", selection], input="overlay clipboard fixture",
@@ -347,8 +377,13 @@ def exercise(desktop, binary, scale, monitors, backend):
         assert not helper_window(desktop), "helper window survived dismissal"
         assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
         assert desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"]) == clients_before
+        adapters = [line[line.index("Selected GPU"):]
+                    for path in (desktop.root / "state").rglob("agentdictated.log*")
+                    for line in path.read_text().splitlines() if "Selected GPU" in line]
         return {"binary": str(binary), "scale": scale, "statuses": statuses, "initial_frame": actual,
-                "target": backend, "recognized_labels": recognized, "clipboard": {"x11_selections": "both preserved", "target_selections": values}, "dismissal_ms": round((time.monotonic() - start) * 1000)}
+                "target": backend, "recognized_labels": recognized, "transparency": transparency,
+                "gpu_adapter": adapters, "status_ms_since_launch": status_ms,
+                "clipboard": {"x11_selections": "both preserved", "target_selections": values}, "dismissal_ms": round((time.monotonic() - start) * 1000)}
     finally:
         if helper.poll() is None:
             helper.kill()

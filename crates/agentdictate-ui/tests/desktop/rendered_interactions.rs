@@ -27,7 +27,7 @@ use gpui::{
     Size, StyledText, TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point,
     prelude::*, px, size,
 };
-use gpui_component::Root;
+use gpui_component::{Root, Theme};
 
 struct Harness {
     shell: Entity<SettingsShell>,
@@ -56,6 +56,20 @@ fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
         harness.cx.run_until_parked();
         assert_eq!(harness.has("overlay-unavailable-notice"), unavailable);
     }
+}
+
+/// Root, tooltips and popovers paint from gpui-component's resolved token
+/// copy, which only follows the app palette when the theme setup syncs it.
+#[gpui::test]
+fn component_surfaces_paint_with_the_app_palette(cx: &mut TestAppContext) {
+    test_support::initialize(cx);
+
+    cx.update(|cx| {
+        let theme = Theme::global(cx);
+        assert_eq!(theme.tokens.background.color, theme.background);
+        assert_eq!(theme.tokens.popover.color, theme.popover);
+        assert_eq!(theme.tokens.border.color, theme.border);
+    });
 }
 
 #[gpui::test]

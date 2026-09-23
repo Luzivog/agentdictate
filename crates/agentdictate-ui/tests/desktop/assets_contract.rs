@@ -8,11 +8,12 @@ fn desktop_controls_ship_every_icon_they_request() {
     let assets = AgentDictateAssets;
 
     for path in [
+        "icons/check.svg",
         "icons/chevron-down.svg",
-        "icons/eye.svg",
         "icons/inbox.svg",
         "icons/minus.svg",
         "icons/plus.svg",
+        "icons/search.svg",
     ] {
         let bytes = assets
             .load(path)
@@ -28,7 +29,5 @@ fn desktop_controls_ship_every_icon_they_request() {
     }
 
     let listed = assets.list("icons").expect("icon list should load");
-    assert!(listed.iter().any(|path| path == "minus.svg"));
-    assert!(listed.iter().any(|path| path == "plus.svg"));
-    assert!(listed.iter().any(|path| path == "chevron-down.svg"));
+    assert_eq!(listed.len(), 6);
 }

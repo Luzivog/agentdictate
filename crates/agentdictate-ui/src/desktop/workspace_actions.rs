@@ -48,35 +48,33 @@ impl SettingsShell {
         cx.spawn(async move |shell, cx| {
             let result = task.await;
             if let Some(shell) = shell.upgrade() {
-                shell
-                    .update(cx, |shell, cx| {
-                        shell.workspace_actions.in_flight = false;
-                        match result {
-                            Ok(workspace) => {
-                                shell.model.workspace = workspace_with_currency(
-                                    workspace,
-                                    &shell.settings.current.currency,
-                                );
-                                match success_feedback {
-                                    Some(message) => {
-                                        shell.set_route_feedback_for(feedback_route, message);
-                                    }
-                                    None => shell.clear_route_feedback_for(feedback_route),
+                shell.update(cx, |shell, cx| {
+                    shell.workspace_actions.in_flight = false;
+                    match result {
+                        Ok(workspace) => {
+                            shell.model.workspace = workspace_with_currency(
+                                workspace,
+                                &shell.settings.current.currency,
+                            );
+                            match success_feedback {
+                                Some(message) => {
+                                    shell.set_route_feedback_for(feedback_route, message);
                                 }
-                                if closes_editor {
-                                    shell.routes.replacement_editor = None;
-                                }
+                                None => shell.clear_route_feedback_for(feedback_route),
                             }
-                            Err(error) => {
-                                shell.set_route_feedback_for(
-                                    feedback_route,
-                                    format!("Could not complete action: {error}"),
-                                );
+                            if closes_editor {
+                                shell.routes.replacement_editor = None;
                             }
                         }
-                        cx.notify();
-                    })
-                    .ok();
+                        Err(error) => {
+                            shell.set_route_feedback_for(
+                                feedback_route,
+                                format!("Could not complete action: {error}"),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -95,27 +93,25 @@ impl SettingsShell {
         cx.spawn(async move |shell, cx| {
             let result = task.await;
             if let Some(shell) = shell.upgrade() {
-                shell
-                    .update(cx, |shell, cx| {
-                        let completion = shell.workspace_actions.history_lane.complete();
-                        if completion.apply_result {
-                            match result {
-                                Ok(workspace) => {
-                                    shell.model.workspace.history = workspace.history;
-                                    shell.clear_route_feedback_for(Route::History);
-                                }
-                                Err(error) => shell.set_route_feedback_for(
-                                    Route::History,
-                                    format!("Could not search history: {error}"),
-                                ),
+                shell.update(cx, |shell, cx| {
+                    let completion = shell.workspace_actions.history_lane.complete();
+                    if completion.apply_result {
+                        match result {
+                            Ok(workspace) => {
+                                shell.model.workspace.history = workspace.history;
+                                shell.clear_route_feedback_for(Route::History);
                             }
+                            Err(error) => shell.set_route_feedback_for(
+                                Route::History,
+                                format!("Could not search history: {error}"),
+                            ),
                         }
-                        if let Some(query) = completion.next_search {
-                            shell.emit_history_action(WorkspaceAction::SearchHistory { query }, cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
+                    }
+                    if let Some(query) = completion.next_search {
+                        shell.emit_history_action(WorkspaceAction::SearchHistory { query }, cx);
+                    }
+                    cx.notify();
+                });
             }
         })
         .detach();
