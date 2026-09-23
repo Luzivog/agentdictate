@@ -2,9 +2,15 @@
 //! `MIGRATIONS` a database has had, and `Runtime::open` runs the missing ones.
 //! Each step runs in one IMMEDIATE transaction that also records its number,
 //! so a crash mid-step leaves the previous version and the next start
-//! repeats the step. Before migrating an existing database, a compact copy is
-//! kept next to it as `<file>.pre-v<latest>`; that copy is the only way back,
-//! since a database from a newer version is refused rather than downgraded.
+//! repeats the step.
+//!
+//! Before migrating an existing database, a compact copy is kept next to it
+//! as `<file>.pre-v<latest>`, replacing any older copy. It is the only way
+//! back, since a database from a newer version is refused rather than
+//! downgraded, so it lasts until the migrated database opens again at a
+//! later start, which proves the migration. It holds every transcript from
+//! before, so deleting text also deletes it; see
+//! `Runtime::erase_removed_text`.
 
 use std::fs;
 use std::io;
@@ -34,9 +40,11 @@ pub(crate) fn migrate(connection: &mut Connection, path: &Path) -> Result<(), Ru
         .filter(|version| *version <= latest)
         .ok_or(RuntimeError::NewerDatabase { version, latest })?;
     if pending == latest {
+        remove_backups(path);
         return Ok(());
     }
     if has_schema(connection)? {
+        remove_backups(path);
         back_up(connection, &backup_path(path, latest))?;
     }
     for (step, migration) in MIGRATIONS.iter().enumerate().skip(pending) {
@@ -66,10 +74,42 @@ fn has_schema(connection: &Connection) -> rusqlite::Result<bool> {
     })
 }
 
+/// Names a backup `<file>.pre-v<version>`.
+const BACKUP_SUFFIX: &str = ".pre-v";
+
 fn backup_path(path: &Path, version: usize) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_owned();
-    name.push(format!(".pre-v{version}"));
+    name.push(format!("{BACKUP_SUFFIX}{version}"));
     path.with_file_name(name)
+}
+
+/// Deletes every pre-migration backup of the database at `path`, of any
+/// version. Best-effort: a backup that cannot be deleted now is deleted at
+/// a later start.
+pub(crate) fn remove_backups(path: &Path) {
+    let directory = path
+        .parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let prefix = format!("{name}{BACKUP_SUFFIX}");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let is_backup = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+            .is_some_and(|version| {
+                !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+            });
+        if is_backup {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Writes a consistent, compacted copy of the database, readable only by

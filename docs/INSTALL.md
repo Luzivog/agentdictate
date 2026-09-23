@@ -127,8 +127,11 @@ language. A request that fails before OpenAI answers is sent once more.
   recording longer than 5 seconds that you cancel with Esc stays there, with its
   audio, for 24 hours.
 - Before it converts the database to a new format, AgentDictate keeps a copy of the
-  old one next to it, such as `agentdictate.sqlite.pre-v1`. You can delete the copy
-  once the new version works.
+  old one next to it, named after the new format, such as
+  `agentdictate.sqlite.pre-v2`. The copy is deleted the next time AgentDictate
+  starts, and as soon as you delete any text, since it still holds every transcript
+  from before. To go back to the older version before then, quit AgentDictate and
+  put the copy in place of `agentdictate.sqlite`.
 - Audio is deleted after the paste unless **Keep audio recordings** is on. Each
   daemon start also deletes leftover recordings that no dictation needs.
 - Logs can contain transcript text. The newest 14 daily files are kept.

@@ -329,7 +329,7 @@ and `AGENTDICTATE_HOME` moves all of them under one directory.
 | `~/.config/agentdictate/config.json` | Settings, including the OpenAI API key in plain text, mode 0600 |
 | `~/.local/share/systemd/user/agentdictated.service` | The daemon's user unit, written by the app when its text changes |
 | `~/.local/share/agentdictate/agentdictate.sqlite` | In-flight and Recovery jobs, and completed dictations: their usage numbers, and their text for History |
-| `~/.local/share/agentdictate/agentdictate.sqlite.pre-v1` | A copy of the database from before the version 1 schema, made once when it migrated |
+| `~/.local/share/agentdictate/agentdictate.sqlite.pre-v<N>` | A copy of the database from before it migrated to schema version N, kept until the next daemon start or until any text is deleted |
 | `~/.local/share/agentdictate/recordings/` | WAV files of in-flight, recoverable, and preserved dictations |
 | `~/.local/share/agentdictate/native-access/` | The input-access rule and guide from `install.sh`, and the helper `setup-access` writes |
 | `~/.local/state/agentdictate/logs/` | Daily logs, 14 files each: `agentdictated.log.*` for the daemon and overlay, `agentdictate.log.*` for the settings window |

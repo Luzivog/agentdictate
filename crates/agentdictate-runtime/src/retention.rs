@@ -3,9 +3,12 @@
 //! `recovery_lifetime` after its last change. Both rules run at daemon start
 //! and after each completed dictation; nothing runs on a timer.
 
+use std::path::Path;
+
 use agentdictate_core::{JobId, JobStage, KeepTranscripts};
 use chrono::{DateTime, TimeDelta, Utc};
 
+use crate::migrations::remove_backups;
 use crate::{Runtime, RuntimeError, timestamp};
 
 /// How long a Recovery item stays after its last change.
@@ -78,7 +81,7 @@ impl Runtime {
             }
         }
         if retention.purged_transcripts > 0 || retention.expired_recoveries > 0 {
-            self.truncate_write_ahead_log();
+            self.erase_removed_text();
         }
         Ok(retention)
     }
@@ -106,13 +109,19 @@ impl Runtime {
             .collect()
     }
 
-    /// Copies committed pages into the database file and empties the
-    /// write-ahead log, which otherwise keeps old page images, deleted text
-    /// included, until later writes overwrite them. Best-effort: a reader
-    /// that holds an old snapshot only postpones it to a later removal.
-    pub(crate) fn truncate_write_ahead_log(&self) {
+    /// Makes text just deleted leave the disk. It copies committed pages
+    /// into the database file and empties the write-ahead log, which
+    /// otherwise keeps old page images, deleted text included, until later
+    /// writes overwrite them. It also deletes the pre-migration backup,
+    /// which still holds that text. Best-effort: a reader that holds an old
+    /// snapshot only postpones the log to a later removal, and a backup
+    /// that cannot be deleted goes at a later start.
+    pub(crate) fn erase_removed_text(&self) {
         let _ = self
             .connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        if let Some(path) = self.connection.path().filter(|path| !path.is_empty()) {
+            remove_backups(Path::new(path));
+        }
     }
 }

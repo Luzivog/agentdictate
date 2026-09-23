@@ -97,13 +97,15 @@ in the tray menu.
   keep**. A shorter choice asks first, then deletes older saved text the next time
   you dictate or start AgentDictate. The audio is deleted after the paste, unless you
   turn on **Keep audio recordings** under **Settings**, **Show advanced settings**.
-- **Delete** on a History item deletes it for good, and **Delete all history…** in
-  **Settings** deletes every transcript. Deleted text is overwritten on disk, not
-  just hidden.
+- **Delete** on a History item deletes it for good, with its usage numbers, and
+  **Delete all history…** in **Settings** deletes every transcript and its usage
+  numbers. Deleted text is overwritten on disk, not just hidden, and the copy of the
+  database kept while AgentDictate updates its format is deleted too.
 - A failed dictation waits in **Recovery**, with its text and audio, for 7 days, then
   both are deleted. A recording you cancelled with <kbd>Esc</kbd> after more than 5
   seconds waits there for a day.
-- Usage numbers, such as minutes and estimated cost, are kept without text.
+- Usage numbers, such as minutes and estimated cost, stay after **Keep transcripts**
+  removes the text.
 - Logs can contain transcript text.
 
 The [install guide](docs/INSTALL.md#local-data-and-network-use) has the details.

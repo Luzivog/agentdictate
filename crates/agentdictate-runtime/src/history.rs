@@ -176,7 +176,7 @@ impl Runtime {
                 |row| row.get::<_, Option<String>>(0),
             )
             .optional()?;
-        self.truncate_write_ahead_log();
+        self.erase_removed_text();
         Ok(deleted.map(|job_id| DeletedTranscript {
             job_id: job_id.and_then(|job_id| job_id.parse().ok()),
         }))
@@ -185,7 +185,7 @@ impl Runtime {
     /// Deletes every dictation, text and usage numbers, from the disk too.
     pub fn clear_history(&mut self) -> Result<(), RuntimeError> {
         self.connection.execute("DELETE FROM dictations", [])?;
-        self.truncate_write_ahead_log();
+        self.erase_removed_text();
         Ok(())
     }
 }

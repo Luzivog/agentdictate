@@ -3,6 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use agentdictate_core::KeepTranscripts;
 use agentdictate_runtime::{
     DeliveryStatus, FinishedJobCleanup, JobId, JobStage, Runtime, Settings, load_settings,
     save_settings,
@@ -651,16 +652,21 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
     assert_eq!(runtime.usage().unwrap().all_time.dictations, 5);
 }
 
+/// The copy from before a migration lasts until the migrated database opens
+/// again at a later start. A copy from an earlier migration goes at once.
 #[test]
-fn migrating_keeps_one_private_backup_and_runs_once() {
+fn a_migration_keeps_one_private_backup_until_the_next_start() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let backup = directory.path().join("agentdictate.db.pre-v2");
+    let earlier_backup = directory.path().join("agentdictate.db.pre-v1");
     write_unversioned_database(&database_path);
     fs::write(&backup, b"an older backup").unwrap();
+    fs::write(&earlier_backup, b"a backup from an earlier migration").unwrap();
 
     drop(Runtime::open(&database_path).unwrap());
 
+    assert!(!earlier_backup.exists());
     assert_eq!(
         fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
         0o600
@@ -674,7 +680,6 @@ fn migrating_keeps_one_private_backup_and_runs_once() {
     assert_eq!(saved_history, 3);
     assert_eq!(user_version(&backup), 0);
 
-    fs::remove_file(&backup).unwrap();
     drop(Runtime::open(&database_path).unwrap());
     assert!(!backup.exists());
     assert_eq!(user_version(&database_path), 2);
@@ -683,6 +688,41 @@ fn migrating_keeps_one_private_backup_and_runs_once() {
     drop(Runtime::open(&fresh).unwrap());
     assert!(!directory.path().join("fresh.db.pre-v2").exists());
     assert_eq!(user_version(&fresh), 2);
+}
+
+/// The backup holds every transcript from before the migration, so any
+/// deletion of text deletes it too.
+#[test]
+fn deleting_text_deletes_the_migration_backup() {
+    let deletions: [fn(&mut Runtime, &Path); 3] = [
+        |runtime, _| runtime.clear_history().unwrap(),
+        |runtime, _| {
+            let entry = crate::support::history_rows(runtime).remove(0);
+            runtime.delete_history(entry.id).unwrap();
+        },
+        |runtime, recordings| {
+            let settings = Settings {
+                keep_transcripts: KeepTranscripts::Never,
+                ..Settings::default()
+            };
+            let cleanup = runtime
+                .clean_up_finished_jobs(&settings, recordings)
+                .unwrap();
+            assert!(cleanup.purged_transcripts > 0);
+        },
+    ];
+    for delete in deletions {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("agentdictate.db");
+        let backup = directory.path().join("agentdictate.db.pre-v2");
+        write_unversioned_database(&database_path);
+        let mut runtime = Runtime::open(&database_path).unwrap();
+        assert!(backup.exists());
+
+        delete(&mut runtime, directory.path());
+
+        assert!(!backup.exists());
+    }
 }
 
 #[test]
