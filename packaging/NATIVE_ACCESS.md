@@ -3,7 +3,9 @@
 AgentDictate needs Linux device access with significant authority:
 
 - read access to keyboard event devices, which can expose every key press;
-- write access to `/dev/uinput`, which can synthesize arbitrary input.
+- write access to `/dev/uinput`, which can synthesize arbitrary input;
+- read access to AgentDictate's own virtual devices (named "AgentDictate …"),
+  which only carry input that AgentDictate itself sends.
 
 AgentDictate uses this access only for its global shortcut and for paste
 delivery from its own in-process uinput virtual keyboard.
