@@ -48,8 +48,9 @@ Cargo's native/default job parallelism; do not add a fixed `-j` or `jobs` cap.
 - Focused library test: `cargo test --locked -p <package> --lib <test-filter>`
 - One integration harness: `cargo test --locked -p <package> --test <harness> <test-filter>`
 - Focused lint: `cargo clippy --locked -p <package> --lib -- -D warnings`
-- Run the desktop app: `./run.sh`
-- Run only the daemon/background app: `./run.sh --background`
+- Run the desktop app: `./run.sh` (an isolated dev instance under
+  `target/dev-home`; it never touches the installed service)
+- Run only the dev daemon, in the foreground: `./run.sh --service`
 
 A test-name filter by itself is not a narrow command: without `-p`, `--lib`, or
 `--test`, Cargo can still compile every selected integration-test executable.

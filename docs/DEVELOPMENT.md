@@ -19,6 +19,27 @@ Before release builds, benchmarks, or the full gate, check the doctor's disk and
 process output. Wait for competing builds to finish. Keep Cargo's default job
 parallelism. Use the normal profiles for iterative work.
 
+## Run a development build
+
+`./run.sh` builds both binaries and runs them as an isolated instance, so it
+never replaces, restarts, or reconfigures your installed AgentDictate:
+
+- `AGENTDICTATE_HOME` defaults to `target/dev-home`. The instance keeps its
+  settings, database, logs, cache, and IPC socket in `config`, `data`,
+  `state`, `cache`, and `runtime` there. Export it yourself to use another
+  directory.
+- Its daemon runs directly, not as `agentdictated.service`, and never calls
+  `systemctl`. **Start on login** has no effect on it.
+- `./run.sh` starts that daemon in the background and opens the settings
+  window. Closing the window stops the daemon. `./run.sh --service` runs only
+  the daemon, in the foreground; stop it with Ctrl+C.
+
+A new instance starts with default settings and no API key, so enter one in its
+window. It shows its own tray icon. Both daemons read the keyboard, so a
+shortcut they share triggers both: give the dev instance another shortcut, or
+stop the installed one with `systemctl --user stop agentdictated.service` while
+you test and start it again afterwards.
+
 ## Run focused checks with saved feedback
 
 The runner accepts a crate suffix, `lib` or an integration harness, and an optional

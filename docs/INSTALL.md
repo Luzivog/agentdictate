@@ -76,10 +76,12 @@ import running. Stop them with **Quit AgentDictate** in the tray or
 ## Run from source
 
 ```bash
-./run.sh                 # desktop app
-./run.sh --background    # start the background user service
-./run.sh --service       # run the daemon directly as the service process
+./run.sh                 # isolated dev daemon plus the settings window
+./run.sh --service       # only the isolated dev daemon, in the foreground
 ```
+
+Development runs keep their own data under `target/dev-home` and never touch
+the installed service. See [Run a development build](DEVELOPMENT.md#run-a-development-build).
 
 ## Focused development
 
