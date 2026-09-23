@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     ClientCommand, ClientCommandKind, DictationMode, JobId, ProcessingStage, RecordingMode,
@@ -311,6 +311,13 @@ where
         Ok(())
     }
 
+    /// Renders `reply` under the lock. The desktop readiness a snapshot
+    /// reports is refreshed first, without the lock.
+    fn render(&self, reply: Reply) -> ServerMessage {
+        self.shared.status.refresh_desktop_readiness(Instant::now());
+        self.lock().render(reply)
+    }
+
     fn lock(&self) -> MutexGuard<'_, AgentProcess<R, T, D>> {
         self.shared
             .process
@@ -397,7 +404,7 @@ where
     D: DaemonDeliverer + Send + 'static,
 {
     fn snapshot(&self) -> ServerMessage {
-        self.lock().render(Reply::Snapshot)
+        self.render(Reply::Snapshot)
     }
 
     fn handle(&self, command: ClientCommand) -> ServerMessage {
@@ -456,7 +463,7 @@ where
                 Err(error) => Reply::Rejected(error.to_string()),
             },
         };
-        self.lock().render(reply)
+        self.render(reply)
     }
 }
 

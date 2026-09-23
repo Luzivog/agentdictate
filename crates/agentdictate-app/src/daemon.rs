@@ -1,6 +1,6 @@
 use std::fs;
 use std::sync::{
-    Arc, Condvar, Mutex, PoisonError,
+    Arc, Condvar, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -171,6 +171,41 @@ pub enum DaemonError {
     NotPasted { reason: String },
 }
 
+/// How long one desktop check answers snapshots, unless input devices change
+/// first. Setup waits 3 s for a granted access to show, so this is shorter.
+const DESKTOP_RECHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The last check of what the desktop provides. Checking reads `/dev/input`,
+/// the udev rule files and `PATH`, so snapshots report this result, and it
+/// is checked again, off the daemon lock, only when it is due.
+#[derive(Debug)]
+struct DesktopCheck {
+    check: fn() -> DesktopReadiness,
+    readiness: DesktopReadiness,
+    checked_at: Instant,
+    /// Input device changes seen so far, and how many of them the last check
+    /// followed.
+    device_changes: u64,
+    checked_device_changes: u64,
+}
+
+impl DesktopCheck {
+    fn run(check: fn() -> DesktopReadiness) -> Self {
+        Self {
+            check,
+            readiness: check(),
+            checked_at: Instant::now(),
+            device_changes: 0,
+            checked_device_changes: 0,
+        }
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        self.checked_device_changes != self.device_changes
+            || now.saturating_duration_since(self.checked_at) >= DESKTOP_RECHECK_INTERVAL
+    }
+}
+
 /// Daemon state that other threads read without the daemon lock. The hotkey
 /// loop must never wait for that lock: saving settings holds it while it
 /// waits for the hotkey loop to accept a new shortcut.
@@ -180,6 +215,7 @@ pub struct DaemonStatus {
     recording: AtomicBool,
     recording_mode: Mutex<RecordingMode>,
     hotkey: Mutex<HotkeyReadiness>,
+    desktop: Mutex<DesktopCheck>,
     /// Counts the changes the tray and the settings window show: whether a
     /// recording runs, the shortcut's readiness, and the settings.
     changes: Mutex<u64>,
@@ -187,11 +223,14 @@ pub struct DaemonStatus {
 }
 
 impl DaemonStatus {
+    /// Until `set_desktop_check`, the desktop is reported with everything in
+    /// place.
     fn new(recording_mode: RecordingMode) -> Self {
         Self {
             recording: AtomicBool::new(false),
             recording_mode: Mutex::new(recording_mode),
             hotkey: Mutex::new(HotkeyReadiness::Starting),
+            desktop: Mutex::new(DesktopCheck::run(DesktopReadiness::default)),
             changes: Mutex::new(0),
             changed: Condvar::new(),
         }
@@ -249,6 +288,45 @@ impl DaemonStatus {
             .recording_mode
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = mode;
+    }
+
+    /// What the last desktop check found. Never checks, so it is safe under
+    /// the daemon lock.
+    #[must_use]
+    pub(crate) fn desktop_readiness(&self) -> DesktopReadiness {
+        self.lock_desktop().readiness.clone()
+    }
+
+    /// Checks the desktop again when the last check is
+    /// `DESKTOP_RECHECK_INTERVAL` old or input devices changed since. That
+    /// reads files, so the caller must not hold the daemon lock.
+    pub(crate) fn refresh_desktop_readiness(&self, now: Instant) {
+        let (check, device_changes) = {
+            let desktop = self.lock_desktop();
+            if !desktop.is_due(now) {
+                return;
+            }
+            (desktop.check, desktop.device_changes)
+        };
+        let readiness = check();
+        let mut desktop = self.lock_desktop();
+        desktop.readiness = readiness;
+        desktop.checked_at = now;
+        desktop.checked_device_changes = device_changes;
+    }
+
+    /// Input devices changed, so the next refresh checks the desktop again.
+    pub(crate) fn input_devices_changed(&self) {
+        self.lock_desktop().device_changes += 1;
+    }
+
+    /// Checks the desktop with `check` from now on, starting now.
+    fn set_desktop_check(&self, check: fn() -> DesktopReadiness) {
+        *self.lock_desktop() = DesktopCheck::run(check);
+    }
+
+    fn lock_desktop(&self) -> MutexGuard<'_, DesktopCheck> {
+        self.desktop.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -366,9 +444,6 @@ pub struct Daemon<R, T, D> {
     notifier: Option<Notifier>,
     /// Set while shutting down, when a dictation ending is not announced.
     quiet: bool,
-    /// Checks what the desktop provides; tests keep the default, which
-    /// reports everything in place.
-    check_desktop: fn() -> DesktopReadiness,
     status: Arc<DaemonStatus>,
 }
 
@@ -403,7 +478,6 @@ where
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
             notifier: None,
             quiet: false,
-            check_desktop: DesktopReadiness::default,
             status,
         }
     }
@@ -1104,10 +1178,11 @@ where
         }
     }
 
-    /// Whether dictation can work now. The desktop is checked each time,
-    /// so a fix such as installing ffmpeg shows without a restart.
+    /// Whether dictation can work now, from the last desktop check. The
+    /// desktop is checked again before a snapshot when that check is due, so
+    /// a fix such as installing ffmpeg shows without a restart.
     fn readiness(&self) -> Readiness {
-        let mut desktop = (self.check_desktop)();
+        let mut desktop = self.status.desktop_readiness();
         // Without audio ducking, lowering other sounds is never needed.
         desktop
             .missing_tools
@@ -1119,9 +1194,11 @@ where
         }
     }
 
-    /// Checks the real desktop for the readiness the snapshot reports.
+    /// Checks the desktop with `check`, now and whenever a snapshot finds
+    /// the last check due; tests keep the default, which reports everything
+    /// in place.
     pub fn set_desktop_check(&mut self, check: fn() -> DesktopReadiness) {
-        self.check_desktop = check;
+        self.status.set_desktop_check(check);
     }
 
     pub fn set_hotkey_readiness(&self, readiness: HotkeyReadiness) {
@@ -1483,6 +1560,41 @@ pub(crate) fn copied(job: RecordingJob) -> Result<RecordingJob, DaemonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_desktop_is_checked_again_only_after_a_device_change_or_when_the_check_is_old() {
+        static CHECKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn counted_check() -> DesktopReadiness {
+            let checks = CHECKS.fetch_add(1, Ordering::SeqCst) + 1;
+            DesktopReadiness {
+                paste_access: checks > 1,
+                ..DesktopReadiness::default()
+            }
+        }
+        let checks = || CHECKS.load(Ordering::SeqCst);
+        let status = DaemonStatus::new(RecordingMode::default());
+        let start = Instant::now();
+        status.set_desktop_check(counted_check);
+        assert_eq!(checks(), 1);
+
+        status.refresh_desktop_readiness(start + Duration::from_secs(1));
+        assert_eq!(checks(), 1, "a recent check is reused");
+        assert!(!status.desktop_readiness().paste_access);
+
+        status.input_devices_changed();
+        status.refresh_desktop_readiness(start + Duration::from_secs(1));
+        assert_eq!(
+            checks(),
+            2,
+            "a device change is checked at the next refresh"
+        );
+        assert!(status.desktop_readiness().paste_access);
+
+        status.refresh_desktop_readiness(start + Duration::from_secs(2));
+        assert_eq!(checks(), 2);
+        status.refresh_desktop_readiness(start + Duration::from_secs(3));
+        assert_eq!(checks(), 3, "a check is repeated once it is old");
+    }
 
     #[test]
     fn long_dictations_get_their_transcription_time_before_a_paste_is_stale() {

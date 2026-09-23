@@ -304,7 +304,9 @@ status: the daemon writes `status` when it starts and whenever its readiness,
 recording state, or settings change. The status carries the daemon's `Readiness`:
 the shortcut listener, the API key, whether `/dev/uinput` is writable,
 world-accessible input devices and the udev rule behind them, and a missing
-`pw-record`, `ffmpeg` or `pactl`. Home shows one line when everything is in place,
+`pw-record`, `ffmpeg` or `pactl`. These desktop checks read files, so the daemon
+reuses one for 2 s, or until input devices change, and repeats it outside its lock
+before it replies. Home shows one line when everything is in place,
 such as "Ready — press Ctrl+Space anywhere to dictate", or one card with the most
 important fix. A daemon that does not answer makes the window say "Reconnecting to
 AgentDictate…" until it answers again. A daemon on another protocol version, or a

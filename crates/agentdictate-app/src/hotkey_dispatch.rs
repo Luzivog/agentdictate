@@ -214,6 +214,9 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
     } = state;
     let mut gate = HotkeyDispatchGate::default();
     while let Ok(event) = incoming.recv() {
+        if event.follows_input_device_change() {
+            status.input_devices_changed();
+        }
         match event {
             DispatchLoopEvent::Native {
                 generation: event_generation,
@@ -450,6 +453,23 @@ enum DispatchLoopEvent {
     ListenerControl {
         response: std::sync::mpsc::SyncSender<Option<NativeHotkeyControl>>,
     },
+}
+
+impl DispatchLoopEvent {
+    /// Whether input devices appeared, went away or changed access, which
+    /// can change what the desktop provides for dictation.
+    const fn follows_input_device_change(&self) -> bool {
+        matches!(
+            self,
+            Self::Native {
+                event: NativeHotkeyEvent::Status(_)
+                    | NativeHotkeyEvent::DeviceOpenFailed(_)
+                    | NativeHotkeyEvent::DeviceLost { .. },
+                ..
+            } | Self::ListenerClosed { .. }
+                | Self::EnvironmentChanged { .. }
+        )
+    }
 }
 
 const TOGGLE_REARM_DELAY: Duration = Duration::from_millis(150);
