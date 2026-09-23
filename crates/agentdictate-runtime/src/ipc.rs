@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use agentdictate_core::{ClientCommand, PROTOCOL_VERSION, ServerMessage};
 use thiserror::Error;
@@ -14,6 +15,9 @@ use thiserror::Error;
 const SOCKET_FILE_NAME: &str = "agentdictate.sock";
 const LOCK_FILE_NAME: &str = "agentdictate.lock";
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// A session that sends nothing for this long is closed, so a client that
+/// connects and goes silent cannot keep its thread forever.
+const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum IpcError {
@@ -42,6 +46,7 @@ pub struct IpcServer {
     socket_path: PathBuf,
     socket_device: u64,
     socket_inode: u64,
+    session_timeout: Duration,
 }
 
 impl IpcServer {
@@ -107,7 +112,16 @@ impl IpcServer {
             socket_path,
             socket_device: socket_metadata.dev(),
             socket_inode: socket_metadata.ino(),
+            session_timeout: SESSION_READ_TIMEOUT,
         })
+    }
+
+    /// Replaces the idle-session timeout, so tests need not wait a minute.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_session_timeout(mut self, timeout: Duration) -> Self {
+        self.session_timeout = timeout;
+        self
     }
 
     pub fn socket_mode(&self) -> Result<u32, IpcError> {
@@ -117,7 +131,7 @@ impl IpcServer {
     /// Serves the next connected UI session on this thread.
     pub fn serve_next(&self, handler: &impl IpcHandler) -> Result<(), IpcError> {
         let (stream, _) = self.listener.accept()?;
-        serve_session(stream, handler)
+        serve_session(stream, handler, self.session_timeout)
     }
 
     /// Accepts one session and serves it on its own thread, so a connected
@@ -130,9 +144,10 @@ impl IpcServer {
         H: IpcHandler + Send + 'static,
     {
         let (stream, _) = self.listener.accept()?;
+        let timeout = self.session_timeout;
         Ok(std::thread::Builder::new()
             .name("agentdictate-ipc-session".into())
-            .spawn(move || serve_session(stream, &handler))?)
+            .spawn(move || serve_session(stream, &handler, timeout))?)
     }
 }
 
@@ -213,18 +228,36 @@ fn read_message<T: serde::de::DeserializeOwned>(
 }
 
 /// Serves one UI session. A current snapshot is sent before waiting for
-/// commands, so reconnects never depend on replayed events.
-fn serve_session(mut stream: UnixStream, handler: &impl IpcHandler) -> Result<(), IpcError> {
+/// commands, so reconnects never depend on replayed events. The session ends
+/// when the client disconnects or stays silent for `idle_timeout`.
+fn serve_session(
+    mut stream: UnixStream,
+    handler: &impl IpcHandler,
+    idle_timeout: Duration,
+) -> Result<(), IpcError> {
+    stream.set_read_timeout(Some(idle_timeout))?;
     write_message(&mut stream, &handler.snapshot(0))?;
     let reader_stream = stream.try_clone()?;
     let mut reader = BufReader::new(reader_stream);
-    while let Some(command) = read_message::<ClientCommand>(&mut reader)? {
+    loop {
+        let command = match read_message::<ClientCommand>(&mut reader) {
+            Ok(Some(command)) => command,
+            Ok(None) => return Ok(()),
+            Err(IpcError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         check_version(command.protocol_version)?;
         let response = handler.handle(command);
         check_version(response.protocol_version)?;
         write_message(&mut stream, &response)?;
     }
-    Ok(())
 }
 
 fn check_version(received: u16) -> Result<(), IpcError> {

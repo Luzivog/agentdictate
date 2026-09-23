@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 use std::{fs, io};
 
 use agentdictate_core::HotkeyCaptureOutcome;
@@ -315,4 +316,31 @@ fn one_connected_ui_can_send_multiple_commands_without_reconnecting() {
     ));
     drop(client);
     server_thread.join().unwrap();
+}
+
+#[test]
+fn idle_session_is_closed_after_the_read_timeout() {
+    let directory = TempDir::new().unwrap();
+    let runtime_directory = directory.path().join("runtime");
+    let workflow = Workflow::new();
+    let handler = TestHandler {
+        snapshot: Arc::new(Mutex::new(AppSnapshot {
+            workflow: workflow.snapshot(),
+            hotkey: HotkeyReadiness::Ready,
+            recoverable_count: 0,
+            last_transcript: None,
+        })),
+        settings: Settings::default(),
+        workflow: Arc::new(Mutex::new(workflow)),
+    };
+    let server = IpcServer::bind(&runtime_directory)
+        .unwrap()
+        .with_session_timeout(Duration::from_millis(100));
+    let accepts = thread::spawn(move || server.serve_next_concurrent(handler).unwrap());
+    let (mut silent, _) = IpcClient::connect(&runtime_directory).unwrap();
+
+    let session = accepts.join().unwrap();
+
+    session.join().unwrap().unwrap();
+    assert!(silent.send(ClientCommand::get_snapshot(1)).is_err());
 }
