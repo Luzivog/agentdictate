@@ -20,8 +20,9 @@ pub enum RetiredReplacementOutcome {
     BecameAlias,
     /// The rule also matched inside words, which vocabulary never does.
     NotWholeWord,
-    /// The Settings editor would reject it as vocabulary: a blank or
-    /// oversized phrase, a comma or `=`, or an alias another spelling owns.
+    /// Core's vocabulary rules, which the Words screen applies, reject it: a
+    /// blank or oversized phrase, a comma or `=`, an alias another spelling
+    /// owns, or an alias identical to its spelling.
     NotValidVocabulary,
 }
 
@@ -96,7 +97,8 @@ impl Runtime {
 
 /// Adds `alias` to the entry spelled `spelling`, creating the entry when
 /// needed. Returns false and leaves `vocabulary` unchanged when the result
-/// would not survive the Settings editor's text round trip.
+/// would not survive the vocabulary text form's round trip, which also
+/// applies core's vocabulary rules.
 fn add_alias(vocabulary: &mut Vec<VocabularyEntry>, spelling: &str, alias: &str) -> bool {
     let (spelling, alias) = (spelling.trim(), alias.trim());
     let mut candidate = vocabulary.clone();
