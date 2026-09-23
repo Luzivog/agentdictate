@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -6,7 +5,6 @@ use std::path::Path;
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
-use crate::history_search;
 use crate::schema::{SCHEMA, row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
@@ -17,7 +15,6 @@ use crate::{
 
 pub struct Runtime {
     pub(crate) connection: Connection,
-    pub(crate) history_search_cache: RefCell<history_search::SearchCache>,
 }
 
 impl Runtime {
@@ -29,27 +26,17 @@ impl Runtime {
         connection.execute_batch(SCHEMA)?;
         add_missing_columns(&connection)?;
         connection.execute_batch(INDEXES)?;
-        if let Err(error) = history_search::ensure_schema(&mut connection)
-            && !history_search::is_search_schema_unavailable(&error)
-        {
-            return Err(error);
-        }
+        drop_full_text_search(&mut connection)?;
         rename_committed_deliveries(&connection)?;
         reconcile_ambiguous_deliveries(&connection)?;
         reconcile_interrupted_jobs(&connection)?;
-        Ok(Self {
-            connection,
-            history_search_cache: RefCell::new(history_search::SearchCache::default()),
-        })
+        Ok(Self { connection })
     }
 
     /// Opens a read-only view without running startup reconciliation.
     pub fn open_observer(path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        Ok(Self {
-            connection,
-            history_search_cache: RefCell::new(history_search::SearchCache::default()),
-        })
+        Ok(Self { connection })
     }
 
     /// Opens a write connection for a worker owned by an already-running
@@ -58,18 +45,7 @@ impl Runtime {
     pub fn open_background_writer(path: impl AsRef<Path>) -> Result<Self, RuntimeError> {
         let mut connection = Connection::open(path)?;
         configure_writer(&mut connection)?;
-        Ok(Self {
-            connection,
-            history_search_cache: RefCell::new(history_search::SearchCache::default()),
-        })
-    }
-
-    /// Completes the deferred full-text backfill after essential listeners are
-    /// ready. Search remains available through a literal fallback beforehand.
-    /// Live daemon callers must use `HistoryIndexMaintenance` so recording can
-    /// interrupt this otherwise monolithic transaction.
-    pub fn ensure_history_search_index(&mut self) -> Result<(), RuntimeError> {
-        history_search::ensure_index(&mut self.connection, &self.history_search_cache)
+        Ok(Self { connection })
     }
 
     pub fn start_recording(
@@ -762,6 +738,44 @@ fn add_missing_columns(connection: &Connection) -> rusqlite::Result<()> {
             )?;
         }
     }
+    Ok(())
+}
+
+/// The full-text index History search used until 2026-09-23. Search is now
+/// a plain LIKE scan, so the index only cost disk and slowed every delete.
+const FULL_TEXT_SEARCH: &str = r#"
+DROP TRIGGER IF EXISTS transcript_history_fts_insert;
+DROP TRIGGER IF EXISTS transcript_history_fts_delete;
+DROP TRIGGER IF EXISTS transcript_history_fts_update;
+DROP TRIGGER IF EXISTS transcript_history_fts_trigram_insert;
+DROP TRIGGER IF EXISTS transcript_history_fts_trigram_delete;
+DROP TRIGGER IF EXISTS transcript_history_fts_trigram_update;
+DROP TABLE IF EXISTS transcript_history_fts_vocab;
+DROP TABLE IF EXISTS transcript_history_fts_trigram;
+DROP TABLE IF EXISTS transcript_history_fts;
+DROP TABLE IF EXISTS history_search_state;
+"#;
+
+/// Drops the retired full-text index in one IMMEDIATE transaction, then
+/// compacts the file once to return its space. Compaction is best-effort: a
+/// failed VACUUM (for example, no room for its temporary copy) leaves a
+/// correct database that is only larger than it needs to be.
+fn drop_full_text_search(connection: &mut Connection) -> rusqlite::Result<()> {
+    let installed: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE name IN ('history_search_state', 'transcript_history_fts')
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !installed {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(FULL_TEXT_SEARCH)?;
+    transaction.commit()?;
+    let _ = connection.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);");
     Ok(())
 }
 

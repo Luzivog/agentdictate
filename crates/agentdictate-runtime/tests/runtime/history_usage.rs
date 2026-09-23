@@ -194,526 +194,9 @@ fn history_query_and_delete_keep_daily_usage_consistent() {
     assert!(history_rows(&runtime).is_empty());
 }
 
-#[test]
-fn history_page_is_bounded_searchable_and_reports_more() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    let mut connection = rusqlite::Connection::open(&database_path).unwrap();
-    let transaction = connection.transaction().unwrap();
-    for index in 0..25 {
-        let timestamp = format!("2026-08-18T12:{index:02}:00Z");
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dictation_sessions (
-                    started_at, ended_at, duration_seconds, transcription_model,
-                    raw_word_count, final_word_count, final_character_count
-                ) VALUES (?1, ?1, 1, 'test-model', 2, 2, 20)
-                "#,
-                [&timestamp],
-            )
-            .unwrap();
-        let session_id = transaction.last_insert_rowid();
-        let final_text = if index % 10 == 2 {
-            format!("needle result {index}")
-        } else {
-            format!("ordinary result {index}")
-        };
-        transaction
-            .execute(
-                r#"
-                INSERT INTO transcript_history (
-                    session_id, created_at, raw_transcript, final_text
-                ) VALUES (?1, ?2, ?3, ?3)
-                "#,
-                rusqlite::params![session_id, timestamp, final_text],
-            )
-            .unwrap();
-    }
-    transaction.commit().unwrap();
-
-    let zero_page_size = runtime
-        .history_page(&HistoryPageRequest {
-            page_size: 0,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(zero_page_size.rows.len(), 1);
-    let oversized_page_size = runtime
-        .history_page(&HistoryPageRequest {
-            page_size: usize::MAX,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(oversized_page_size.rows.len(), 25);
-
-    let first_page = runtime
-        .history_page(&HistoryPageRequest {
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(first_page.rows.len(), 10);
-    assert_eq!(first_page.total_matches, 25);
-    assert!(first_page.next_cursor.is_some());
-    let second_page = runtime
-        .history_page(&HistoryPageRequest {
-            page_size: 10,
-            after: first_page.next_cursor.clone(),
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(second_page.rows.len(), 10);
-    assert_eq!(second_page.total_matches, 25);
-    assert_eq!(second_page.rows[0].preview_text, "ordinary result 14");
-    assert_eq!(second_page.rows[9].preview_text, "ordinary result 5");
-    assert!(second_page.next_cursor.is_some());
-
-    let foreign_cursor = runtime
-        .history_page(&HistoryPageRequest {
-            search: "ordinary".to_owned(),
-            page_size: 10,
-            after: first_page.next_cursor,
-        })
-        .unwrap();
-    assert!(foreign_cursor.cursor_restarted);
-    assert_eq!(foreign_cursor.rows[0].preview_text, "ordinary result 24");
-
-    let matches = runtime
-        .history_page(&HistoryPageRequest {
-            search: "nedle".into(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(matches.total_matches, 3);
-    assert!(matches.next_cursor.is_none());
-    assert_eq!(matches.rows[0].preview_text, "needle result 22");
-    assert_eq!(matches.rows[1].preview_text, "needle result 12");
-    assert_eq!(matches.rows[2].preview_text, "needle result 2");
-    assert!(matches.rows[0].preview_text.contains("needle"));
-
-    let oversized_query = runtime
-        .history_page(&HistoryPageRequest {
-            search: "needle ".repeat(1_000),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(oversized_query.total_matches, 3);
-}
-
-#[test]
-fn history_search_handles_typos_symbols_and_match_aware_previews() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    let mut connection = rusqlite::Connection::open(&database_path).unwrap();
-    let transaction = connection.transaction().unwrap();
-    let fixtures = [
-        (
-            "2026-08-18T12:03:00Z",
-            "raw-only-secret",
-            format!(
-                "{}Transcript canonical phrase for the C++, AI, 100%, and foo_bar search demo.",
-                "unrelated opening words ".repeat(12)
-            ),
-        ),
-        (
-            "2026-08-18T12:02:00Z",
-            "ordinary raw",
-            "Transcript without the second required token.".to_owned(),
-        ),
-        (
-            "2026-08-18T12:01:00Z",
-            "product names",
-            "TokScope integrates with AgentDictate.".to_owned(),
-        ),
-        (
-            "2026-08-18T12:00:00Z",
-            "unicode expansion",
-            format!("{} needle at the end", "İ".repeat(200)),
-        ),
-        (
-            "2026-08-18T11:59:00Z",
-            "diacritic folding",
-            "A résumé beside the café.".to_owned(),
-        ),
-    ];
-    for (created_at, raw, final_text) in fixtures {
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dictation_sessions (
-                    started_at, ended_at, duration_seconds, transcription_model,
-                    raw_word_count, final_word_count, final_character_count
-                ) VALUES (?1, ?1, 1, 'test-model', 2, 9, ?2)
-                "#,
-                rusqlite::params![created_at, final_text.chars().count()],
-            )
-            .unwrap();
-        let session_id = transaction.last_insert_rowid();
-        transaction
-            .execute(
-                r#"
-                INSERT INTO transcript_history (
-                    session_id, created_at, raw_transcript, final_text
-                ) VALUES (?1, ?2, ?3, ?4)
-                "#,
-                rusqlite::params![session_id, created_at, raw, final_text],
-            )
-            .unwrap();
-    }
-    transaction.commit().unwrap();
-
-    let fuzzy = runtime
-        .history_page(&HistoryPageRequest {
-            search: "transcirpt canoncal".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(fuzzy.total_matches, 1);
-    assert_eq!(fuzzy.rows.len(), 1);
-    assert!(fuzzy.rows[0].preview_text.contains("Transcript canonical"));
-    assert!(!fuzzy.rows[0].preview_text.starts_with("unrelated opening"));
-
-    for literal in ["C++", "AI", "%", "_"] {
-        let page = runtime
-            .history_page(&HistoryPageRequest {
-                search: literal.to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap();
-        assert_eq!(page.total_matches, 1, "literal query {literal}");
-    }
-
-    for infix in ["scope", "dictate"] {
-        let page = runtime
-            .history_page(&HistoryPageRequest {
-                search: infix.to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap();
-        assert_eq!(page.total_matches, 1, "infix query {infix}");
-        assert_eq!(
-            page.rows[0].preview_text,
-            "TokScope integrates with AgentDictate."
-        );
-    }
-
-    for (query, expected_fragment) in [("resume", "résumé"), ("cafe", "café")] {
-        let page = runtime
-            .history_page(&HistoryPageRequest {
-                search: query.to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap();
-        assert_eq!(page.total_matches, 1, "diacritic query {query}");
-        assert!(page.rows[0].preview_text.contains(expected_fragment));
-    }
-
-    let unicode_preview = runtime
-        .history_page(&HistoryPageRequest {
-            search: "needle".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(unicode_preview.total_matches, 1);
-    assert!(unicode_preview.rows[0].preview_text.contains("needle"));
-    assert!(unicode_preview.rows[0].preview_text.chars().count() <= 162);
-
-    let raw_only = runtime
-        .history_page(&HistoryPageRequest {
-            search: "raw-only-secret".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert!(raw_only.rows.is_empty());
-}
-
-#[test]
-fn history_search_corrects_a_first_character_typo_and_a_rare_misspelling() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    let mut connection = rusqlite::Connection::open(&database_path).unwrap();
-    let transaction = connection.transaction().unwrap();
-    for (index, final_text) in [
-        "transcript canonical one",
-        "transcript canonical two",
-        "transcript canonical three",
-        "transcript canonical four",
-        "transcirpt literal artifact",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let created_at = format!("2026-08-18T12:0{index}:00Z");
-        transaction
-            .execute(
-                r#"
-                INSERT INTO dictation_sessions (
-                    started_at, ended_at, duration_seconds, transcription_model,
-                    raw_word_count, final_word_count, final_character_count
-                ) VALUES (?1, ?1, 1, 'test-model', 3, 3, ?2)
-                "#,
-                rusqlite::params![created_at, final_text.chars().count()],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                r#"
-                INSERT INTO transcript_history (
-                    session_id, created_at, raw_transcript, final_text
-                ) VALUES (?1, ?2, ?3, ?3)
-                "#,
-                rusqlite::params![transaction.last_insert_rowid(), created_at, final_text],
-            )
-            .unwrap();
-    }
-    transaction.commit().unwrap();
-
-    let first_character = runtime
-        .history_page(&HistoryPageRequest {
-            search: "xranscript".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(first_character.total_matches, 5);
-    assert!(
-        first_character
-            .rows
-            .iter()
-            .any(|matched| matched.preview_text == "transcript canonical four")
-    );
-
-    let rare_misspelling = runtime
-        .history_page(&HistoryPageRequest {
-            search: "transcirpt".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(rare_misspelling.total_matches, 5);
-    assert!(
-        rare_misspelling
-            .rows
-            .iter()
-            .any(|matched| matched.preview_text == "transcirpt literal artifact")
-    );
-    assert!(
-        rare_misspelling
-            .rows
-            .iter()
-            .any(|matched| matched.preview_text == "transcript canonical four")
-    );
-}
-
-#[test]
-fn recording_history_invalidates_the_fuzzy_vocabulary_cache() {
-    let directory = TempDir::new().unwrap();
-    let mut runtime = Runtime::open(directory.path().join("agentdictate.db")).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    assert!(
-        runtime
-            .history_page(&HistoryPageRequest {
-                search: "vrceel".to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap()
-            .rows
-            .is_empty()
-    );
-
-    let delivered = delivered_job(&mut runtime, &directory);
-    runtime
-        .complete_delivered(delivered.id, &Settings::default())
-        .unwrap();
-    let entry = history_rows(&runtime).remove(0);
-    let found = runtime
-        .history_page(&HistoryPageRequest {
-            search: "vrceel".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(found.rows.len(), 1);
-    assert_eq!(found.rows[0].id, entry.id);
-
-    runtime.ensure_history_search_index().unwrap();
-    assert!(runtime.delete_history(entry.id).unwrap());
-    assert!(
-        runtime
-            .history_page(&HistoryPageRequest {
-                search: "Vercel".to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap()
-            .rows
-            .is_empty()
-    );
-}
-
-#[test]
-fn external_history_writes_refresh_the_fuzzy_vocabulary_cache() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    assert!(
-        runtime
-            .history_page(&HistoryPageRequest {
-                search: "vrceel".to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap()
-            .rows
-            .is_empty()
-    );
-
-    let connection = rusqlite::Connection::open(&database_path).unwrap();
+/// Saves one History row with its usage session, as delivery would.
+fn insert_history(connection: &rusqlite::Connection, created_at: &str, final_text: &str) -> i64 {
     connection
-        .execute(
-            r#"
-            INSERT INTO dictation_sessions (
-                started_at, ended_at, duration_seconds, transcription_model,
-                raw_word_count, final_word_count, final_character_count
-            ) VALUES ('2026-08-18T12:00:00Z', '2026-08-18T12:00:01Z', 1,
-                'test-model', 1, 1, 6)
-            "#,
-            [],
-        )
-        .unwrap();
-    let session_id = connection.last_insert_rowid();
-    connection
-        .execute(
-            r#"
-            INSERT INTO transcript_history (
-                session_id, created_at, raw_transcript, final_text
-            ) VALUES (?1, '2026-08-18T12:00:01Z', 'Vercel', 'Vercel')
-            "#,
-            [session_id],
-        )
-        .unwrap();
-
-    let found = runtime
-        .history_page(&HistoryPageRequest {
-            search: "vrceel".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(found.rows.len(), 1);
-    assert_eq!(found.rows[0].preview_text, "Vercel");
-
-    connection
-        .execute(
-            "UPDATE transcript_history SET final_text = 'Cloudflare' WHERE session_id = ?1",
-            [session_id],
-        )
-        .unwrap();
-    assert!(
-        runtime
-            .history_page(&HistoryPageRequest {
-                search: "vrceel".to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap()
-            .rows
-            .is_empty()
-    );
-    let updated = runtime
-        .history_page(&HistoryPageRequest {
-            search: "clodflare".to_owned(),
-            page_size: 10,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(updated.rows.len(), 1);
-    assert_eq!(updated.rows[0].preview_text, "Cloudflare");
-
-    connection
-        .execute("DELETE FROM dictation_sessions WHERE id = ?1", [session_id])
-        .unwrap();
-    assert!(
-        runtime
-            .history_page(&HistoryPageRequest {
-                search: "clodflare".to_owned(),
-                page_size: 10,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap()
-            .rows
-            .is_empty()
-    );
-}
-
-#[test]
-fn fuzzy_cursor_expires_when_vocabulary_changes_its_candidate_plan() {
-    let directory = TempDir::new().unwrap();
-    let database_path = directory.path().join("agentdictate.db");
-    let mut runtime = Runtime::open(&database_path).unwrap();
-    runtime.ensure_history_search_index().unwrap();
-    let mut connection = rusqlite::Connection::open(&database_path).unwrap();
-    for (index, final_text) in [
-        "needle first",
-        "needle second",
-        "needle third",
-        "ordinary transcript",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        insert_external_history(&mut connection, index, final_text);
-    }
-
-    let first_page = runtime
-        .history_page(&HistoryPageRequest {
-            search: "nedle".to_owned(),
-            page_size: 1,
-            ..HistoryPageRequest::default()
-        })
-        .unwrap();
-    assert_eq!(first_page.total_matches, 3);
-    let cursor = first_page.next_cursor.expect("first fuzzy page cursor");
-
-    insert_external_history(&mut connection, 10, "nedle exact one");
-    insert_external_history(&mut connection, 11, "nedle exact two");
-
-    let restarted = runtime
-        .history_page(&HistoryPageRequest {
-            search: "nedle".to_owned(),
-            page_size: 1,
-            after: Some(cursor),
-        })
-        .unwrap();
-    assert!(restarted.cursor_restarted);
-    assert_eq!(restarted.rows[0].preview_text, "nedle exact two");
-}
-
-fn insert_external_history(
-    connection: &mut rusqlite::Connection,
-    timestamp_offset: usize,
-    final_text: &str,
-) {
-    let timestamp = format!("2026-08-18T13:{timestamp_offset:02}:00Z");
-    let transaction = connection.transaction().unwrap();
-    transaction
         .execute(
             r#"
             INSERT INTO dictation_sessions (
@@ -721,20 +204,252 @@ fn insert_external_history(
                 raw_word_count, final_word_count, final_character_count
             ) VALUES (?1, ?1, 1, 'test-model', 2, 2, ?2)
             "#,
-            rusqlite::params![timestamp, final_text.chars().count()],
+            rusqlite::params![created_at, final_text.chars().count()],
         )
         .unwrap();
-    transaction
+    connection
         .execute(
             r#"
             INSERT INTO transcript_history (
                 session_id, created_at, raw_transcript, final_text
-            ) VALUES (?1, ?2, ?3, ?3)
+            ) VALUES (?1, ?2, 'raw-only words', ?3)
             "#,
-            rusqlite::params![transaction.last_insert_rowid(), timestamp, final_text],
+            rusqlite::params![connection.last_insert_rowid(), created_at, final_text],
         )
         .unwrap();
-    transaction.commit().unwrap();
+    connection.last_insert_rowid()
+}
+
+fn search(runtime: &Runtime, text: &str) -> Vec<String> {
+    runtime
+        .history_page(&HistoryPageRequest {
+            search: text.to_owned(),
+            page_size: 100,
+            after: None,
+        })
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|row| row.preview_text)
+        .collect()
+}
+
+/// Every table and column that still holds `needle` in any case.
+fn tables_containing(database: &std::path::Path, needle: &str) -> Vec<String> {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let tables = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let mut found = Vec::new();
+    for table in tables {
+        let columns = connection
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for column in columns {
+            let count: i64 = connection
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM \"{table}\" WHERE CAST(\"{column}\" AS TEXT) LIKE ?1"
+                    ),
+                    [format!("%{needle}%")],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if count > 0 {
+                found.push(format!("{table}.{column}"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn history_search_finds_final_text_containing_the_query_in_any_ascii_case() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let runtime = Runtime::open(&database_path).unwrap();
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    insert_history(&connection, "2026-08-18T12:00:00Z", "Deploy the Vercel app");
+    insert_history(
+        &connection,
+        "2026-08-18T12:01:00Z",
+        "TokScope integrates with Vercel",
+    );
+    insert_history(&connection, "2026-08-18T12:02:00Z", "Postgres migration");
+
+    assert_eq!(
+        search(&runtime, "  VERCEL "),
+        ["TokScope integrates with Vercel", "Deploy the Vercel app"]
+    );
+    assert_eq!(
+        search(&runtime, "scope"),
+        ["TokScope integrates with Vercel"]
+    );
+    assert_eq!(search(&runtime, "").len(), 3);
+    assert!(search(&runtime, "raw-only").is_empty());
+    assert!(search(&runtime, "Vercel app Postgres").is_empty());
+}
+
+#[test]
+fn history_search_matches_wildcards_and_backslashes_literally() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let runtime = Runtime::open(&database_path).unwrap();
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    for (minute, text) in [
+        "100% done",
+        "100 percent done",
+        "rename foo_bar",
+        "rename fooXbar",
+        r"open C:\temp",
+        "open C:temp",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        insert_history(&connection, &format!("2026-08-18T12:0{minute}:00Z"), text);
+    }
+
+    assert_eq!(search(&runtime, "100%"), ["100% done"]);
+    assert_eq!(search(&runtime, "%"), ["100% done"]);
+    assert_eq!(search(&runtime, "foo_bar"), ["rename foo_bar"]);
+    assert_eq!(search(&runtime, "_"), ["rename foo_bar"]);
+    assert_eq!(search(&runtime, r"C:\"), [r"open C:\temp"]);
+}
+
+#[test]
+fn history_pages_stay_stable_while_new_transcripts_arrive() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let runtime = Runtime::open(&database_path).unwrap();
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    // Pairs of rows share a timestamp, so the row id must break ties.
+    let mut expected = (0..25)
+        .map(|index| {
+            let created_at = format!("2026-08-18T12:{:02}:00Z", index / 2);
+            let id = insert_history(&connection, &created_at, &format!("entry {index}"));
+            (created_at, id)
+        })
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| right.cmp(left));
+    let page = |after| {
+        runtime
+            .history_page(&HistoryPageRequest {
+                search: "entry".to_owned(),
+                page_size: 10,
+                after,
+            })
+            .unwrap()
+    };
+
+    let first = page(None);
+    insert_history(&connection, "2026-08-18T13:00:00Z", "entry newest");
+    let second = page(first.next_cursor.clone());
+    let third = page(second.next_cursor.clone());
+
+    let listed = [&first, &second, &third]
+        .into_iter()
+        .flat_map(|page| page.rows.iter().map(|row| row.id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        listed,
+        expected.iter().map(|(_, id)| *id).collect::<Vec<_>>()
+    );
+    assert_eq!(third.total_matches, 26);
+    assert!(third.next_cursor.is_none());
+    let restarted = page(Some(agentdictate_core::HistoryPageCursor::new(
+        "not a cursor",
+    )));
+    assert!(restarted.cursor_restarted);
+    assert_eq!(restarted.rows[0].preview_text, "entry newest");
+    let smallest = runtime
+        .history_page(&HistoryPageRequest {
+            page_size: 0,
+            ..HistoryPageRequest::default()
+        })
+        .unwrap();
+    assert_eq!(smallest.rows.len(), 1);
+}
+
+#[test]
+fn clearing_history_leaves_no_transcript_text_in_any_table() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let delivered = delivered_job(&mut runtime, &directory);
+    runtime
+        .complete_delivered(delivered.id, &Settings::default())
+        .unwrap();
+    assert!(!tables_containing(&database_path, "versel").is_empty());
+
+    runtime.clear_history().unwrap();
+
+    assert!(tables_containing(&database_path, "versel").is_empty());
+    assert!(tables_containing(&database_path, "Vercel").is_empty());
+}
+
+#[test]
+fn opening_a_database_with_the_retired_full_text_index_drops_it() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    drop(Runtime::open(&database_path).unwrap());
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE history_search_state (id INTEGER PRIMARY KEY, ready INTEGER);
+            CREATE VIRTUAL TABLE transcript_history_fts USING fts5(
+                final_text, content='transcript_history', content_rowid='id'
+            );
+            CREATE VIRTUAL TABLE transcript_history_fts_vocab USING fts5vocab(
+                transcript_history_fts, 'row'
+            );
+            CREATE VIRTUAL TABLE transcript_history_fts_trigram USING fts5(
+                final_text, content='transcript_history', content_rowid='id',
+                tokenize='trigram'
+            );
+            CREATE TRIGGER transcript_history_fts_insert
+            AFTER INSERT ON transcript_history BEGIN
+                INSERT INTO transcript_history_fts(rowid, final_text)
+                VALUES (new.id, new.final_text);
+            END;
+            CREATE TRIGGER transcript_history_fts_trigram_delete
+            AFTER DELETE ON transcript_history BEGIN
+                INSERT INTO transcript_history_fts_trigram(
+                    transcript_history_fts_trigram, rowid, final_text
+                ) VALUES ('delete', old.id, old.final_text);
+            END;
+            "#,
+        )
+        .unwrap();
+    insert_history(
+        &connection,
+        "2026-08-18T12:00:00Z",
+        "kept through the upgrade",
+    );
+    drop(connection);
+
+    let runtime = Runtime::open(&database_path).unwrap();
+
+    let leftovers: i64 = rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE name LIKE 'transcript_history_fts%' OR name = 'history_search_state'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftovers, 0);
+    assert_eq!(search(&runtime, "upgrade"), ["kept through the upgrade"]);
 }
 
 #[test]

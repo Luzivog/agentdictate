@@ -10,8 +10,6 @@ pub enum RuntimeError {
     Database(#[from] rusqlite::Error),
     #[error("invalid persisted job id: {0}")]
     InvalidJobId(String),
-    #[error("invalid history cursor: {0}")]
-    InvalidHistoryCursor(String),
     #[error("dictation job {0} was not found")]
     JobNotFound(JobId),
     #[error("dictation job {job_id} is {actual:?}, expected {expected:?}")]

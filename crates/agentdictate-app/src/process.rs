@@ -7,8 +7,7 @@ use agentdictate_core::{
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
-    FinishedJobCleanup, HistoryIndexMaintenance, IpcClient, IpcHandler, RecordingPriorityGuard,
-    Runtime, RuntimeError, load_settings, save_settings,
+    FinishedJobCleanup, IpcClient, IpcHandler, Runtime, RuntimeError, load_settings, save_settings,
 };
 
 use crate::{
@@ -33,8 +32,6 @@ pub struct AgentProcess {
     database_file: PathBuf,
     recordings_directory: PathBuf,
     runtime_directory: PathBuf,
-    history_index_maintenance: HistoryIndexMaintenance,
-    recording_priority: Option<RecordingPriorityGuard>,
     hotkey_control: Option<Arc<dyn HotkeyReconfigurer>>,
     recording_mode_control: Option<Arc<RwLock<RecordingMode>>>,
     should_quit: bool,
@@ -57,7 +54,6 @@ impl AgentProcess {
             &paths.ducking_state_file,
         );
         let deliverer = SystemDeliverer::for_environment(settings.paste_shortcut);
-        let history_index_maintenance = HistoryIndexMaintenance::new();
         Ok(Self {
             daemon: Daemon::new(
                 runtime,
@@ -72,8 +68,6 @@ impl AgentProcess {
             database_file: paths.database_file,
             recordings_directory: paths.recordings,
             runtime_directory: paths.runtime,
-            history_index_maintenance,
-            recording_priority: None,
             hotkey_control: None,
             recording_mode_control: None,
             should_quit: false,
@@ -130,7 +124,6 @@ impl AgentProcess {
         let login_startup = self.login_startup.clone();
         let database_file = self.database_file.clone();
         let recordings_directory = self.recordings_directory.clone();
-        let history_index_maintenance = self.history_index_maintenance.clone();
         std::thread::Builder::new()
             .name("agentdictate-maintenance".into())
             .spawn(move || {
@@ -139,7 +132,6 @@ impl AgentProcess {
                     &login_startup,
                     &database_file,
                     &recordings_directory,
-                    &history_index_maintenance,
                 );
             })
     }
@@ -238,22 +230,6 @@ impl AgentProcess {
         self.daemon.update_settings(settings);
         Ok(())
     }
-
-    fn begin_recording_priority(&mut self) {
-        if self.recording_priority.is_none() {
-            self.recording_priority = Some(self.history_index_maintenance.prioritize_recording());
-        }
-    }
-
-    fn synchronize_recording_priority(&mut self) {
-        let is_recording = matches!(
-            self.daemon.snapshot().workflow.phase,
-            WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
-        );
-        if !is_recording {
-            self.recording_priority = None;
-        }
-    }
 }
 
 /// Moves the retired Replacements feature's enabled rules into vocabulary
@@ -279,7 +255,6 @@ fn run_post_listener_maintenance(
     login_startup: &LoginStartup,
     database_file: &std::path::Path,
     recordings_directory: &std::path::Path,
-    history_index_maintenance: &HistoryIndexMaintenance,
 ) {
     if let Err(error) = login_startup.sync(settings.start_on_login) {
         tracing::warn!(%error, "could not reconcile login startup");
@@ -304,9 +279,6 @@ fn run_post_listener_maintenance(
         ),
         Err(error) => tracing::warn!(%error, "could not clean up finished dictations"),
     }
-    if let Err(error) = history_index_maintenance.prepare_history_search(&mut runtime) {
-        tracing::warn!(%error, "could not prepare indexed transcript search");
-    }
 }
 
 impl IpcHandler for AgentProcess {
@@ -316,9 +288,6 @@ impl IpcHandler for AgentProcess {
 
     fn handle(&mut self, command: ClientCommand) -> ServerMessage {
         let command_tag = command.kind();
-        if command_tag == ClientCommandTag::StartRecording {
-            self.begin_recording_priority();
-        }
         let request_id = request_id(&command.kind);
         let history_request = match &command.kind {
             ClientCommandKind::GetHistoryPage { request, .. } => Some(request.clone()),
@@ -413,7 +382,6 @@ impl IpcHandler for AgentProcess {
                 })
                 .map_err(Into::into),
         };
-        self.synchronize_recording_priority();
         match result {
             Ok(()) if history_request.is_some() => self
                 .history_page_message(request_id, &history_request.expect("checked above"))

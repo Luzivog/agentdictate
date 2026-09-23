@@ -92,7 +92,7 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   the workflow state machine and job stages, dictation options, vocabulary parsing and
   alias normalization, and the per-minute price table.
 - **agentdictate-runtime**: durable state. The SQLite job table with its checkpoints,
-  Recovery, History with full-text search, usage queries, startup cleanup, settings
+  Recovery, History with substring search, usage queries, startup cleanup, settings
   load and save, the IPC server and client, and the port traits (`Transcriber`,
   `Deliverer`, `DeliveryGate`, `Recorder`) that the app implements.
 - **agentdictate-linux**: desktop integration. `pw-record` capture, the evdev hotkey

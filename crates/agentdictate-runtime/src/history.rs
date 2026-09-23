@@ -1,82 +1,16 @@
 use agentdictate_core::{
-    HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, JobId, JobStage, Settings,
-    count_words_ascii_history, transcription_price_per_minute,
+    HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, HistorySnapshot, JobId, JobStage,
+    Settings, count_words_ascii_history, transcription_price_per_minute,
 };
-use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::runtime::load_job;
 use crate::{RecordingJob, Runtime, RuntimeError, parse_timestamp, timestamp};
 
-/// One saved transcript, as History search reads it.
-pub(crate) struct HistoryRow {
-    pub(crate) id: i64,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) final_text: String,
-    pub(crate) word_count: u64,
-    pub(crate) duration_seconds: f64,
-}
-
-/// A History search as the search engine runs it. `day` narrows it to one
-/// UTC day; no caller sets it.
-pub(crate) struct HistoryQuery {
-    pub(crate) search: String,
-    pub(crate) day: Option<NaiveDate>,
-    pub(crate) limit: usize,
-    pub(crate) after: Option<HistoryPageCursor>,
-}
-
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn history_pages_hold_at_most_one_hundred_rows() {
-        let directory = tempdir().unwrap();
-        let mut runtime = Runtime::open(directory.path().join("history.sqlite")).unwrap();
-        runtime.ensure_history_search_index().unwrap();
-        let transaction = runtime.connection.transaction().unwrap();
-        for index in 0..101 {
-            let at = format!("2026-08-18T12:{:02}:{:02}Z", index / 60, index % 60);
-            transaction
-                .execute(
-                    r#"
-                    INSERT INTO dictation_sessions (
-                        started_at, ended_at, duration_seconds, transcription_model,
-                        final_word_count
-                    ) VALUES (?1, ?1, 1, 'test-model', 2)
-                    "#,
-                    [&at],
-                )
-                .unwrap();
-            transaction
-                .execute(
-                    "INSERT INTO transcript_history (session_id, created_at, final_text)
-                     VALUES (?1, ?2, ?3)",
-                    params![
-                        transaction.last_insert_rowid(),
-                        at,
-                        format!("entry {index}")
-                    ],
-                )
-                .unwrap();
-        }
-        transaction.commit().unwrap();
-
-        let page = runtime
-            .history_page(&HistoryPageRequest {
-                page_size: usize::MAX,
-                ..HistoryPageRequest::default()
-            })
-            .unwrap();
-
-        assert_eq!(page.rows.len(), 100);
-        assert_eq!(page.total_matches, 101);
-        assert!(page.next_cursor.is_some());
-    }
-}
+/// Rows in one History page at most.
+const MAX_PAGE_SIZE: usize = 100;
+/// Characters of a transcript that a History row previews.
+const PREVIEW_CHARACTERS: usize = 160;
 
 impl Runtime {
     /// Moves a delivered job out of the in-flight job table. One transaction
@@ -127,36 +61,95 @@ impl Runtime {
             [job_id.to_string()],
         )?;
         transaction.commit()?;
-        if !already_recorded {
-            self.history_search_cache.borrow_mut().invalidate();
-        }
         Ok(!already_recorded)
     }
 
-    /// Returns one page of History, newest first. An expired continuation
-    /// cursor restarts the search at its first page and says so.
+    /// Returns one page of History, newest first: the transcripts whose
+    /// final text contains `request.search`, ignoring ASCII case, or every
+    /// transcript for a blank search. Pages continue after the opaque cursor
+    /// (created_at, id) of the previous page's last row, so rows saved in the
+    /// meantime never shift a page. A malformed cursor restarts at the first
+    /// page and says so.
     pub fn history_page(
         &self,
         request: &HistoryPageRequest,
     ) -> Result<HistoryPageSnapshot, RuntimeError> {
-        let query = |after: Option<HistoryPageCursor>| HistoryQuery {
+        let search = request.search.trim();
+        let pattern = format!("%{}%", escape_like(search));
+        let limit = request.page_size.clamp(1, MAX_PAGE_SIZE);
+        let after = request.after.as_ref().map(PageCursor::decode);
+        let cursor_restarted = matches!(after, Some(None));
+        let after = after.flatten();
+        let total_matches = self.connection.query_row(
+            r"SELECT COUNT(*) FROM transcript_history WHERE final_text LIKE ?1 ESCAPE '\'",
+            [&pattern],
+            |row| row.get(0),
+        )?;
+        let mut statement = self.connection.prepare(
+            r"
+            SELECT h.id, h.created_at, h.final_text, s.final_word_count, s.duration_seconds
+            FROM transcript_history h
+            JOIN dictation_sessions s ON s.id = h.session_id
+            WHERE h.final_text LIKE ?1 ESCAPE '\'
+              AND (?2 IS NULL OR h.created_at < ?2 OR (h.created_at = ?2 AND h.id < ?3))
+            ORDER BY h.created_at DESC, h.id DESC
+            LIMIT ?4
+            ",
+        )?;
+        let mut rows = statement
+            .query_map(
+                params![
+                    pattern,
+                    after.as_ref().map(|cursor| &cursor.created_at),
+                    after.as_ref().map_or(0, |cursor| cursor.id),
+                    // One extra row tells whether another page follows.
+                    i64::try_from(limit + 1).unwrap_or(i64::MAX),
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u64>(3)?,
+                        row.get::<_, f64>(4)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = rows
+            .last()
+            .filter(|_| has_more)
+            .map(|(id, created_at, ..)| {
+                PageCursor {
+                    created_at: created_at.clone(),
+                    id: *id,
+                }
+                .encode()
+            });
+        let rows = rows
+            .into_iter()
+            .map(
+                |(id, created_at, final_text, word_count, duration_seconds)| {
+                    Ok(HistorySnapshot {
+                        id,
+                        created_at: parse_timestamp(&created_at)?,
+                        preview_text: preview(&final_text, search),
+                        text: final_text,
+                        word_count,
+                        duration_seconds,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, RuntimeError>>()?;
+        Ok(HistoryPageSnapshot {
             search: request.search.clone(),
-            day: None,
-            limit: request.page_size,
-            after,
-        };
-        let search = |query| {
-            crate::history_search::history_page(&self.connection, &self.history_search_cache, query)
-        };
-        match search(query(request.after.clone())) {
-            Err(RuntimeError::InvalidHistoryCursor(_)) if request.after.is_some() => {
-                Ok(HistoryPageSnapshot {
-                    cursor_restarted: true,
-                    ..search(query(None))?
-                })
-            }
-            page => page,
-        }
+            total_matches,
+            cursor_restarted,
+            next_cursor,
+            rows,
+        })
     }
 
     /// The full final text of one History entry, for copying.
@@ -178,9 +171,6 @@ impl Runtime {
              WHERE id = (SELECT session_id FROM transcript_history WHERE id = ?1)",
             [id],
         )?;
-        if deleted > 0 {
-            self.history_search_cache.borrow_mut().invalidate();
-        }
         Ok(deleted > 0)
     }
 
@@ -189,7 +179,6 @@ impl Runtime {
         transaction.execute("DELETE FROM transcript_history", [])?;
         transaction.execute("DELETE FROM dictation_sessions", [])?;
         transaction.commit()?;
-        self.history_search_cache.borrow_mut().invalidate();
         Ok(())
     }
 }
@@ -253,27 +242,127 @@ fn record_session(
     Ok(())
 }
 
-pub(crate) fn history_select() -> &'static str {
-    r#"
-    SELECT h.id, h.created_at, h.final_text, s.final_word_count, s.duration_seconds
-    FROM transcript_history h
-    JOIN dictation_sessions s ON s.id = h.session_id
-    "#
+/// Where a History page ends: the stored `created_at` text, exactly as
+/// the keyset comparison orders it, and the row id that breaks ties.
+struct PageCursor {
+    created_at: String,
+    id: i64,
 }
 
-pub(crate) fn row_to_history(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<Result<HistoryRow, RuntimeError>> {
-    let created_at: String = row.get(1)?;
-    let id = row.get(0)?;
-    let final_text = row.get(2)?;
-    let word_count = row.get(3)?;
-    let duration_seconds = row.get(4)?;
-    Ok(parse_timestamp(&created_at).map(|created_at| HistoryRow {
-        id,
-        created_at,
-        final_text,
-        word_count,
-        duration_seconds,
-    }))
+impl PageCursor {
+    fn encode(&self) -> HistoryPageCursor {
+        HistoryPageCursor::new(format!("{}|{}", self.created_at, self.id))
+    }
+
+    fn decode(cursor: &HistoryPageCursor) -> Option<Self> {
+        let (created_at, id) = cursor.as_str().rsplit_once('|')?;
+        Some(Self {
+            created_at: created_at.to_owned(),
+            id: id.parse().ok()?,
+        })
+        .filter(|cursor| !cursor.created_at.is_empty())
+    }
+}
+
+/// Escapes LIKE's wildcards so the user's text matches literally.
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The first `PREVIEW_CHARACTERS` of `text`, or for a search, the window
+/// that shows its first match.
+fn preview(text: &str, search: &str) -> String {
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() <= PREVIEW_CHARACTERS {
+        return text.to_owned();
+    }
+    let start = match_start(text, search).map_or(0, |index| index.saturating_sub(36));
+    let end = (start + PREVIEW_CHARACTERS).min(characters.len());
+    let mut value = String::new();
+    if start > 0 {
+        value.push('…');
+    }
+    value.extend(&characters[start..end]);
+    if end < characters.len() {
+        value.push('…');
+    }
+    value
+}
+
+/// The character index where `search` first occurs in `text`, ignoring
+/// ASCII case as SQLite's LIKE does. A blank search has no match.
+fn match_start(text: &str, search: &str) -> Option<usize> {
+    if search.is_empty() {
+        return None;
+    }
+    text.char_indices().position(|(byte, _)| {
+        text.as_bytes()[byte..]
+            .get(..search.len())
+            .is_some_and(|window| window.eq_ignore_ascii_case(search.as_bytes()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn history_pages_hold_at_most_one_hundred_rows() {
+        let directory = tempdir().unwrap();
+        let mut runtime = Runtime::open(directory.path().join("history.sqlite")).unwrap();
+        let transaction = runtime.connection.transaction().unwrap();
+        for index in 0..101 {
+            let at = format!("2026-08-18T12:{:02}:{:02}Z", index / 60, index % 60);
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO dictation_sessions (
+                        started_at, ended_at, duration_seconds, transcription_model,
+                        final_word_count
+                    ) VALUES (?1, ?1, 1, 'test-model', 2)
+                    "#,
+                    [&at],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO transcript_history (session_id, created_at, final_text)
+                     VALUES (?1, ?2, ?3)",
+                    params![
+                        transaction.last_insert_rowid(),
+                        at,
+                        format!("entry {index}")
+                    ],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+
+        let page = runtime
+            .history_page(&HistoryPageRequest {
+                page_size: usize::MAX,
+                ..HistoryPageRequest::default()
+            })
+            .unwrap();
+
+        assert_eq!(page.rows.len(), 100);
+        assert_eq!(page.total_matches, 101);
+        assert!(page.next_cursor.is_some());
+    }
+
+    #[test]
+    fn a_long_transcript_previews_the_window_around_its_first_match() {
+        let text = format!("{}The NEEDLE is here.", "x".repeat(300));
+
+        let shown = preview(&text, "needle");
+
+        assert!(shown.starts_with('…'));
+        assert!(shown.contains("The NEEDLE is here."));
+        assert!(preview(&text, "").starts_with("xxx"));
+    }
 }

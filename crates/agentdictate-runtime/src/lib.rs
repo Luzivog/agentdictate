@@ -10,11 +10,8 @@ pub use ipc::{IpcClient, IpcError, IpcHandler, IpcServer};
 mod fs;
 pub use fs::write_atomic;
 mod history;
-mod history_search;
 mod legacy_replacements;
 pub use legacy_replacements::{RetiredReplacement, RetiredReplacementOutcome};
-mod maintenance_priority;
-pub use maintenance_priority::{HistoryIndexMaintenance, RecordingPriorityGuard};
 mod ports;
 pub use ports::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
