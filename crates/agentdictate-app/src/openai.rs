@@ -2,11 +2,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agentdictate_core::{JobId, Settings};
+use agentdictate_core::{DictationOptions, Settings};
 use agentdictate_linux::command::{
     PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool, SystemCommandRunner,
 };
-use agentdictate_runtime::{ExternalError, RecordingJob, Transcriber, Transcript};
+use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
+
+use crate::{Transcriber, live_transcription::LiveTranscription};
 use reqwest::StatusCode;
 use serde_json::Value;
 
@@ -207,17 +209,18 @@ pub struct TranscriptionRequest<'a> {
     pub duration_seconds: f64,
 }
 
-pub trait SpeechTransport {
-    fn begin_recording(
-        &mut self,
+/// The speech-to-text service boundary; tests substitute a fake.
+pub trait SpeechTransport: Clone + Send + 'static {
+    /// Starts streaming `job`'s audio while it records, where supported.
+    fn open_live(
+        &self,
         _job: &RecordingJob,
-        _options: &agentdictate_core::DictationOptions,
-    ) {
-    }
-    fn cancel_recording(&mut self, _id: JobId) {}
-    fn actual_model(&self) -> Option<&str> {
+        _options: &DictationOptions,
+    ) -> Option<LiveTranscription> {
         None
     }
+
+    fn set_api_key(&mut self, _api_key: &str) {}
 
     fn transcribe_audio(
         &mut self,
@@ -227,6 +230,7 @@ pub trait SpeechTransport {
 
 /// The production `Transcriber`: sends the recording to the speech transport
 /// with the options stored on its job.
+#[derive(Clone)]
 pub struct TranscriptionPipeline<S> {
     settings: Settings,
     speech: S,
@@ -237,39 +241,22 @@ impl<S> TranscriptionPipeline<S> {
     pub const fn new(settings: Settings, speech: S) -> Self {
         Self { settings, speech }
     }
-
-    pub fn update_settings(&mut self, settings: Settings) {
-        self.settings = settings;
-    }
-
-    pub const fn speech_mut(&mut self) -> &mut S {
-        &mut self.speech
-    }
 }
 
 impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
-    fn begin_recording(&mut self, job: &RecordingJob) {
-        if let Some(options) = &job.options {
-            self.speech.begin_recording(job, options);
-        }
-    }
-    fn cancel_recording(&mut self, id: JobId) {
-        self.speech.cancel_recording(id);
+    fn open_session(&self, job: &RecordingJob) -> Option<LiveTranscription> {
+        let options = job.options.as_ref().filter(|options| options.streaming)?;
+        self.speech.open_live(job, options)
     }
 
-    /// Reuses a transcript an earlier attempt already stored, so retrying a
-    /// job that failed after transcription is not charged again.
+    /// Transcribes the saved audio. An empty result counts as no speech only
+    /// when the audio is near-silent; otherwise the audio is kept for another
+    /// attempt, so a misheard dictation is never silently dropped.
     fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        if !job.raw_transcript.trim().is_empty() {
-            return Ok(Transcript {
-                text: job.raw_transcript.clone(),
-                model: job.transcription_model.clone(),
-            });
-        }
         let options = job
             .options
             .clone()
-            .unwrap_or_else(|| agentdictate_core::DictationOptions::from_settings(&self.settings));
+            .unwrap_or_else(|| DictationOptions::from_settings(&self.settings));
         let keywords = options.keywords();
         let text = match self.speech.transcribe_audio(TranscriptionRequest {
             keywords: &keywords,
@@ -295,21 +282,24 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
                 ExternalError::new("Transcription returned an empty result; audio is saved")
             });
         }
-        let model = self
-            .speech
-            .actual_model()
-            .unwrap_or(&job.transcription_model)
-            .to_owned();
-        Ok(Transcript { text, model })
+        Ok(Transcript {
+            text,
+            model: job.transcription_model.clone(),
+        })
+    }
+
+    fn update_settings(&mut self, settings: &Settings) {
+        self.speech.set_api_key(&settings.openai_api_key);
+        self.settings = settings.clone();
     }
 }
 
+/// OpenAI's HTTP transcription endpoint. Clones share one connection pool.
+#[derive(Clone)]
 pub struct ReqwestOpenAiTransport {
     client: reqwest::blocking::Client,
     api_key: String,
     api_base: String,
-    live: Option<crate::live_transcription::LiveTranscription>,
-    actual_model: Option<String>,
     ffmpeg: PlatformExecutable,
 }
 
@@ -327,8 +317,6 @@ impl ReqwestOpenAiTransport {
             client: http_client(),
             api_key: api_key.into().trim().to_owned(),
             api_base: api_base.into().trim_end_matches('/').to_owned(),
-            actual_model: None,
-            live: None,
             ffmpeg: PlatformExecutable::discover(PlatformTool::Ffmpeg),
         }
     }
@@ -339,10 +327,6 @@ impl ReqwestOpenAiTransport {
     pub fn with_audio_encoder(mut self, program: impl Into<PathBuf>) -> Self {
         self.ffmpeg = PlatformExecutable::at(PlatformTool::Ffmpeg, program);
         self
-    }
-
-    pub fn set_api_key(&mut self, api_key: impl Into<String>) {
-        self.api_key = api_key.into().trim().to_owned();
     }
 
     fn authorization(&self) -> Result<String, ExternalError> {
@@ -433,67 +417,37 @@ impl ReqwestOpenAiTransport {
 }
 
 impl SpeechTransport for ReqwestOpenAiTransport {
-    fn begin_recording(
-        &mut self,
+    fn open_live(
+        &self,
         job: &RecordingJob,
-        options: &agentdictate_core::DictationOptions,
-    ) {
-        self.live = None;
-        self.actual_model = None;
-        if options.streaming {
-            let url = format!(
-                "{}/realtime?intent=transcription",
-                self.api_base
-                    .replacen("https://", "wss://", 1)
-                    .replacen("http://", "ws://", 1)
-            );
-            match crate::live_transcription::LiveTranscription::start(
-                job.id,
-                job.audio_path.clone(),
-                options.clone(),
-                self.api_key.clone(),
-                url,
-            ) {
-                Ok(live) => self.live = Some(live),
-                Err(error) => {
-                    tracing::warn!(%error, "live transcription startup failed; buffered audio remains available")
-                }
-            }
-        }
+        options: &DictationOptions,
+    ) -> Option<LiveTranscription> {
+        let url = format!(
+            "{}/realtime?intent=transcription",
+            self.api_base
+                .replacen("https://", "wss://", 1)
+                .replacen("http://", "ws://", 1)
+        );
+        LiveTranscription::start(
+            job.audio_path.clone(),
+            options.clone(),
+            self.api_key.clone(),
+            url,
+        )
+        .inspect_err(|error| {
+            tracing::warn!(%error, "live transcription startup failed; buffered audio remains available");
+        })
+        .ok()
     }
-    fn cancel_recording(&mut self, id: JobId) {
-        if self.live.as_ref().is_some_and(|live| live.job_id == id) {
-            self.live = None;
-        }
-    }
-    fn actual_model(&self) -> Option<&str> {
-        self.actual_model.as_deref()
+
+    fn set_api_key(&mut self, api_key: &str) {
+        self.api_key = api_key.trim().to_owned();
     }
 
     fn transcribe_audio(
         &mut self,
         request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
-        if let Some(live) = self
-            .live
-            .take()
-            .filter(|live| live.audio_path == request.audio_path)
-        {
-            match live.finish() {
-                Ok(text) => {
-                    self.actual_model = Some("gpt-live-transcribe".into());
-                    tracing::info!(
-                        model = "gpt-live-transcribe",
-                        "live transcription completed"
-                    );
-                    return Ok(text);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "live transcription failed; falling back to file transcription")
-                }
-            }
-        }
-        self.actual_model = Some(request.model.to_owned());
         let mut upload = prepare_upload_audio(
             &self.ffmpeg,
             request.audio_path,

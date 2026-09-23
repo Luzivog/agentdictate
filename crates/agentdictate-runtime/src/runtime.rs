@@ -9,9 +9,9 @@ use crate::migrations::migrate;
 use crate::schema::{row_to_job, stage_name, state_for_stage, timestamp};
 use crate::startup_cleanup::recovery_delete_path;
 use crate::{
-    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, ExternalError,
-    HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob, RecordingRequest, RuntimeError,
-    Transcriber,
+    Deliverer, DeliveryDisposition, DeliveryGate, DeliveryMethod, DeliveryStatus, JobId, JobStage,
+    Recorder, RecordingJob, RecordingRequest, RuntimeError, StoredTranscript, Transcript,
+    TranscriptionOutcome,
 };
 
 pub struct Runtime {
@@ -183,31 +183,10 @@ impl Runtime {
         Ok(deleted)
     }
 
-    /// Transcribes a captured recording and pastes the result.
-    pub fn process_captured(
-        &mut self,
-        id: JobId,
-        transcriber: &mut impl Transcriber,
-        delivery_gate: &mut impl DeliveryGate,
-        deliverer: &mut impl Deliverer,
-    ) -> Result<RecordingJob, RuntimeError> {
-        self.process(
-            id,
-            DeliveryMethod::Paste,
-            transcriber,
-            delivery_gate,
-            deliverer,
-        )
-    }
-
-    fn process(
-        &mut self,
-        id: JobId,
-        method: DeliveryMethod,
-        transcriber: &mut impl Transcriber,
-        delivery_gate: &mut impl DeliveryGate,
-        deliverer: &mut impl Deliverer,
-    ) -> Result<RecordingJob, RuntimeError> {
+    /// Moves a captured job to `transcribing`: the last checkpoint before its
+    /// audio is transcribed, away from the daemon lock. Only a job that is
+    /// durably transcribing can have a transcript stored.
+    pub fn begin_transcription(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
         let captured = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if captured.stage != JobStage::Captured {
             return Err(RuntimeError::InvalidStage {
@@ -217,95 +196,14 @@ impl Runtime {
             });
         }
         self.update_stage(id, JobStage::Transcribing, None)?;
-        self.transcribe_and_deliver(id, method, transcriber, delivery_gate, deliverer)
-            .map_err(|error| self.fail_job(id, error))
+        Ok(self.job(id)?.expect("updated job must be readable"))
     }
 
-    /// Everything after the `Transcribing` checkpoint. Callers route its
-    /// errors through `fail_job` so no failure can strand the job in flight.
-    fn transcribe_and_deliver(
-        &mut self,
-        id: JobId,
-        method: DeliveryMethod,
-        transcriber: &mut impl Transcriber,
-        delivery_gate: &mut impl DeliveryGate,
-        deliverer: &mut impl Deliverer,
-    ) -> Result<RecordingJob, RuntimeError> {
-        let transcribing = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        let transcript = match transcriber.transcribe(&transcribing) {
-            Ok(transcript) => transcript,
-            Err(ExternalError::NoSpeech) => {
-                // Nothing to deliver or recover, so the job leaves the
-                // in-flight table. The caller removes its audio.
-                self.connection.execute(
-                    "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
-                    [id.to_string()],
-                )?;
-                let finished = RecordingJob {
-                    stage: JobStage::NoSpeech,
-                    updated_at: Utc::now(),
-                    ..transcribing
-                };
-                return Ok(finished);
-            }
-            Err(error) => {
-                // If this write fails too, `fail_job` records the failure.
-                let _ = self.update_stage(id, JobStage::Failed, Some(error.to_string()));
-                return Err(error.into());
-            }
-        };
-        // Checkpoint the paid-for text first, so a later failure leaves it
-        // in Recovery instead of needing another transcription.
-        self.connection.execute(
-            r#"
-            UPDATE dictation_jobs
-            SET raw_transcript = ?1, transcription_model = ?2, updated_at = ?3
-            WHERE runtime_id = ?4
-            "#,
-            params![
-                transcript.text,
-                transcript.model,
-                timestamp(Utc::now()),
-                id.to_string()
-            ],
-        )?;
-        // Jobs from before options were stored have no vocabulary to apply.
-        let vocabulary = transcribing
-            .options
-            .as_ref()
-            .map_or(&[][..], |options| &options.vocabulary[..]);
-        let normalized = agentdictate_core::normalize_vocabulary(&transcript.text, vocabulary);
-        let corrections = serde_json::to_string(&normalized.corrections)?;
-
-        self.connection.execute(
-            r#"
-            UPDATE dictation_jobs
-            SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
-                final_text = ?2, replacements_applied = ?3, error_message = NULL,
-                delivery_status = 'not_attempted'
-            WHERE runtime_id = ?4
-            "#,
-            params![
-                timestamp(Utc::now()),
-                normalized.text,
-                corrections,
-                id.to_string(),
-            ],
-        )?;
-        let ready = self.job(id)?.expect("updated job must be readable");
-
-        self.deliver_ready(ready, method, delivery_gate, deliverer)
-    }
-
-    /// Transcribes a Recovery item again after an explicit user action and
-    /// copies the result. Like `retry_delivery`, it never pastes: the user
-    /// asked from AgentDictate's own window, which has the focus.
-    pub fn retry_transcription(
-        &mut self,
-        id: JobId,
-        transcriber: &mut impl Transcriber,
-        deliverer: &mut impl Deliverer,
-    ) -> Result<RecordingJob, RuntimeError> {
+    /// Moves a Recovery item back to `transcribing` after an explicit
+    /// "Transcribe again". A raw transcript an earlier attempt stored is
+    /// kept, so it is not paid for twice. A job whose paste may already have
+    /// reached an application is refused.
+    pub fn prepare_transcription_retry(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if current.delivery_status == DeliveryStatus::Ambiguous {
             return Err(RuntimeError::OperationNotAllowed {
@@ -329,32 +227,116 @@ impl Runtime {
         self.connection.execute(
             r#"
             UPDATE dictation_jobs
-            SET state = 'captured', stage = 'captured', updated_at = ?1,
+            SET state = 'captured', stage = 'transcribing', updated_at = ?1,
                 delivery_status = 'not_attempted', error_message = NULL
             WHERE runtime_id = ?2
             "#,
             params![timestamp(Utc::now()), id.to_string()],
         )?;
-        // Copying cannot reach transient AgentDictate UI, so no gate is needed.
-        self.process(
-            id,
-            DeliveryMethod::CopyOnly,
-            transcriber,
-            &mut HeadlessDeliveryGate,
-            deliverer,
-        )
+        Ok(self.job(id)?.expect("updated job must be readable"))
     }
 
-    /// Re-attempts only the delivery step after an explicit user action, by
-    /// copying the stored transcript. It never pastes: the user asked from
-    /// AgentDictate's own window, which has the focus. This is intentionally
-    /// separate from startup recovery: an ambiguous prior injection is never
-    /// retried automatically because doing so could paste duplicate text.
-    pub fn retry_delivery(
+    /// Records the result of transcribing a job, but only while the job is
+    /// still `transcribing`: a late result for a job that was deleted or
+    /// reconciled meanwhile changes nothing. Text is checkpointed raw first,
+    /// then with the job's own vocabulary applied, as ready to deliver;
+    /// `note` becomes the ready job's message. A failed write fails the job,
+    /// keeping any raw text, so it never stays in flight.
+    pub fn store_transcript(
         &mut self,
         id: JobId,
-        deliverer: &mut impl Deliverer,
+        outcome: TranscriptionOutcome,
+        note: Option<&str>,
+    ) -> Result<StoredTranscript, RuntimeError> {
+        let Some(transcribing) = self
+            .job(id)?
+            .filter(|job| job.stage == JobStage::Transcribing)
+        else {
+            return Ok(StoredTranscript::Stale);
+        };
+        let stored = match outcome {
+            TranscriptionOutcome::Text(transcript) => self
+                .store_text(&transcribing, &transcript, note)
+                .map(StoredTranscript::Ready),
+            TranscriptionOutcome::NoSpeech => {
+                // Nothing to deliver or recover, so the job leaves the
+                // in-flight table. The caller removes its audio.
+                self.connection
+                    .execute(
+                        "DELETE FROM dictation_jobs WHERE runtime_id = ?1",
+                        [id.to_string()],
+                    )
+                    .map(|_| {
+                        StoredTranscript::NoSpeech(RecordingJob {
+                            stage: JobStage::NoSpeech,
+                            updated_at: Utc::now(),
+                            ..transcribing
+                        })
+                    })
+                    .map_err(Into::into)
+            }
+            TranscriptionOutcome::Failed { message } => self
+                .update_stage(id, JobStage::Failed, Some(message))
+                .map(|()| {
+                    StoredTranscript::Failed(self.job(id).ok().flatten().unwrap_or(transcribing))
+                }),
+        };
+        stored.map_err(|error| self.fail_job(id, error))
+    }
+
+    fn store_text(
+        &mut self,
+        transcribing: &RecordingJob,
+        transcript: &Transcript,
+        note: Option<&str>,
     ) -> Result<RecordingJob, RuntimeError> {
+        let id = transcribing.id;
+        // Checkpoint the paid-for text first, so a later failure leaves it
+        // in Recovery instead of needing another transcription.
+        self.connection.execute(
+            r#"
+            UPDATE dictation_jobs
+            SET raw_transcript = ?1, transcription_model = ?2, updated_at = ?3
+            WHERE runtime_id = ?4
+            "#,
+            params![
+                transcript.text,
+                transcript.model,
+                timestamp(Utc::now()),
+                id.to_string()
+            ],
+        )?;
+        // Jobs from before options were stored have no vocabulary to apply.
+        let vocabulary = transcribing
+            .options
+            .as_ref()
+            .map_or(&[][..], |options| &options.vocabulary[..]);
+        let normalized = agentdictate_core::normalize_vocabulary(&transcript.text, vocabulary);
+        let corrections = serde_json::to_string(&normalized.corrections)?;
+        self.connection.execute(
+            r#"
+            UPDATE dictation_jobs
+            SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
+                final_text = ?2, replacements_applied = ?3, error_message = ?4,
+                delivery_status = 'not_attempted'
+            WHERE runtime_id = ?5
+            "#,
+            params![
+                timestamp(Utc::now()),
+                normalized.text,
+                corrections,
+                note,
+                id.to_string(),
+            ],
+        )?;
+        Ok(self.job(id)?.expect("updated job must be readable"))
+    }
+
+    /// Resets a stored transcript for an explicit "Paste again", which only
+    /// copies it. This is intentionally separate from startup recovery: an
+    /// ambiguous prior injection is never retried automatically because
+    /// doing so could paste duplicate text.
+    pub fn prepare_delivery_retry(&mut self, id: JobId) -> Result<RecordingJob, RuntimeError> {
         let current = self.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         if current.delivery_status == DeliveryStatus::Attempting {
             return Err(RuntimeError::OperationNotAllowed {
@@ -391,14 +373,7 @@ impl Runtime {
             "#,
             params![timestamp(Utc::now()), id.to_string()],
         )?;
-        let ready = self.job(id)?.expect("updated job must be readable");
-        self.deliver_ready(
-            ready,
-            DeliveryMethod::CopyOnly,
-            &mut HeadlessDeliveryGate,
-            deliverer,
-        )
-        .map_err(|error| self.fail_job(id, error))
+        Ok(self.job(id)?.expect("updated job must be readable"))
     }
 
     /// Deletes explicit recovery data, text and audio, without exposing a
@@ -452,7 +427,23 @@ impl Runtime {
         Ok(deleted)
     }
 
-    fn deliver_ready(
+    /// Delivers a ready transcript once: the gate must confirm first, then
+    /// `attempting` is checkpointed before the deliverer runs, so a crash
+    /// mid-paste reconciles to ambiguous and is never pasted again. A
+    /// failure leaves the job retryable or ambiguous, never in flight.
+    pub fn deliver_ready(
+        &mut self,
+        ready: RecordingJob,
+        method: DeliveryMethod,
+        delivery_gate: &mut impl DeliveryGate,
+        deliverer: &mut impl Deliverer,
+    ) -> Result<RecordingJob, RuntimeError> {
+        let id = ready.id;
+        self.deliver(ready, method, delivery_gate, deliverer)
+            .map_err(|error| self.fail_job(id, error))
+    }
+
+    fn deliver(
         &mut self,
         ready: RecordingJob,
         method: DeliveryMethod,

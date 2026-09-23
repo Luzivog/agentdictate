@@ -1,46 +1,11 @@
-use agentdictate_app::{SpeechTransport, TranscriptionPipeline, TranscriptionRequest};
+use agentdictate_app::{SpeechTransport, Transcriber, TranscriptionPipeline, TranscriptionRequest};
 use agentdictate_core::{JobId, JobStage, Settings};
-use agentdictate_runtime::{DeliveryStatus, ExternalError, RecordingJob, Transcriber};
+use agentdictate_runtime::{DeliveryStatus, ExternalError, RecordingJob};
 use chrono::Utc;
-
-struct PaidApiMustNotRun;
-
-#[test]
-fn a_stored_transcript_is_reused_without_transcribing_again() {
-    let now = Utc::now();
-    let job = RecordingJob {
-        options: None,
-        id: JobId::new(),
-        started_at: now,
-        updated_at: now,
-        stage: JobStage::Transcribing,
-        audio_path: "missing.wav".into(),
-        duration_seconds: 2.0,
-        transcription_model: "gpt-transcribe".into(),
-        raw_transcript: "Do not push.".into(),
-        final_text: String::new(),
-        copied_to_clipboard: false,
-        paste_triggered: false,
-        delivery_status: DeliveryStatus::NotAttempted,
-        error_message: None,
-    };
-    let mut pipeline = TranscriptionPipeline::new(Settings::default(), PaidApiMustNotRun);
-    let result = pipeline.transcribe(&job).unwrap();
-    assert_eq!(result.text, "Do not push.");
-    assert_eq!(result.model, "gpt-transcribe");
-}
-
-impl SpeechTransport for PaidApiMustNotRun {
-    fn transcribe_audio(
-        &mut self,
-        _request: TranscriptionRequest<'_>,
-    ) -> Result<String, ExternalError> {
-        panic!("a stored transcript must not be transcribed again")
-    }
-}
 
 #[test]
 fn empty_results_require_quiet_audio_while_short_words_and_network_errors_survive() {
+    #[derive(Clone)]
     struct Speech(Result<String, ExternalError>);
     impl SpeechTransport for Speech {
         fn transcribe_audio(

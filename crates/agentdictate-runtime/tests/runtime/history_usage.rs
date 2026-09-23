@@ -5,24 +5,15 @@ use agentdictate_core::{
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, HeadlessDeliveryGate,
-    RecordingJob, Runtime, Transcriber, Transcript,
+    RecordingJob, Runtime,
 };
 use tempfile::TempDir;
 
-use crate::support::{ReadyRecorder, days_ago, history_rows, request, stored_dictations};
+use crate::support::{
+    ReadyRecorder, days_ago, history_rows, request, stored_dictations, transcribe_and_deliver,
+};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
-
-struct FixedTranscriber;
-
-impl Transcriber for FixedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        Ok(Transcript {
-            text: "fix the versel deploy".to_owned(),
-            model: TRANSCRIPTION_MODEL.to_owned(),
-        })
-    }
-}
 
 struct SubmittedDeliverer;
 
@@ -52,14 +43,14 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
         .start_recording(request, &mut ReadyRecorder)
         .unwrap();
     runtime.capture_recording(job.id, 60.0).unwrap();
-    runtime
-        .process_captured(
-            job.id,
-            &mut FixedTranscriber,
-            &mut HeadlessDeliveryGate,
-            &mut SubmittedDeliverer,
-        )
-        .unwrap()
+    transcribe_and_deliver(
+        runtime,
+        job.id,
+        "fix the versel deploy",
+        &mut HeadlessDeliveryGate,
+        &mut SubmittedDeliverer,
+    )
+    .unwrap()
 }
 
 #[test]

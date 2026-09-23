@@ -14,7 +14,8 @@ use agentdictate_runtime::{
 
 use crate::{
     AppPaths, Daemon, OverlayController, ReqwestOpenAiTransport, SystemDeliverer,
-    SystemRecordingController, TranscriptionPipeline, startup::LoginStartup,
+    SystemRecordingController, Transcriber, TranscriptionPipeline, daemon::copied,
+    startup::LoginStartup,
 };
 
 pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
@@ -211,9 +212,7 @@ impl AgentProcess {
         {
             tracing::warn!(%error, "settings saved but login startup reconciliation failed");
         }
-        self.daemon
-            .transcriber_mut()
-            .update_settings(settings.clone());
+        self.daemon.transcriber_mut().update_settings(&settings);
         self.daemon.recorder_mut().update_settings(&settings);
         self.daemon
             .deliverer_mut()
@@ -238,11 +237,7 @@ impl AgentProcess {
         let mut settings = self.daemon.settings().clone();
         settings.openai_api_key = api_key.trim().to_owned();
         save_settings(&self.config_file, &settings)?;
-        let transcriber = self.daemon.transcriber_mut();
-        transcriber
-            .speech_mut()
-            .set_api_key(&settings.openai_api_key);
-        transcriber.update_settings(settings.clone());
+        self.daemon.transcriber_mut().update_settings(&settings);
         self.daemon.update_settings(settings);
         Ok(())
     }
@@ -345,9 +340,12 @@ impl IpcHandler for AgentProcess {
                 .start_recording_in_mode(mode)
                 .map(|_| ())
                 .map_err(Into::into),
-            ClientCommandKind::StopRecording { .. } => {
-                self.daemon.stop_recording().map(|_| ()).map_err(Into::into)
-            }
+            ClientCommandKind::StopRecording { .. } => self
+                .daemon
+                .stop_recording()
+                .and_then(|ticket| self.daemon.complete_transcription(ticket.run()))
+                .map(|_| ())
+                .map_err(Into::into),
             ClientCommandKind::Cancel { .. } => self
                 .daemon
                 .discard_recording()
@@ -361,6 +359,8 @@ impl IpcHandler for AgentProcess {
             ClientCommandKind::RetryTranscription { job_id, .. } => self
                 .daemon
                 .retry_transcription(job_id)
+                .and_then(|ticket| self.daemon.complete_transcription(ticket.run()))
+                .and_then(copied)
                 .map(|_| ())
                 .map_err(Into::into),
             ClientCommandKind::RetryDelivery { job_id, .. } => self

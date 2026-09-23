@@ -109,28 +109,29 @@ fn committed_user_discard_returns_the_workflow_to_ready() {
 }
 
 #[test]
-fn saved_transcript_can_retry_delivery_without_retranscribing() {
+fn recovery_retry_enters_processing_from_needs_attention_for_another_job() {
     let mut workflow = Workflow::new();
-    let job_id = JobId::new();
+    let failed_job = JobId::new();
     workflow
-        .apply(WorkflowSignal::StartRequested { job_id })
+        .apply(WorkflowSignal::StartRequested { job_id: failed_job })
         .unwrap();
     workflow
         .apply(WorkflowSignal::Interrupted {
-            job_id,
+            job_id: failed_job,
             at: JobStage::Failed,
         })
         .unwrap();
+    let older_job = JobId::new();
 
     let retrying = workflow
-        .apply(WorkflowSignal::RetryDeliveryRequested { job_id })
+        .apply(WorkflowSignal::RetryRequested { job_id: older_job })
         .unwrap();
 
     assert_eq!(
         retrying.phase,
         WorkflowPhase::Processing {
-            job_id,
-            stage: agentdictate_core::ProcessingStage::ReadyToDeliver,
+            job_id: older_job,
+            stage: agentdictate_core::ProcessingStage::Transcribing,
         }
     );
 }
@@ -155,4 +156,29 @@ fn a_recoverable_failure_does_not_block_the_next_recording() {
         .unwrap();
 
     assert_eq!(next.phase, WorkflowPhase::Starting { job_id: next_job });
+}
+
+#[test]
+fn cancelling_processing_returns_to_ready_and_rejects_the_late_signals() {
+    let mut workflow = Workflow::new();
+    let job_id = JobId::new();
+    for signal in [
+        WorkflowSignal::StartRequested { job_id },
+        WorkflowSignal::FirstAudioFrameWritten { job_id },
+        WorkflowSignal::StopRequested,
+        WorkflowSignal::CaptureFinalized { job_id },
+    ] {
+        workflow.apply(signal).unwrap();
+    }
+
+    let cancelled = workflow
+        .apply(WorkflowSignal::ProcessingCancelled { job_id })
+        .unwrap();
+
+    assert_eq!(cancelled.phase, WorkflowPhase::Ready);
+    assert!(
+        workflow
+            .apply(WorkflowSignal::TranscriptStored { job_id })
+            .is_err()
+    );
 }

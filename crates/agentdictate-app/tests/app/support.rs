@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use agentdictate_app::{CapturedRecording, RecordingController};
+use agentdictate_app::{CapturedRecording, Daemon, RecordingController, Transcriber};
 use agentdictate_core::JobStage;
-use agentdictate_runtime::{
-    ExternalError, Recorder, RecordingJob, Runtime, Transcriber, Transcript,
-};
+use agentdictate_runtime::{Deliverer, ExternalError, Recorder, RecordingJob, Runtime, Transcript};
 
 pub(crate) struct InspectingRecorder {
     pub(crate) database: PathBuf,
@@ -31,6 +29,7 @@ impl RecordingController for InspectingRecorder {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct FixedTranscriber;
 
 impl Transcriber for FixedTranscriber {
@@ -54,4 +53,16 @@ impl RecordingController for FailingStartRecorder {
     fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
         unreachable!("a recorder that did not start cannot be finalized")
     }
+}
+
+/// Stops the recording and runs its transcription to completion, as the
+/// daemon's processing thread would.
+pub(crate) fn finish<R, T, D>(daemon: &mut Daemon<R, T, D>) -> RecordingJob
+where
+    R: RecordingController,
+    T: Transcriber,
+    D: Deliverer,
+{
+    let ticket = daemon.stop_recording().unwrap();
+    daemon.complete_transcription(ticket.run()).unwrap()
 }

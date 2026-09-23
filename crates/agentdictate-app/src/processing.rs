@@ -1,0 +1,149 @@
+//! Transcription of one captured job, away from the daemon lock.
+
+use std::time::Instant;
+
+use agentdictate_core::{JobId, Settings};
+use agentdictate_runtime::{ExternalError, RecordingJob, Transcript, TranscriptionOutcome};
+
+use crate::live_transcription::{LIVE_TRANSCRIPTION_MODEL, LiveTranscription};
+
+/// Turns one captured job into text. The daemon keeps one transcriber and
+/// clones it for every job, whose transcription then runs without the daemon
+/// lock, so an implementation must never touch the database.
+pub trait Transcriber: Clone + Send + 'static {
+    /// Opens a live session that listens while `job` records, when the job
+    /// asked for one. Dropping the session cancels it.
+    fn open_session(&self, _job: &RecordingJob) -> Option<LiveTranscription> {
+        None
+    }
+
+    fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError>;
+
+    /// Follows saved settings: the API key, and the options of jobs recorded
+    /// before options were stored with them.
+    fn update_settings(&mut self, _settings: &Settings) {}
+}
+
+/// Everything one job's transcription needs, moved out from under the daemon
+/// lock. Only the daemon creates one, after the job's `transcribing`
+/// checkpoint, and each ticket yields exactly one completion.
+#[must_use]
+pub struct ProcessingTicket<T> {
+    job: RecordingJob,
+    /// Cloned when the job stopped, so settings saved meanwhile never change
+    /// the job's transcription.
+    transcriber: T,
+    session: Option<LiveTranscription>,
+}
+
+impl<T> std::fmt::Debug for ProcessingTicket<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessingTicket")
+            .field("job_id", &self.job.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Transcriber> ProcessingTicket<T> {
+    pub(crate) const fn new(
+        job: RecordingJob,
+        transcriber: T,
+        session: Option<LiveTranscription>,
+    ) -> Self {
+        Self {
+            job,
+            transcriber,
+            session,
+        }
+    }
+
+    #[must_use]
+    pub const fn job_id(&self) -> JobId {
+        self.job.id
+    }
+
+    /// Transcribes the job. A transcript an earlier attempt already stored is
+    /// reused without another paid request, and a live session's text is
+    /// preferred over transcribing the saved audio.
+    pub fn run(mut self) -> TranscriptionCompletion {
+        let started = Instant::now();
+        let outcome = self.outcome();
+        tracing::info!(
+            job_id = %self.job.id,
+            transcription_ms = started.elapsed().as_millis() as u64,
+            outcome = match &outcome {
+                TranscriptionOutcome::Text(_) => "text",
+                TranscriptionOutcome::NoSpeech => "no_speech",
+                TranscriptionOutcome::Failed { .. } => "failed",
+            },
+            "transcription finished"
+        );
+        TranscriptionCompletion {
+            job_id: self.job.id,
+            outcome,
+            finished_at: Instant::now(),
+        }
+    }
+
+    fn outcome(&mut self) -> TranscriptionOutcome {
+        if !self.job.raw_transcript.trim().is_empty() {
+            return TranscriptionOutcome::Text(Transcript {
+                text: self.job.raw_transcript.clone(),
+                model: self.job.transcription_model.clone(),
+            });
+        }
+        if let Some(session) = self.session.take() {
+            match session.finish() {
+                Ok(text) if !text.trim().is_empty() => {
+                    tracing::info!(
+                        job_id = %self.job.id,
+                        model = LIVE_TRANSCRIPTION_MODEL,
+                        "live transcription completed"
+                    );
+                    return TranscriptionOutcome::Text(Transcript {
+                        text,
+                        model: LIVE_TRANSCRIPTION_MODEL.to_owned(),
+                    });
+                }
+                Ok(_) => tracing::warn!(
+                    job_id = %self.job.id,
+                    "live transcription returned no text; transcribing the saved audio"
+                ),
+                Err(error) => tracing::warn!(
+                    job_id = %self.job.id,
+                    %error,
+                    "live transcription failed; transcribing the saved audio"
+                ),
+            }
+        }
+        match self.transcriber.transcribe(&self.job) {
+            Ok(transcript) => TranscriptionOutcome::Text(transcript),
+            Err(ExternalError::NoSpeech) => TranscriptionOutcome::NoSpeech,
+            Err(ExternalError::Failure { message }) => TranscriptionOutcome::Failed { message },
+        }
+    }
+}
+
+/// The result of one ticket, handed back to the daemon under its lock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranscriptionCompletion {
+    pub job_id: JobId,
+    pub outcome: TranscriptionOutcome,
+    pub finished_at: Instant,
+}
+
+impl TranscriptionCompletion {
+    /// A transcription that could not run at all, for example because its
+    /// thread panicked. The job fails and keeps its audio for Recovery.
+    #[must_use]
+    pub fn failed(job_id: JobId, message: impl Into<String>) -> Self {
+        Self {
+            job_id,
+            outcome: TranscriptionOutcome::Failed {
+                message: message.into(),
+            },
+            finished_at: Instant::now(),
+        }
+    }
+}

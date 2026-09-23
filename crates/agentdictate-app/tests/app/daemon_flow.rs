@@ -1,26 +1,30 @@
 use std::{
+    collections::VecDeque,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use agentdictate_app::{
-    AppPaths, CapturedRecording, Daemon, OverlayUpdate, RecordingController,
-    start_overlay_presenter,
+    AppPaths, CapturedRecording, Daemon, DaemonError, OverlayUpdate, RecordingController,
+    Transcriber, TranscriptionCompletion, start_overlay_presenter,
 };
 use agentdictate_core::{
-    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, Settings, WorkflowPhase,
+    HistoryPageRequest, HistorySnapshot, HotkeyReadiness, JobStage, ProcessingStage, Settings,
+    WorkflowPhase, parse_vocabulary,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryMethod, ExternalError, Recorder, RecordingJob, Runtime,
+    Transcript,
 };
 use rusqlite::params;
 use tempfile::tempdir;
 
-use super::support::{FailingStartRecorder, FixedTranscriber, InspectingRecorder};
+use super::support::{FailingStartRecorder, FixedTranscriber, InspectingRecorder, finish};
 
 struct FailingFinishRecorder;
 
@@ -61,16 +65,15 @@ impl RecordingController for FailingFinishRecorder {
 #[derive(Default)]
 struct SubmittedDelivery {
     attempts: usize,
+    methods: Vec<DeliveryMethod>,
 }
 
 #[test]
 fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_next_start() {
+    #[derive(Clone)]
     struct Empty;
-    impl agentdictate_runtime::Transcriber for Empty {
-        fn transcribe(
-            &mut self,
-            _: &RecordingJob,
-        ) -> Result<agentdictate_runtime::Transcript, ExternalError> {
+    impl Transcriber for Empty {
+        fn transcribe(&mut self, _: &RecordingJob) -> Result<Transcript, ExternalError> {
             Err(ExternalError::NoSpeech)
         }
     }
@@ -87,7 +90,7 @@ fn empty_dictation_finishes_without_delivery_history_or_recovery_and_allows_the_
         SubmittedDelivery::default(),
     );
     daemon.start_recording().unwrap();
-    let finished = daemon.stop_recording().unwrap();
+    let finished = finish(&mut daemon);
     assert_eq!(finished.stage, JobStage::NoSpeech);
     assert_eq!(daemon.snapshot().workflow.phase, WorkflowPhase::Ready);
     assert_eq!(daemon.snapshot().recoverable_count, 0);
@@ -105,12 +108,13 @@ impl Deliverer for SubmittedDelivery {
     fn deliver(
         &mut self,
         _job: &RecordingJob,
-        _: DeliveryMethod,
+        method: DeliveryMethod,
     ) -> Result<DeliveryDisposition, ExternalError> {
         self.attempts += 1;
+        self.methods.push(method);
         Ok(DeliveryDisposition::Submitted {
             copied_to_clipboard: true,
-            paste_triggered: true,
+            paste_triggered: method == DeliveryMethod::Paste,
         })
     }
 }
@@ -186,7 +190,7 @@ fn recording_flag_is_set_only_while_a_recording_starts_or_runs() {
 
     daemon.start_recording().unwrap();
     assert!(recording.load(Ordering::Acquire));
-    daemon.stop_recording().unwrap();
+    finish(&mut daemon);
     assert!(!recording.load(Ordering::Acquire));
 }
 
@@ -219,7 +223,7 @@ fn daemon_checkpoints_audio_before_capture_and_transcript_before_delivery() {
     assert_eq!(daemon.snapshot().recoverable_count, 0);
     assert!(daemon.workspace_snapshot().unwrap().recoveries.is_empty());
 
-    let delivered = daemon.stop_recording().unwrap();
+    let delivered = finish(&mut daemon);
 
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert_eq!(delivered.raw_transcript, "Final transcript.");
@@ -280,7 +284,7 @@ fn daemon_waits_for_an_unconfirmed_overlay_to_exit_before_delivery() {
     daemon.set_overlay_controller(overlay);
 
     let started = daemon.start_recording().unwrap();
-    let delivered = daemon.stop_recording().unwrap();
+    let delivered = finish(&mut daemon);
 
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert!(daemon.deliverer().delivered_after_exit);
@@ -438,13 +442,14 @@ fn recovery_retries_copy_the_text_and_never_paste_into_the_focused_window() {
         PasteFailsCopyWorks::default(),
     );
     daemon.start_recording().unwrap();
-    let unpasted = daemon.stop_recording().unwrap();
+    let unpasted = finish(&mut daemon);
     assert_eq!(unpasted.stage, JobStage::ReadyToDeliver);
     let interrupted = daemon.start_recording().unwrap();
     daemon.recorder_exited(interrupted.id).unwrap();
 
     let copied = daemon.retry_delivery(unpasted.id).unwrap();
-    let transcribed = daemon.retry_transcription(interrupted.id).unwrap();
+    let ticket = daemon.retry_transcription(interrupted.id).unwrap();
+    let transcribed = daemon.complete_transcription(ticket.run()).unwrap();
 
     assert_eq!(
         daemon.deliverer().methods,
@@ -494,7 +499,8 @@ fn failure_after_transcription_keeps_the_raw_transcript_in_recovery_and_the_next
         )
         .unwrap();
 
-    let error = daemon.stop_recording().unwrap_err();
+    let ticket = daemon.stop_recording().unwrap();
+    let error = daemon.complete_transcription(ticket.run()).unwrap_err();
 
     assert!(error.to_string().contains("ready checkpoint unavailable"));
     assert_eq!(daemon.deliverer().attempts, 0);
@@ -545,7 +551,7 @@ fn deleting_an_older_recovery_item_while_recording_keeps_the_recording_stoppable
         daemon.snapshot().workflow.phase,
         WorkflowPhase::Recording { job_id } if job_id == recording.id
     ));
-    let delivered = daemon.stop_recording().unwrap();
+    let delivered = finish(&mut daemon);
     assert_eq!(delivered.id, recording.id);
     assert_eq!(delivered.stage, JobStage::Delivered);
     // Once for the older recording, once for the stop.
@@ -860,6 +866,296 @@ fn workspace_history_is_bounded_even_when_the_archive_is_large() {
             && entry.preview_text.ends_with('…')
             && entry.text == full_body
     }));
+}
+
+/// Replies with its script in order, counting calls across clones, and
+/// reports the API key it was configured with when the job started.
+#[derive(Clone, Default)]
+struct ScriptedTranscriber {
+    replies: Arc<Mutex<VecDeque<Result<String, ExternalError>>>>,
+    calls: Arc<AtomicUsize>,
+    api_key: String,
+}
+
+impl ScriptedTranscriber {
+    fn replying(replies: impl IntoIterator<Item = Result<String, ExternalError>>) -> Self {
+        Self {
+            replies: Arc::new(Mutex::new(replies.into_iter().collect())),
+            ..Self::default()
+        }
+    }
+}
+
+impl Transcriber for ScriptedTranscriber {
+    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let reply = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Ok(format!("versel, sent with key {}.", self.api_key)));
+        reply.map(|text| Transcript {
+            text,
+            model: "gpt-transcribe".into(),
+        })
+    }
+
+    fn update_settings(&mut self, settings: &Settings) {
+        self.api_key.clone_from(&settings.openai_api_key);
+    }
+}
+
+fn daemon_with<T: Transcriber>(
+    paths: &AppPaths,
+    settings: Settings,
+    transcriber: T,
+) -> Daemon<PreservingRecorder, T, SubmittedDelivery> {
+    std::fs::create_dir_all(paths.database_file.parent().unwrap()).unwrap();
+    Daemon::new(
+        Runtime::open(&paths.database_file).unwrap(),
+        settings,
+        paths.clone(),
+        PreservingRecorder::default(),
+        transcriber,
+        SubmittedDelivery::default(),
+    )
+}
+
+#[test]
+fn stop_checkpoints_transcribing_and_returns_before_any_transcription() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let transcriber = ScriptedTranscriber::default();
+    let calls = Arc::clone(&transcriber.calls);
+    let mut daemon = daemon_with(&paths, Settings::default(), transcriber);
+    let started = daemon.start_recording().unwrap();
+
+    let ticket = daemon.stop_recording().unwrap();
+
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    assert_eq!(
+        observer.job(started.id).unwrap().unwrap().stage,
+        JobStage::Transcribing
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        daemon.phase(),
+        WorkflowPhase::Processing {
+            job_id: started.id,
+            stage: ProcessingStage::Transcribing,
+        }
+    );
+    let delivered = daemon.complete_transcription(ticket.run()).unwrap();
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::Paste]);
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
+#[test]
+fn start_during_processing_is_rejected_as_busy_without_a_new_job() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+
+    let error = daemon.start_recording().unwrap_err();
+
+    assert!(matches!(error, DaemonError::Busy { .. }));
+    let jobs: i64 = rusqlite::Connection::open(&paths.database_file)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM dictation_jobs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(jobs, 1);
+    daemon.complete_transcription(ticket.run()).unwrap();
+    daemon.start_recording().unwrap();
+}
+
+#[test]
+fn settings_saved_during_processing_do_not_change_the_in_flight_job() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let recorded_with = Settings {
+        openai_api_key: "first".into(),
+        vocabulary: parse_vocabulary("Vercel = versel").unwrap(),
+        ..Settings::default()
+    };
+    let mut transcriber = ScriptedTranscriber::default();
+    transcriber.update_settings(&recorded_with);
+    let mut daemon = daemon_with(&paths, recorded_with, transcriber);
+    daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+    let saved_meanwhile = Settings {
+        openai_api_key: "second".into(),
+        vocabulary: parse_vocabulary("Versailles = versel").unwrap(),
+        ..Settings::default()
+    };
+    daemon.transcriber_mut().update_settings(&saved_meanwhile);
+    daemon.update_settings(saved_meanwhile);
+
+    let delivered = daemon.complete_transcription(ticket.run()).unwrap();
+
+    assert_eq!(delivered.final_text, "Vercel, sent with key first.");
+    daemon.start_recording().unwrap();
+    assert_eq!(
+        finish(&mut daemon).final_text,
+        "Versailles, sent with key second."
+    );
+}
+
+#[test]
+fn late_result_for_a_job_that_left_transcribing_is_dropped() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let started = daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+    let connection = rusqlite::Connection::open(&paths.database_file).unwrap();
+    // As a restart's reconciliation would.
+    connection
+        .execute(
+            "UPDATE dictation_jobs SET state = 'interrupted', stage = 'interrupted'",
+            [],
+        )
+        .unwrap();
+
+    let error = daemon.complete_transcription(ticket.run()).unwrap_err();
+
+    assert!(matches!(error, DaemonError::StaleResult { job_id } if job_id == started.id));
+    assert_eq!(daemon.deliverer().attempts, 0);
+    let observer = Runtime::open_observer(&paths.database_file).unwrap();
+    let job = observer.job(started.id).unwrap().unwrap();
+    assert_eq!(job.stage, JobStage::Interrupted);
+    assert!(job.raw_transcript.is_empty());
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
+#[test]
+fn result_after_the_stale_paste_limit_is_copied_not_pasted() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+    let late = TranscriptionCompletion {
+        finished_at: Instant::now() + Duration::from_secs(9),
+        ..ticket.run()
+    };
+
+    let delivered = daemon.complete_transcription(late).unwrap();
+
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::CopyOnly]);
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    assert!(!delivered.paste_triggered);
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
+#[test]
+fn transcription_retry_copies_only_and_blocks_a_concurrent_start() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let transcriber = ScriptedTranscriber::replying([
+        Err(ExternalError::new("OpenAI is unreachable")),
+        Ok("Second attempt.".into()),
+    ]);
+    let mut daemon = daemon_with(&paths, Settings::default(), transcriber);
+    daemon.start_recording().unwrap();
+    let failed = finish(&mut daemon);
+    assert_eq!(failed.stage, JobStage::Failed);
+
+    let ticket = daemon.retry_transcription(failed.id).unwrap();
+
+    assert!(matches!(
+        daemon.phase(),
+        WorkflowPhase::Processing { job_id, .. } if job_id == failed.id
+    ));
+    assert!(matches!(
+        daemon.start_recording(),
+        Err(DaemonError::Busy { .. })
+    ));
+    let copied = daemon.complete_transcription(ticket.run()).unwrap();
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::CopyOnly]);
+    assert_eq!(copied.stage, JobStage::Delivered);
+    assert!(!copied.paste_triggered);
+    assert_eq!(daemon.phase(), WorkflowPhase::Ready);
+}
+
+#[test]
+fn retrying_a_job_with_a_stored_transcript_never_transcribes_again() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let transcriber = ScriptedTranscriber::replying([Ok("Paid for once.".into())]);
+    let calls = Arc::clone(&transcriber.calls);
+    let mut daemon = daemon_with(&paths, Settings::default(), transcriber);
+    daemon.start_recording().unwrap();
+    let connection = rusqlite::Connection::open(&paths.database_file).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_ready BEFORE UPDATE OF stage ON dictation_jobs
+             WHEN NEW.stage = 'ready_to_deliver'
+             BEGIN SELECT RAISE(FAIL, 'ready checkpoint unavailable'); END;",
+        )
+        .unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+    let job_id = ticket.job_id();
+    assert!(daemon.complete_transcription(ticket.run()).is_err());
+    connection
+        .execute_batch("DROP TRIGGER reject_ready")
+        .unwrap();
+
+    let ticket = daemon.retry_transcription(job_id).unwrap();
+    let copied = daemon.complete_transcription(ticket.run()).unwrap();
+
+    assert_eq!(copied.final_text, "Paid for once.");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn panicking_transcription_fails_the_job_and_frees_the_daemon() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+    let job_id = ticket.job_id();
+    drop(ticket);
+
+    let failed = daemon
+        .complete_transcription(TranscriptionCompletion::failed(
+            job_id,
+            "transcription stopped unexpectedly; audio is saved",
+        ))
+        .unwrap();
+
+    assert_eq!(failed.stage, JobStage::Failed);
+    assert!(failed.audio_path.is_file());
+    assert_eq!(
+        daemon.workspace_snapshot().unwrap().recoveries[0].job_id,
+        job_id
+    );
+    daemon.start_recording().unwrap();
+}
+
+#[test]
+fn deleting_another_recovery_during_processing_keeps_the_processing_job() {
+    let directory = tempdir().unwrap();
+    let paths = app_paths(directory.path());
+    let mut daemon = daemon_with(&paths, Settings::default(), FixedTranscriber);
+    let older = daemon.start_recording().unwrap();
+    daemon.recorder_exited(older.id).unwrap();
+    let processing = daemon.start_recording().unwrap();
+    let ticket = daemon.stop_recording().unwrap();
+
+    daemon.delete_recovery(older.id).unwrap();
+
+    assert!(matches!(
+        daemon.phase(),
+        WorkflowPhase::Processing { job_id, .. } if job_id == processing.id
+    ));
+    let delivered = daemon.complete_transcription(ticket.run()).unwrap();
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(daemon.deliverer().methods, [DeliveryMethod::Paste]);
 }
 
 fn app_paths(root: &Path) -> AppPaths {

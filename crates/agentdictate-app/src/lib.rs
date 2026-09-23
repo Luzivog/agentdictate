@@ -11,6 +11,7 @@ mod native_access;
 mod openai;
 mod overlay_process;
 mod process;
+mod processing;
 mod startup;
 mod system;
 mod tray;
@@ -22,6 +23,7 @@ pub use diagnostics::init_file_logging;
 pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
+pub use live_transcription::{LIVE_TRANSCRIPTION_MODEL, LiveTranscription};
 pub use native_access::{NativeAccessError, grant_native_access};
 pub use openai::{
     ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
@@ -34,6 +36,7 @@ pub use overlay_process::{
     is_overlay_helper_argument, start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
 pub use process::{AgentProcess, HotkeyControl, ProductionDaemon, command_for_hotkey};
+pub use processing::{ProcessingTicket, Transcriber, TranscriptionCompletion};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
 };

@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use agentdictate_core::{HistoryPageRequest, HistorySnapshot, JobId};
-use agentdictate_runtime::{ExternalError, Recorder, RecordingJob, RecordingRequest, Runtime};
+use agentdictate_runtime::{
+    Deliverer, DeliveryGate, DeliveryMethod, ExternalError, Recorder, RecordingJob,
+    RecordingRequest, Runtime, RuntimeError, StoredTranscript, Transcript, TranscriptionOutcome,
+};
 use chrono::{SecondsFormat, TimeDelta, TimeZone, Utc};
 use rusqlite::{Connection, params};
 
@@ -57,6 +60,31 @@ pub(crate) fn insert_job(
         )
         .unwrap();
     id
+}
+
+/// `text` as a transcript from the daemon's model.
+pub(crate) fn transcript(text: &str) -> TranscriptionOutcome {
+    TranscriptionOutcome::Text(Transcript {
+        text: text.to_owned(),
+        model: "gpt-transcribe".to_owned(),
+    })
+}
+
+/// The daemon's processing steps for a captured job: the `transcribing`
+/// checkpoint, `text` as its transcript, then one paste.
+pub(crate) fn transcribe_and_deliver(
+    runtime: &mut Runtime,
+    id: JobId,
+    text: &str,
+    gate: &mut impl DeliveryGate,
+    deliverer: &mut impl Deliverer,
+) -> Result<RecordingJob, RuntimeError> {
+    runtime.begin_transcription(id)?;
+    let StoredTranscript::Ready(ready) = runtime.store_transcript(id, transcript(text), None)?
+    else {
+        panic!("a transcribing job stores its text as ready to deliver");
+    };
+    runtime.deliver_ready(ready, DeliveryMethod::Paste, gate, deliverer)
 }
 
 /// Every History row the History page lists, newest first.

@@ -1,5 +1,8 @@
 //! Explicit replay tool. It never captures a microphone or delivers text to another application.
-use agentdictate_app::{AppPaths, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest};
+use agentdictate_app::{
+    AppPaths, LIVE_TRANSCRIPTION_MODEL, LiveTranscription, ReqwestOpenAiTransport, SpeechTransport,
+    TranscriptionRequest,
+};
 use agentdictate_core::{DictationOptions, Settings, normalize_vocabulary};
 use serde::Deserialize;
 use serde_json::json;
@@ -75,14 +78,17 @@ fn main() -> anyhow::Result<()> {
     for case in parsed {
         let start = Instant::now();
         let mut stop_ms = None;
+        let mut actual_model = None;
         let result = match mode.as_str() {
             "live" => {
                 let audio = case
                     .audio
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("case {} has no audio path", case.id))?;
-                let (result, elapsed) = replay_live(&mut transport, audio, &settings, &options)?;
+                let (result, elapsed, model) =
+                    replay_live(&mut transport, audio, &settings, &options)?;
                 stop_ms = Some(elapsed);
+                actual_model = Some(model);
                 result
             }
             "speech" => {
@@ -90,6 +96,7 @@ fn main() -> anyhow::Result<()> {
                     .audio
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("case {} has no audio path", case.id))?;
+                actual_model = Some(settings.transcription_model.clone());
                 transport.transcribe_audio(TranscriptionRequest {
                     keywords: &keywords,
                     audio_path: audio,
@@ -121,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         writeln!(
             file,
             "{}",
-            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":transport.actual_model(),"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
+            json!({"id":case.id,"mode":mode,"model":&settings.transcription_model,"elapsed_ms":elapsed_ms,"stop_to_final_ms":stop_ms,"word_error_rate":case.expected.as_ref().map(|r| word_error_rate(r, &candidate)),"actual_speech_model":actual_model,"candidate":candidate,"delivered":normalized.text,"transport_error":error,"protected_ok":protected_ok,"exact_reference":exact,"reference_verified":case.reference_verified,"options":options})
         )?;
     }
     println!(
@@ -159,13 +166,19 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
     previous[hypothesis.len()] as f64 / reference.len().max(1) as f64
 }
 
-/// Pace a supplied WAV through the production streaming adapter without opening a microphone.
+/// Pace a supplied WAV through the production streaming adapter without
+/// opening a microphone. Returns the text, the stop-to-final time, and the
+/// model that produced the text.
 fn replay_live(
     transport: &mut ReqwestOpenAiTransport,
     audio: &std::path::Path,
     settings: &Settings,
     options: &DictationOptions,
-) -> anyhow::Result<(Result<String, agentdictate_runtime::ExternalError>, u128)> {
+) -> anyhow::Result<(
+    Result<String, agentdictate_runtime::ExternalError>,
+    u128,
+    String,
+)> {
     use std::io::{Seek, SeekFrom};
     let decoded = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -223,7 +236,7 @@ fn replay_live(
         delivery_status: agentdictate_runtime::DeliveryStatus::NotAttempted,
         error_message: None,
     };
-    transport.begin_recording(&job, &live_options);
+    let live = transport.open_live(&job, &live_options);
     let started = Instant::now();
     for (index, chunk) in pcm.chunks(3200).enumerate() {
         writer.write_all(chunk)?;
@@ -239,6 +252,17 @@ fn replay_live(
     writer.write_all(&(pcm.len() as u32).to_le_bytes())?;
     writer.flush()?;
     let stopped = Instant::now();
+    match live.map(LiveTranscription::finish) {
+        Some(Ok(text)) => {
+            return Ok((
+                Ok(text),
+                stopped.elapsed().as_millis(),
+                LIVE_TRANSCRIPTION_MODEL.into(),
+            ));
+        }
+        Some(Err(error)) => eprintln!("live transcription failed; transcribing the file: {error}"),
+        None => eprintln!("live transcription did not start; transcribing the file"),
+    }
     let keywords = options.keywords();
     let result = transport.transcribe_audio(TranscriptionRequest {
         keywords: &keywords,
@@ -248,5 +272,9 @@ fn replay_live(
         prompt: &options.context,
         duration_seconds: job.duration_seconds,
     });
-    Ok((result, stopped.elapsed().as_millis()))
+    Ok((
+        result,
+        stopped.elapsed().as_millis(),
+        settings.transcription_model.clone(),
+    ))
 }

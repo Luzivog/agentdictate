@@ -138,13 +138,31 @@ pub struct Transcript {
     pub model: String,
 }
 
-/// Turns a captured recording into text. `begin_recording` and
-/// `cancel_recording` bracket a recording for transcribers that listen while
-/// it is captured.
-pub trait Transcriber {
-    fn begin_recording(&mut self, _job: &RecordingJob) {}
-    fn cancel_recording(&mut self, _id: JobId) {}
-    fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError>;
+/// What one transcription attempt produced. It is built away from the
+/// database, and `Runtime::store_transcript` records it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TranscriptionOutcome {
+    Text(Transcript),
+    /// The audio was quiet: there is nothing to deliver or recover.
+    NoSpeech,
+    /// The attempt failed; the job keeps its audio for Recovery.
+    Failed {
+        message: String,
+    },
+}
+
+/// The job as `Runtime::store_transcript` left it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoredTranscript {
+    /// Ready to deliver, with delivery not yet attempted.
+    Ready(RecordingJob),
+    /// Removed from the in-flight jobs; its audio can go.
+    NoSpeech(RecordingJob),
+    /// Failed and kept for Recovery.
+    Failed(RecordingJob),
+    /// The job had already left `transcribing` (it was deleted, or a restart
+    /// reconciled it), so nothing was written.
+    Stale,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

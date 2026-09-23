@@ -4,25 +4,16 @@ use agentdictate_core::{DictationOptions, Settings, parse_vocabulary};
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,
     DeliveryStatus, ExternalError, HeadlessDeliveryGate, JobId, JobStage, Recorder, RecordingJob,
-    Runtime, RuntimeError, Transcriber, Transcript,
+    Runtime, RuntimeError, StoredTranscript, Transcript, TranscriptionOutcome,
 };
 use tempfile::TempDir;
 
-use crate::support::request;
+use crate::support::{request, transcribe_and_deliver, transcript};
 
 const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
 #[test]
 fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
-    struct LiveTranscriber;
-    impl Transcriber for LiveTranscriber {
-        fn transcribe(&mut self, _: &RecordingJob) -> Result<Transcript, ExternalError> {
-            Ok(Transcript {
-                text: "Do not push.".into(),
-                model: "gpt-live-transcribe".into(),
-            })
-        }
-    }
     let directory = TempDir::new().unwrap();
     let db = directory.path().join("history.sqlite3");
     let mut runtime = Runtime::open(&db).unwrap();
@@ -38,6 +29,7 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
         .start_recording(request, &mut crate::support::ReadyRecorder)
         .unwrap();
     runtime.capture_recording(job.id, 2.0).unwrap();
+    runtime.begin_transcription(job.id).unwrap();
     rusqlite::Connection::open(&db)
         .unwrap()
         .execute_batch(
@@ -51,21 +43,15 @@ fn raw_checkpoint_and_options_survive_failure_and_database_reopen() {
             "#,
         )
         .unwrap();
-    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
-    assert!(
-        runtime
-            .process_captured(
-                job.id,
-                &mut LiveTranscriber,
-                &mut HeadlessDeliveryGate,
-                &mut deliverer
-            )
-            .is_err()
-    );
-    assert_eq!(deliverer.attempts, 0);
+    let live = TranscriptionOutcome::Text(Transcript {
+        text: "Do not push.".into(),
+        model: "gpt-live-transcribe".into(),
+    });
+    assert!(runtime.store_transcript(job.id, live, None).is_err());
     drop(runtime);
     let runtime = Runtime::open(&db).unwrap();
     let recovered = runtime.job(job.id).unwrap().unwrap();
+    assert_eq!(recovered.stage, JobStage::Failed);
     assert_eq!(recovered.raw_transcript, "Do not push.");
     assert_eq!(recovered.transcription_model, "gpt-live-transcribe");
     assert_eq!(recovered.options, Some(options));
@@ -121,60 +107,6 @@ impl Deliverer for AmbiguousDeliverer {
         self.attempts += 1;
         Ok(DeliveryDisposition::Ambiguous {
             copied_to_clipboard: true,
-        })
-    }
-}
-
-struct FixedTranscriber;
-
-impl Transcriber for FixedTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        Ok(Transcript {
-            text: "Durable final words.".to_owned(),
-            model: TRANSCRIPTION_MODEL.to_owned(),
-        })
-    }
-}
-
-struct InspectingTranscriber {
-    database_path: PathBuf,
-    saw_durable_transcribing_job: bool,
-}
-
-impl Transcriber for InspectingTranscriber {
-    fn transcribe(&mut self, job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        let reader = Runtime::open_observer(&self.database_path)?;
-        self.saw_durable_transcribing_job = reader
-            .job(job.id)?
-            .is_some_and(|persisted| persisted.stage == JobStage::Transcribing);
-        Ok(Transcript {
-            text: "Network result.".to_owned(),
-            model: TRANSCRIPTION_MODEL.to_owned(),
-        })
-    }
-}
-
-struct CountingTranscriber {
-    attempts: usize,
-}
-
-struct FailingTranscriber {
-    attempts: usize,
-}
-
-impl Transcriber for FailingTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        self.attempts += 1;
-        Err(ExternalError::new("temporary transcription failure"))
-    }
-}
-
-impl Transcriber for CountingTranscriber {
-    fn transcribe(&mut self, _job: &RecordingJob) -> Result<Transcript, ExternalError> {
-        self.attempts += 1;
-        Ok(Transcript {
-            text: "Only once.".to_owned(),
-            model: TRANSCRIPTION_MODEL.to_owned(),
         })
     }
 }
@@ -444,7 +376,6 @@ fn transcript_is_durable_before_delivery_is_attempted() {
         )
         .unwrap();
     runtime.capture_recording(job.id, 31.0).unwrap();
-    let mut transcriber = FixedTranscriber;
     let mut deliverer = InspectingDeliverer {
         database_path: database_path.clone(),
         saw_persisted_transcript: false,
@@ -455,9 +386,14 @@ fn transcript_is_durable_before_delivery_is_attempted() {
         saw_ready_without_attempt: false,
     };
 
-    let delivered = runtime
-        .process_captured(job.id, &mut transcriber, &mut delivery_gate, &mut deliverer)
-        .unwrap();
+    let delivered = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut delivery_gate,
+        &mut deliverer,
+    )
+    .unwrap();
 
     assert!(delivery_gate.saw_ready_without_attempt);
     assert!(deliverer.saw_persisted_transcript);
@@ -507,14 +443,14 @@ fn delivery_gate_failure_is_safe_to_retry_and_never_calls_the_deliverer() {
     runtime.capture_recording(job.id, 6.0).unwrap();
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
-    let error = runtime
-        .process_captured(
-            job.id,
-            &mut FixedTranscriber,
-            &mut FailingDeliveryGate,
-            &mut deliverer,
-        )
-        .unwrap_err();
+    let error = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut FailingDeliveryGate,
+        &mut deliverer,
+    )
+    .unwrap_err();
 
     assert!(matches!(error, RuntimeError::DeliveryBlocked(_)));
     assert_eq!(deliverer.attempts, 0);
@@ -536,40 +472,163 @@ fn delivery_gate_failure_is_safe_to_retry_and_never_calls_the_deliverer() {
 }
 
 #[test]
-fn transcribing_stage_is_durable_before_the_network_adapter_runs() {
+fn begin_transcription_is_durable_before_the_ticket_leaves_the_lock() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path: database_path.clone(),
-        saw_durable_starting_job: false,
-    };
     let job = runtime
         .start_recording(
             request(
                 &directory.path().join("recordings/network.wav"),
                 TRANSCRIPTION_MODEL,
             ),
-            &mut recorder,
+            &mut crate::support::ReadyRecorder,
         )
         .unwrap();
     runtime.capture_recording(job.id, 4.0).unwrap();
-    let mut transcriber = InspectingTranscriber {
-        database_path,
-        saw_durable_transcribing_job: false,
-    };
-    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
+    runtime.begin_transcription(job.id).unwrap();
+
+    let observer = Runtime::open_observer(&database_path).unwrap();
+    assert_eq!(
+        observer.job(job.id).unwrap().unwrap().stage,
+        JobStage::Transcribing
+    );
+    assert!(runtime.begin_transcription(job.id).is_err());
+}
+
+#[test]
+fn transcript_is_accepted_only_while_the_job_is_transcribing() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let start = |runtime: &mut Runtime, name: &str| {
+        let job = runtime
+            .start_recording(
+                request(&directory.path().join(name), TRANSCRIPTION_MODEL),
+                &mut crate::support::ReadyRecorder,
+            )
+            .unwrap();
+        runtime.capture_recording(job.id, 3.0).unwrap();
+        runtime.begin_transcription(job.id).unwrap();
+        job.id
+    };
+    let reconciled = start(&mut runtime, "reconciled.wav");
+    let deleted = start(&mut runtime, "deleted.wav");
+    let delivered = start(&mut runtime, "delivered.wav");
+    let StoredTranscript::Ready(ready) = runtime
+        .store_transcript(delivered, transcript("First words."), None)
+        .unwrap()
+    else {
+        panic!("a transcribing job accepts its transcript");
+    };
     runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
+        .deliver_ready(
+            ready,
+            DeliveryMethod::Paste,
             &mut HeadlessDeliveryGate,
-            &mut deliverer,
+            &mut CountingSubmittedDeliverer { attempts: 0 },
+        )
+        .unwrap();
+    drop(runtime);
+    // A restart reconciles the other two transcribing jobs to interrupted.
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    runtime.delete_recovery(deleted).unwrap();
+    let before = runtime.job(reconciled).unwrap().unwrap();
+
+    for id in [reconciled, deleted, delivered] {
+        for outcome in [
+            transcript("Late words."),
+            TranscriptionOutcome::NoSpeech,
+            TranscriptionOutcome::Failed {
+                message: "late failure".into(),
+            },
+        ] {
+            assert_eq!(
+                runtime.store_transcript(id, outcome, None).unwrap(),
+                StoredTranscript::Stale
+            );
+        }
+    }
+
+    assert_eq!(runtime.job(reconciled).unwrap().unwrap(), before);
+    assert!(runtime.job(deleted).unwrap().is_none());
+    let delivered = runtime.job(delivered).unwrap().unwrap();
+    assert_eq!(delivered.stage, JobStage::Delivered);
+    assert_eq!(delivered.final_text, "First words.");
+}
+
+#[test]
+fn transcribing_job_left_by_a_crash_is_interrupted_and_retryable() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let job = runtime
+        .start_recording(
+            request(
+                &directory.path().join("recordings/crash.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
+            &mut crate::support::ReadyRecorder,
+        )
+        .unwrap();
+    runtime.capture_recording(job.id, 9.0).unwrap();
+    runtime.begin_transcription(job.id).unwrap();
+    drop(runtime);
+
+    let mut restarted = Runtime::open(&database_path).unwrap();
+
+    assert_eq!(
+        restarted.recoveries().unwrap()[0].stage,
+        JobStage::Interrupted
+    );
+    let retrying = restarted.prepare_transcription_retry(job.id).unwrap();
+    assert_eq!(retrying.stage, JobStage::Transcribing);
+}
+
+#[test]
+fn cancelled_result_is_a_recoverable_ready_transcript() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let job = runtime
+        .start_recording(
+            request(
+                &directory.path().join("recordings/cancelled.wav"),
+                TRANSCRIPTION_MODEL,
+            ),
+            &mut crate::support::ReadyRecorder,
+        )
+        .unwrap();
+    runtime.capture_recording(job.id, 9.0).unwrap();
+    runtime.begin_transcription(job.id).unwrap();
+
+    let stored = runtime
+        .store_transcript(
+            job.id,
+            transcript("Kept for later."),
+            Some("Cancelled before paste"),
         )
         .unwrap();
 
-    assert!(transcriber.saw_durable_transcribing_job);
+    assert!(matches!(stored, StoredTranscript::Ready(_)));
+    let recovery = runtime.recoveries().unwrap().remove(0);
+    assert_eq!(recovery.stage, JobStage::ReadyToDeliver);
+    assert_eq!(recovery.final_text, "Kept for later.");
+    assert_eq!(
+        recovery.error_message.as_deref(),
+        Some("Cancelled before paste")
+    );
+    let copied = runtime.prepare_delivery_retry(job.id).unwrap();
+    let copied = runtime
+        .deliver_ready(
+            copied,
+            DeliveryMethod::CopyOnly,
+            &mut HeadlessDeliveryGate,
+            &mut CountingSubmittedDeliverer { attempts: 0 },
+        )
+        .unwrap();
+    assert_eq!(copied.stage, JobStage::Delivered);
 }
 
 #[test]
@@ -591,17 +650,16 @@ fn ambiguous_delivery_is_not_retried_after_restart() {
         )
         .unwrap();
     runtime.capture_recording(job.id, 8.0).unwrap();
-    let mut transcriber = FixedTranscriber;
     let mut deliverer = AmbiguousDeliverer { attempts: 0 };
 
-    let ambiguous = runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
-        .unwrap();
+    let ambiguous = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut HeadlessDeliveryGate,
+        &mut deliverer,
+    )
+    .unwrap();
     drop(runtime);
     let restarted = Runtime::open(&database_path).unwrap();
 
@@ -643,43 +701,43 @@ fn duplicate_processing_signal_cannot_transcribe_or_paste_a_delivered_job_again(
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path,
-        saw_durable_starting_job: false,
-    };
     let job = runtime
         .start_recording(
             request(
                 &directory.path().join("recordings/once.wav"),
                 TRANSCRIPTION_MODEL,
             ),
-            &mut recorder,
+            &mut crate::support::ReadyRecorder,
         )
         .unwrap();
     runtime.capture_recording(job.id, 2.0).unwrap();
-    let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
-    runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
-        .unwrap();
+    transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Only once.",
+        &mut HeadlessDeliveryGate,
+        &mut deliverer,
+    )
+    .unwrap();
 
     assert!(runtime.capture_recording(job.id, 2.0).is_err());
     assert!(
-        runtime
-            .process_captured(
-                job.id,
-                &mut transcriber,
-                &mut HeadlessDeliveryGate,
-                &mut deliverer,
-            )
-            .is_err()
+        transcribe_and_deliver(
+            &mut runtime,
+            job.id,
+            "Only once.",
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
+        .is_err()
     );
-    assert_eq!(transcriber.attempts, 1);
+    assert_eq!(
+        runtime
+            .store_transcript(job.id, transcript("Again."), None)
+            .unwrap(),
+        StoredTranscript::Stale
+    );
     assert_eq!(deliverer.attempts, 1);
     assert_eq!(
         runtime.job(job.id).unwrap().unwrap().stage,
@@ -791,57 +849,68 @@ fn captured_checkpoint_can_be_retried_after_restart() {
     let mut runtime = Runtime::open(&database_path).unwrap();
     let restarted = runtime.job(job.id).unwrap().unwrap();
     assert_eq!(restarted.stage, JobStage::Captured);
-    let mut transcriber = CountingTranscriber { attempts: 0 };
-    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime
-        .retry_transcription(job.id, &mut transcriber, &mut deliverer)
-        .unwrap();
+    let retrying = runtime.prepare_transcription_retry(job.id).unwrap();
 
-    assert_eq!(delivered.stage, JobStage::Delivered);
-    assert_eq!(transcriber.attempts, 1);
-    assert_eq!(deliverer.attempts, 1);
+    assert_eq!(retrying.stage, JobStage::Transcribing);
+    assert!(matches!(
+        runtime
+            .store_transcript(job.id, transcript("Recovered words."), None)
+            .unwrap(),
+        StoredTranscript::Ready(_)
+    ));
 }
 
 #[test]
-fn failed_transcription_can_be_retried_explicitly_without_a_duplicate_first_attempt() {
+fn failed_transcription_can_be_retried_explicitly() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
-    let mut recorder = InspectingRecorder {
-        database_path,
-        saw_durable_starting_job: false,
-    };
     let job = runtime
         .start_recording(
             request(
                 &directory.path().join("recordings/retry.wav"),
                 TRANSCRIPTION_MODEL,
             ),
-            &mut recorder,
+            &mut crate::support::ReadyRecorder,
         )
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
-    let mut failing = FailingTranscriber { attempts: 0 };
-    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
-    assert!(
-        runtime
-            .process_captured(
-                job.id,
-                &mut failing,
-                &mut HeadlessDeliveryGate,
-                &mut deliverer,
-            )
-            .is_err()
+    runtime.begin_transcription(job.id).unwrap();
+    let StoredTranscript::Failed(failed) = runtime
+        .store_transcript(
+            job.id,
+            TranscriptionOutcome::Failed {
+                message: "temporary transcription failure".into(),
+            },
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("a failed attempt fails the job");
+    };
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("temporary transcription failure")
     );
-    let mut retry = CountingTranscriber { attempts: 0 };
 
+    runtime.prepare_transcription_retry(job.id).unwrap();
+    let StoredTranscript::Ready(ready) = runtime
+        .store_transcript(job.id, transcript("Only once."), None)
+        .unwrap()
+    else {
+        panic!("the retried job accepts its transcript");
+    };
+    let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
     let delivered = runtime
-        .retry_transcription(job.id, &mut retry, &mut deliverer)
+        .deliver_ready(
+            ready,
+            DeliveryMethod::CopyOnly,
+            &mut HeadlessDeliveryGate,
+            &mut deliverer,
+        )
         .unwrap();
 
-    assert_eq!(failing.attempts, 1);
-    assert_eq!(retry.attempts, 1);
     assert_eq!(deliverer.attempts, 1);
     assert_eq!(delivered.stage, JobStage::Delivered);
 }
@@ -865,21 +934,19 @@ fn delivery_retry_is_explicit_and_reuses_the_durable_transcript() {
         )
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
-    let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut ambiguous = AmbiguousDeliverer { attempts: 0 };
-    runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut ambiguous,
-        )
-        .unwrap();
+    transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Only once.",
+        &mut HeadlessDeliveryGate,
+        &mut ambiguous,
+    )
+    .unwrap();
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
+    let delivered = copy_again(&mut runtime, job.id, &mut submitted).unwrap();
 
-    assert_eq!(transcriber.attempts, 1);
     assert_eq!(ambiguous.attempts, 1);
     assert_eq!(submitted.attempts, 1);
     assert_eq!(delivered.stage, JobStage::Delivered);
@@ -915,14 +982,14 @@ fn delivery_that_fails_before_any_paste_stays_ready_and_can_be_retried() {
         .unwrap();
     runtime.capture_recording(job.id, 2.0).unwrap();
 
-    let not_sent = runtime
-        .process_captured(
-            job.id,
-            &mut FixedTranscriber,
-            &mut HeadlessDeliveryGate,
-            &mut NotSentDeliverer,
-        )
-        .unwrap();
+    let not_sent = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut HeadlessDeliveryGate,
+        &mut NotSentDeliverer,
+    )
+    .unwrap();
 
     assert_eq!(not_sent.stage, JobStage::ReadyToDeliver);
     assert_eq!(not_sent.delivery_status, DeliveryStatus::NotAttempted);
@@ -931,7 +998,7 @@ fn delivery_that_fails_before_any_paste_stays_ready_and_can_be_retried() {
         Some("the clipboard was not ready, so nothing was pasted")
     );
     let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
-    let delivered = runtime.retry_delivery(job.id, &mut submitted).unwrap();
+    let delivered = copy_again(&mut runtime, job.id, &mut submitted).unwrap();
     assert_eq!(delivered.stage, JobStage::Delivered);
     assert_eq!(submitted.attempts, 1);
 }
@@ -966,14 +1033,14 @@ fn failed_write_after_a_paste_attempt_marks_it_ambiguous_instead_of_stranding_it
         .unwrap();
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
-    let error = runtime
-        .process_captured(
-            job.id,
-            &mut FixedTranscriber,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
-        .unwrap_err();
+    let error = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut HeadlessDeliveryGate,
+        &mut deliverer,
+    )
+    .unwrap_err();
 
     assert!(
         error
@@ -1006,16 +1073,15 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
         )
         .unwrap();
     runtime.capture_recording(job.id, 18.0).unwrap();
-    let mut transcriber = CountingTranscriber { attempts: 0 };
     let mut ambiguous = AmbiguousDeliverer { attempts: 0 };
-    runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut ambiguous,
-        )
-        .unwrap();
+    transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Only once.",
+        &mut HeadlessDeliveryGate,
+        &mut ambiguous,
+    )
+    .unwrap();
     rusqlite::Connection::open(&database_path)
         .unwrap()
         .execute(
@@ -1023,12 +1089,9 @@ fn delivery_attempt_without_a_durable_outcome_cannot_be_replayed() {
             [job.id.to_string()],
         )
         .unwrap();
-    let mut submitted = CountingSubmittedDeliverer { attempts: 0 };
-
-    let error = runtime.retry_delivery(job.id, &mut submitted).unwrap_err();
+    let error = runtime.prepare_delivery_retry(job.id).unwrap_err();
 
     assert!(error.to_string().contains("no durable outcome"));
-    assert_eq!(submitted.attempts, 0);
 }
 
 #[test]
@@ -1174,18 +1237,32 @@ fn vocabulary_aliases_are_corrected_before_delivery() {
     }));
     let job = runtime.start_recording(request, &mut recorder).unwrap();
     runtime.capture_recording(job.id, 4.0).unwrap();
-    let mut transcriber = FixedTranscriber;
     let mut deliverer = CountingSubmittedDeliverer { attempts: 0 };
 
-    let delivered = runtime
-        .process_captured(
-            job.id,
-            &mut transcriber,
-            &mut HeadlessDeliveryGate,
-            &mut deliverer,
-        )
-        .unwrap();
+    let delivered = transcribe_and_deliver(
+        &mut runtime,
+        job.id,
+        "Durable final words.",
+        &mut HeadlessDeliveryGate,
+        &mut deliverer,
+    )
+    .unwrap();
 
     assert_eq!(delivered.raw_transcript, "Durable final words.");
     assert_eq!(delivered.final_text, "AgentDictate.");
+}
+
+/// Recovery's "Paste again": the stored transcript, copied once.
+fn copy_again(
+    runtime: &mut Runtime,
+    id: JobId,
+    deliverer: &mut impl Deliverer,
+) -> Result<RecordingJob, RuntimeError> {
+    let ready = runtime.prepare_delivery_retry(id)?;
+    runtime.deliver_ready(
+        ready,
+        DeliveryMethod::CopyOnly,
+        &mut HeadlessDeliveryGate,
+        deliverer,
+    )
 }

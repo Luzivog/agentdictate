@@ -130,7 +130,14 @@ pub enum WorkflowSignal {
         job_id: JobId,
         at: JobStage,
     },
-    RetryDeliveryRequested {
+    /// Recovery's "Transcribe again" started processing a stored job.
+    RetryRequested {
+        job_id: JobId,
+    },
+    /// The daemon stopped processing a job before its transcript arrived:
+    /// the user cancelled it, or it left transcription. A late result only
+    /// goes to Recovery.
+    ProcessingCancelled {
         job_id: JobId,
     },
 }
@@ -148,7 +155,8 @@ impl WorkflowSignal {
             | Self::DeliveryStarted { job_id }
             | Self::DeliverySubmitted { job_id }
             | Self::Interrupted { job_id, .. }
-            | Self::RetryDeliveryRequested { job_id } => Some(job_id),
+            | Self::RetryRequested { job_id }
+            | Self::ProcessingCancelled { job_id } => Some(job_id),
         }
     }
 }
@@ -187,11 +195,12 @@ impl Workflow {
     }
 
     pub fn apply(&mut self, signal: WorkflowSignal) -> Result<WorkflowSnapshot, WorkflowError> {
+        // A job waiting in Recovery never blocks starting another one.
         let starts_after_recovery = matches!(
             (self.snapshot.phase, signal),
             (
                 WorkflowPhase::NeedsAttention { .. },
-                WorkflowSignal::StartRequested { .. }
+                WorkflowSignal::StartRequested { .. } | WorkflowSignal::RetryRequested { .. }
             )
         );
         if let (Some(expected), Some(received)) = (self.snapshot.phase.job_id(), signal.job_id())
@@ -206,7 +215,8 @@ impl Workflow {
                     job_id: expected,
                     stage: ProcessingStage::Transcribing,
                 },
-                WorkflowSignal::NoSpeechDetected { job_id },
+                WorkflowSignal::NoSpeechDetected { job_id }
+                | WorkflowSignal::ProcessingCancelled { job_id },
             ) if expected == job_id => WorkflowPhase::Ready,
 
             (WorkflowPhase::Ready, WorkflowSignal::StartRequested { job_id }) => {
@@ -273,13 +283,11 @@ impl Workflow {
                 WorkflowSignal::Interrupted { job_id, at },
             ) if expected == job_id => WorkflowPhase::NeedsAttention { job_id, at },
             (
-                WorkflowPhase::NeedsAttention {
-                    job_id: expected, ..
-                },
-                WorkflowSignal::RetryDeliveryRequested { job_id },
-            ) if expected == job_id => WorkflowPhase::Processing {
+                WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. },
+                WorkflowSignal::RetryRequested { job_id },
+            ) => WorkflowPhase::Processing {
                 job_id,
-                stage: ProcessingStage::ReadyToDeliver,
+                stage: ProcessingStage::Transcribing,
             },
             (phase, _) => return Err(WorkflowError::InvalidSignal { phase }),
         };

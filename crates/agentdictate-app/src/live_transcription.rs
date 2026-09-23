@@ -14,7 +14,7 @@ use std::{
 
 use agentdictate_linux::wav::data_start;
 
-use agentdictate_core::{DictationOptions, JobId};
+use agentdictate_core::DictationOptions;
 use agentdictate_runtime::ExternalError;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -24,22 +24,23 @@ const RUNNING: u8 = 0;
 const FINISH: u8 = 1;
 const CANCEL: u8 = 2;
 
-pub(crate) struct LiveTranscription {
-    pub job_id: JobId,
-    pub audio_path: PathBuf,
+/// The model live sessions transcribe with; it is stored with their jobs.
+pub const LIVE_TRANSCRIPTION_MODEL: &str = "gpt-live-transcribe";
+
+/// An experimental live session that streams a recording's audio while it
+/// is captured. Dropping it cancels the session.
+pub struct LiveTranscription {
     command: Arc<AtomicU8>,
     result: Receiver<Result<String, ExternalError>>,
 }
 
 impl LiveTranscription {
-    pub fn start(
-        job_id: JobId,
+    pub(crate) fn start(
         audio: PathBuf,
         options: DictationOptions,
         key: String,
         url: String,
     ) -> Result<Self, ExternalError> {
-        let audio_path = audio.clone();
         let command = Arc::new(AtomicU8::new(RUNNING));
         let control = Arc::clone(&command);
         let (sender, result) = channel();
@@ -52,14 +53,10 @@ impl LiveTranscription {
                 let _ = sender.send(result);
             })
             .map_err(|_| ExternalError::new("Could not start live transcription"))?;
-        Ok(Self {
-            job_id,
-            audio_path,
-            command,
-            result,
-        })
+        Ok(Self { command, result })
     }
 
+    /// Waits for the session's final text once the recording is finalized.
     pub fn finish(self) -> Result<String, ExternalError> {
         self.command.store(FINISH, Ordering::Release);
         self.result
@@ -148,7 +145,7 @@ fn stream_audio(
     tcp.set_read_timeout(Some(Duration::from_millis(40)))?;
     socket.send(Message::text(json!({"type":"session.update","session":{"type":"transcription","audio":{"input":{
         "format":{"type":"audio/pcm","rate":24000}, "turn_detection":null,
-        "transcription":{"model":"gpt-live-transcribe","prompt":options.context,"keywords":options.keywords(),"languages":options.languages(),"delay":"medium"}
+        "transcription":{"model":LIVE_TRANSCRIPTION_MODEL,"prompt":options.context,"keywords":options.keywords(),"languages":options.languages(),"delay":"medium"}
     }}}}).to_string()))?;
     let mut file = File::open(audio)?;
     let data_offset = data_start(&mut file)?;
@@ -327,14 +324,9 @@ mod tests {
             }
         });
         let options = DictationOptions::from_settings(&agentdictate_core::Settings::default());
-        let live = LiveTranscription::start(
-            JobId::new(),
-            path,
-            options,
-            "test".into(),
-            format!("ws://{address}"),
-        )
-        .unwrap();
+        let live =
+            LiveTranscription::start(path, options, "test".into(), format!("ws://{address}"))
+                .unwrap();
         received.recv_timeout(Duration::from_secs(3)).unwrap(); // Audio reached the server before finish.
         wav.write_all(&[0; 3200]).unwrap();
         wav.seek(SeekFrom::Start(40)).unwrap();

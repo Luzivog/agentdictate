@@ -7,17 +7,25 @@ use std::time::{Duration, Instant};
 
 use agentdictate_core::{
     AppSnapshot, HistoryPageRequest, HistoryPageSnapshot, HotkeyReadiness, JobId, JobStage,
-    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkspaceSnapshot,
+    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
+    WorkspaceSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
     HeadlessDeliveryGate, Recorder, RecordingJob, RecordingRequest, Runtime, RuntimeError,
-    Transcriber,
+    StoredTranscript,
 };
 use chrono::Utc;
 use thiserror::Error;
 
-use crate::{ActiveRecordingUpdate, AppPaths, OverlayController, OverlayUpdate};
+use crate::{
+    ActiveRecordingUpdate, AppPaths, LiveTranscription, OverlayController, OverlayUpdate,
+    ProcessingTicket, Transcriber, TranscriptionCompletion,
+};
+
+/// Recovery's message on a transcript that finished after its dictation was
+/// cancelled.
+const CANCELLED_NOTE: &str = "Cancelled before paste";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CapturedRecording {
@@ -96,22 +104,51 @@ pub enum DaemonError {
     Recording(#[from] ExternalError),
     #[error("recording storage could not be prepared: {0}")]
     Io(#[from] std::io::Error),
-    #[error("a recording is already active")]
-    AlreadyRecording,
+    #[error("another dictation is still in progress")]
+    Busy { phase: WorkflowPhase },
     #[error("no recording is active")]
     NotRecording,
     #[error("no speech was found in this recording")]
     NoSpeech,
     #[error("{reason}")]
     NotCopied { reason: String },
+    #[error("dictation {job_id} left transcription before its result arrived")]
+    StaleResult { job_id: JobId },
 }
 
-/// A dictation from its first audio frame until it settles.
-struct ActiveDictation {
+/// A result that arrives this long after the user stopped recording is only
+/// copied: by then they may have moved on to another window.
+const STALE_PASTE_AFTER: Duration = Duration::from_secs(8);
+
+/// The one dictation the daemon may deliver.
+enum Activity {
+    Idle,
+    Recording(ActiveRecording),
+    Processing(ActiveProcessing),
+}
+
+struct ActiveRecording {
     job_id: JobId,
-    recording: ActiveRecordingUpdate,
+    overlay: ActiveRecordingUpdate,
+    /// Live transcription listening while the job records, if it asked for
+    /// one. Dropping it cancels the session.
+    session: Option<LiveTranscription>,
 }
 
+/// A job whose transcription runs away from the daemon lock.
+#[derive(Clone, Copy)]
+struct ActiveProcessing {
+    job_id: JobId,
+    /// When the user stopped the recording or asked to transcribe it again.
+    stopped_at: Instant,
+    /// `Paste` for a dictation, `CopyOnly` for a Recovery retry.
+    delivery: DeliveryMethod,
+}
+
+/// Owns the dictation lifecycle and its durable checkpoints. Every method is
+/// bounded work: transcription itself runs from a `ProcessingTicket` that
+/// `stop_recording` or `retry_transcription` returns, and its result comes
+/// back through `complete_transcription`.
 pub struct Daemon<R, T, D> {
     runtime: Runtime,
     settings: Settings,
@@ -120,8 +157,7 @@ pub struct Daemon<R, T, D> {
     transcriber: T,
     deliverer: D,
     workflow: Workflow,
-    /// The dictation being recorded or processed; `settle` clears it.
-    active: Option<ActiveDictation>,
+    activity: Activity,
     recoverable_count: usize,
     last_transcript: Option<String>,
     hotkey: HotkeyReadiness,
@@ -153,7 +189,7 @@ where
             transcriber,
             deliverer,
             workflow: Workflow::new(),
-            active: None,
+            activity: Activity::Idle,
             recoverable_count,
             last_transcript: None,
             hotkey: HotkeyReadiness::Starting,
@@ -171,9 +207,7 @@ where
         mode: Option<agentdictate_core::DictationMode>,
     ) -> Result<RecordingJob, DaemonError> {
         let requested_at = Instant::now();
-        if self.active.is_some() {
-            return Err(DaemonError::AlreadyRecording);
-        }
+        self.require_idle()?;
         fs::create_dir_all(&self.paths.recordings)?;
         let now = Utc::now();
         let job_id = JobId::new();
@@ -207,18 +241,20 @@ where
                 return Err(error.into());
             }
         };
-        self.workflow
-            .apply(WorkflowSignal::FirstAudioFrameWritten { job_id: job.id })?;
-        self.transcriber.begin_recording(&job);
-        self.active = Some(ActiveDictation {
+        self.activity = Activity::Recording(ActiveRecording {
             job_id: job.id,
-            recording: ActiveRecordingUpdate {
+            overlay: ActiveRecordingUpdate {
                 audio_path: job.audio_path.clone(),
                 // Match the previous overlay: elapsed time starts only after
                 // the recorder has produced its first durable audio frame.
                 started_at_unix_millis: Utc::now().timestamp_millis(),
             },
+            session: self.transcriber.open_session(&job),
         });
+        self.advance(
+            job.id,
+            WorkflowSignal::FirstAudioFrameWritten { job_id: job.id },
+        );
         self.recoverable_count = self.attention_recovery_count()?;
         self.publish_overlay_update();
         tracing::info!(
@@ -253,9 +289,12 @@ where
         }
     }
 
-    pub fn stop_recording(&mut self) -> Result<RecordingJob, DaemonError> {
-        let stop_started = Instant::now();
-        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
+    /// Stops the recording and checkpoints it as `transcribing`. The
+    /// returned ticket transcribes it; hand its completion back to
+    /// `complete_transcription`.
+    pub fn stop_recording(&mut self) -> Result<ProcessingTicket<T>, DaemonError> {
+        let stopped_at = Instant::now();
+        let id = self.recording_job()?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
         tracing::info!(job_id = %id, "recording stop requested");
@@ -263,7 +302,6 @@ where
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
             Err(error) => {
-                self.transcriber.cancel_recording(id);
                 tracing::error!(job_id = %id, %error, "recording finalization failed");
                 let persisted = self.runtime.interrupt_job(
                     id,
@@ -299,48 +337,174 @@ where
             self.recover_after_capture_checkpoint_failure(id, &error);
             return Err(error.into());
         }
-        self.workflow
-            .apply(WorkflowSignal::CaptureFinalized { job_id: id })?;
-        self.publish_overlay_update();
-        let mut gate = Timed::new(&mut self.overlay);
-        let mut deliverer = Timed::new(&mut self.deliverer);
-        let processed =
-            self.runtime
-                .process_captured(id, &mut self.transcriber, &mut gate, &mut deliverer);
-        let (gate_ran, delivery_ran) = (gate.ran, deliverer.ran);
-        let result = match processed {
-            Ok(result) => result,
+        let job = match self.runtime.begin_transcription(id) {
+            Ok(job) => job,
             Err(error) => {
-                tracing::error!(job_id = %id, %error, "dictation processing failed");
-                // The runtime marks the job failed. Even if this read fails
-                // too, the session must end so the next dictation can start.
-                let persisted_stage = self
-                    .runtime
-                    .job(id)
-                    .ok()
-                    .flatten()
-                    .map_or(JobStage::Failed, |job| job.stage);
+                tracing::error!(job_id = %id, %error, "could not checkpoint the transcription start");
+                // The job stays captured, which Recovery can transcribe.
                 self.settle(
                     id,
                     WorkflowSignal::Interrupted {
                         job_id: id,
-                        at: persisted_stage,
+                        at: JobStage::Captured,
                     },
                 );
                 return Err(error.into());
             }
         };
-        if result.stage == JobStage::NoSpeech {
-            self.cleanup_completed_audio(&result);
-            self.settle(id, WorkflowSignal::NoSpeechDetected { job_id: id });
-            tracing::info!(job_id = %id, "empty dictation finished quietly");
-            return Ok(result);
+        let processing = Activity::Processing(ActiveProcessing {
+            job_id: id,
+            stopped_at,
+            delivery: DeliveryMethod::Paste,
+        });
+        let session = match std::mem::replace(&mut self.activity, processing) {
+            Activity::Recording(recording) => recording.session,
+            Activity::Idle | Activity::Processing(_) => None,
+        };
+        self.advance(id, WorkflowSignal::CaptureFinalized { job_id: id });
+        self.publish_overlay_update();
+        Ok(ProcessingTicket::new(
+            job,
+            self.transcriber.clone(),
+            session,
+        ))
+    }
+
+    /// Records a ticket's result. Only the job the daemon is processing is
+    /// delivered: pasted, or copied when the result arrived more than
+    /// `STALE_PASTE_AFTER` after the stop. Any other job's result is only
+    /// stored, so it waits in Recovery. Returns the job as it was left.
+    pub fn complete_transcription(
+        &mut self,
+        completion: TranscriptionCompletion,
+    ) -> Result<RecordingJob, DaemonError> {
+        let TranscriptionCompletion {
+            job_id: id,
+            outcome,
+            finished_at,
+        } = completion;
+        let current = match self.activity {
+            Activity::Processing(processing) if processing.job_id == id => Some(processing),
+            Activity::Idle | Activity::Recording(_) | Activity::Processing(_) => None,
+        };
+        let note = current.is_none().then_some(CANCELLED_NOTE);
+        let stored = match self.runtime.store_transcript(id, outcome, note) {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::error!(job_id = %id, %error, "could not store the transcription result");
+                if current.is_some() {
+                    let at = self.persisted_stage(id);
+                    self.settle(id, WorkflowSignal::Interrupted { job_id: id, at });
+                }
+                return Err(error.into());
+            }
+        };
+        let Some(processing) = current else {
+            return self.store_detached(id, stored);
+        };
+        match stored {
+            StoredTranscript::Stale => {
+                tracing::warn!(job_id = %id, "the job left transcription before its result arrived");
+                self.settle(id, WorkflowSignal::ProcessingCancelled { job_id: id });
+                Err(DaemonError::StaleResult { job_id: id })
+            }
+            StoredTranscript::NoSpeech(job) => {
+                self.cleanup_completed_audio(&job);
+                self.settle(id, WorkflowSignal::NoSpeechDetected { job_id: id });
+                tracing::info!(job_id = %id, "empty dictation finished quietly");
+                Ok(job)
+            }
+            StoredTranscript::Failed(job) => {
+                tracing::warn!(job_id = %id, error = ?job.error_message, "transcription failed");
+                self.settle(
+                    id,
+                    WorkflowSignal::Interrupted {
+                        job_id: id,
+                        at: JobStage::Failed,
+                    },
+                );
+                Ok(job)
+            }
+            StoredTranscript::Ready(ready) => self.deliver(processing, ready, finished_at),
         }
-        // Processing ran synchronously, so these steps only record what it did.
-        self.workflow
-            .apply(WorkflowSignal::TranscriptStored { job_id: id })?;
-        self.workflow
-            .apply(WorkflowSignal::DeliveryStarted { job_id: id })?;
+    }
+
+    /// Stores the result of a job the daemon no longer processes: the user
+    /// cancelled it. It waits in Recovery and is never delivered.
+    fn store_detached(
+        &mut self,
+        id: JobId,
+        stored: StoredTranscript,
+    ) -> Result<RecordingJob, DaemonError> {
+        let job = match stored {
+            StoredTranscript::Stale => {
+                tracing::warn!(job_id = %id, "a cancelled job left transcription before its result arrived");
+                return Err(DaemonError::StaleResult { job_id: id });
+            }
+            StoredTranscript::NoSpeech(job) => {
+                self.cleanup_completed_audio(&job);
+                job
+            }
+            StoredTranscript::Ready(job) | StoredTranscript::Failed(job) => job,
+        };
+        tracing::info!(job_id = %id, stage = ?job.stage, "a cancelled dictation finished; its result waits in Recovery");
+        self.recount_recoveries();
+        self.publish_overlay_update();
+        Ok(job)
+    }
+
+    fn deliver(
+        &mut self,
+        processing: ActiveProcessing,
+        ready: RecordingJob,
+        finished_at: Instant,
+    ) -> Result<RecordingJob, DaemonError> {
+        let id = ready.id;
+        let waited = finished_at.saturating_duration_since(processing.stopped_at);
+        let method = match processing.delivery {
+            DeliveryMethod::Paste if waited > STALE_PASTE_AFTER => {
+                tracing::info!(
+                    job_id = %id,
+                    waited_ms = millis(waited),
+                    "the transcript arrived late, so it is copied instead of pasted"
+                );
+                DeliveryMethod::CopyOnly
+            }
+            method => method,
+        };
+        self.advance(id, WorkflowSignal::TranscriptStored { job_id: id });
+        self.advance(id, WorkflowSignal::DeliveryStarted { job_id: id });
+        let mut deliverer = Timed::new(&mut self.deliverer);
+        let (delivered, gate_ran) = match method {
+            DeliveryMethod::Paste => {
+                let mut gate = Timed::new(&mut self.overlay);
+                let delivered =
+                    self.runtime
+                        .deliver_ready(ready, method, &mut gate, &mut deliverer);
+                (delivered, gate.ran)
+            }
+            // A copy cannot reach transient AgentDictate UI, so no gate.
+            DeliveryMethod::CopyOnly => (
+                self.runtime.deliver_ready(
+                    ready,
+                    method,
+                    &mut HeadlessDeliveryGate,
+                    &mut deliverer,
+                ),
+                None,
+            ),
+        };
+        let delivery_ran = deliverer.ran;
+        let result = match delivered {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(job_id = %id, %error, "dictation delivery failed");
+                // The runtime already marked the job failed or ambiguous.
+                let at = self.persisted_stage(id);
+                self.settle(id, WorkflowSignal::Interrupted { job_id: id, at });
+                return Err(error.into());
+            }
+        };
         let end = if result.stage == JobStage::Delivered {
             if let Err(error) = self.runtime.complete_delivered(id, &self.settings) {
                 // The paste command was already submitted. A bookkeeping failure
@@ -361,9 +525,10 @@ where
         tracing::info!(
             job_id = %id,
             stage = ?result.stage,
+            ?method,
             gate_ms = gate_ran.map(|(started, finished)| millis(finished - started)),
-            stop_to_paste_ms = delivery_ran.map(|(_, finished)| millis(finished - stop_started)),
-            stop_to_flow_complete_ms = millis(stop_started.elapsed()),
+            stop_to_paste_ms = delivery_ran.map(|(_, finished)| millis(finished - processing.stopped_at)),
+            stop_to_flow_complete_ms = millis(processing.stopped_at.elapsed()),
             "dictation flow completed"
         );
         Ok(result)
@@ -374,10 +539,10 @@ where
     /// is on. Shutdown and platform failures must use the separate recovery
     /// preservation path below.
     pub fn discard_recording(&mut self) -> Result<RecordingJob, DaemonError> {
-        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
-        self.transcriber.cancel_recording(id);
+        let id = self.recording_job()?;
         tracing::info!(job_id = %id, "dictation discard requested");
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
+        self.end_session(id);
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
             Err(error) => {
@@ -432,7 +597,7 @@ where
     /// audio was finalized for explicit recovery instead of guessing that the
     /// dictation was complete.
     pub fn recorder_exited(&mut self, id: JobId) -> Result<Option<RecordingJob>, DaemonError> {
-        if self.active_job() != Some(id) {
+        if self.recording_job().ok() != Some(id) {
             return Ok(None);
         }
         tracing::warn!(job_id = %id, "recorder exited without an explicit stop");
@@ -445,8 +610,7 @@ where
     /// Finalizes active audio without transcribing or deleting it, so process
     /// shutdown can never discard an in-progress dictation.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
-        if let Some(id) = self.active_job() {
-            self.transcriber.cancel_recording(id);
+        if matches!(self.activity, Activity::Recording(_)) {
             self.preserve_active_recording(
                 "AgentDictate shut down before this dictation completed; audio was preserved",
             )?;
@@ -454,46 +618,80 @@ where
         Ok(())
     }
 
-    /// "Transcribe again" from Recovery: transcribes the item again and
-    /// copies the result to the clipboard.
-    pub fn retry_transcription(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        if self.active.is_some() {
-            return Err(DaemonError::AlreadyRecording);
-        }
+    /// "Transcribe again" from Recovery. The returned ticket transcribes the
+    /// item; `complete_transcription` then copies the text to the clipboard,
+    /// because the request came from AgentDictate's own window, which has the
+    /// focus. No other dictation can start meanwhile.
+    pub fn retry_transcription(&mut self, id: JobId) -> Result<ProcessingTicket<T>, DaemonError> {
+        self.require_idle()?;
         tracing::info!(job_id = %id, "recovery transcription retry requested");
-        let result = self
+        let job = self
             .runtime
-            .retry_transcription(id, &mut self.transcriber, &mut self.deliverer)
+            .prepare_transcription_retry(id)
             .inspect_err(|error| tracing::warn!(job_id = %id, %error, "recovery retry failed"))?;
-        self.finish_retry(result)
+        self.activity = Activity::Processing(ActiveProcessing {
+            job_id: id,
+            stopped_at: Instant::now(),
+            delivery: DeliveryMethod::CopyOnly,
+        });
+        self.advance(id, WorkflowSignal::RetryRequested { job_id: id });
+        self.publish_overlay_update();
+        Ok(ProcessingTicket::new(job, self.transcriber.clone(), None))
     }
 
     /// "Paste again" from Recovery: copies the stored transcript to the
     /// clipboard.
     pub fn retry_delivery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
-        if self.active.is_some() {
-            return Err(DaemonError::AlreadyRecording);
-        }
+        self.require_idle()?;
         tracing::info!(job_id = %id, "recovery copy retry requested");
+        let ready = self
+            .runtime
+            .prepare_delivery_retry(id)
+            .inspect_err(|error| tracing::warn!(job_id = %id, %error, "recovery retry failed"))?;
         let result = self
             .runtime
-            .retry_delivery(id, &mut self.deliverer)
+            .deliver_ready(
+                ready,
+                DeliveryMethod::CopyOnly,
+                &mut HeadlessDeliveryGate,
+                &mut self.deliverer,
+            )
             .inspect_err(|error| tracing::warn!(job_id = %id, %error, "recovery retry failed"))?;
-        self.finish_retry(result)
+        tracing::info!(job_id = %id, stage = ?result.stage, "recovery retry finished");
+        if result.stage == JobStage::Delivered {
+            if let Err(error) = self.runtime.complete_delivered(id, &self.settings) {
+                tracing::error!(job_id = %id, %error, "could not complete retried dictation");
+            }
+            self.cleanup_completed_audio(&result);
+        }
+        self.last_transcript = Some(result.final_text.clone());
+        self.clear_attention_for(id);
+        self.recount_recoveries();
+        self.publish_overlay_update();
+        copied(result)
     }
 
-    /// Deletes one Recovery item. The workflow returns to Ready only when no
-    /// dictation is active: deleting an older item mid-recording must leave
-    /// the live recording, and every way to stop it, untouched.
+    /// Deletes one Recovery item. Only a prompt about that item is cleared:
+    /// a recording or transcription in progress, and every way to stop it,
+    /// stays untouched.
     pub fn delete_recovery(&mut self, id: JobId) -> Result<RecordingJob, DaemonError> {
         let result = self.runtime.delete_recovery(id)?;
         tracing::info!(job_id = %id, "recovery item deleted");
-        if self.active.is_none() {
-            self.workflow = Workflow::new();
-        }
+        self.clear_attention_for(id);
         self.recoverable_count = self.attention_recovery_count()?;
         self.publish_overlay_update();
         Ok(result)
+    }
+
+    /// Whether a transcription ticket is out that the daemon will deliver.
+    #[must_use]
+    pub const fn is_processing(&self) -> bool {
+        matches!(self.activity, Activity::Processing(_))
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> WorkflowPhase {
+        self.workflow.snapshot().phase
     }
 
     pub fn workspace_snapshot(&self) -> Result<WorkspaceSnapshot, RuntimeError> {
@@ -598,7 +796,7 @@ where
     }
 
     fn recover_after_capture_checkpoint_failure(&mut self, id: JobId, primary: &RuntimeError) {
-        self.transcriber.cancel_recording(id);
+        self.end_session(id);
         if let Err(recovery_error) = self.runtime.interrupt_job(
             id,
             JobStage::Recording,
@@ -623,8 +821,8 @@ where
         &mut self,
         reason: &'static str,
     ) -> Result<RecordingJob, DaemonError> {
-        let id = self.active_job().ok_or(DaemonError::NotRecording)?;
-        self.transcriber.cancel_recording(id);
+        let id = self.recording_job()?;
+        self.end_session(id);
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         let capture = match self.recorder.finish(&job) {
             Ok(capture) => capture,
@@ -666,46 +864,32 @@ where
         interrupted.map_err(Into::into)
     }
 
-    /// Records a finished Recovery retry. Retries only copy, because their
-    /// button sits in AgentDictate's own window, which has the focus. Any
-    /// outcome other than copied text is an error, so the window never tells
-    /// the user to paste text that is not on the clipboard.
-    fn finish_retry(&mut self, result: RecordingJob) -> Result<RecordingJob, DaemonError> {
-        let id = result.id;
-        tracing::info!(job_id = %id, stage = ?result.stage, "recovery retry finished");
-        self.workflow = Workflow::new();
-        if result.stage == JobStage::Delivered
-            && let Err(error) = self.runtime.complete_delivered(id, &self.settings)
+    /// Cancels the recording's live session, if any, before its audio is
+    /// discarded or preserved: nothing more is streamed or committed.
+    fn end_session(&mut self, id: JobId) {
+        if let Activity::Recording(recording) = &mut self.activity
+            && recording.job_id == id
         {
-            tracing::error!(job_id = %id, %error, "could not complete retried dictation");
-        }
-        if matches!(result.stage, JobStage::Delivered | JobStage::NoSpeech) {
-            self.cleanup_completed_audio(&result);
-        }
-        if result.stage != JobStage::NoSpeech {
-            self.last_transcript = Some(result.final_text.clone());
-        }
-        self.recoverable_count = self.attention_recovery_count()?;
-        self.publish_overlay_update();
-        match result.stage {
-            JobStage::Delivered => Ok(result),
-            JobStage::NoSpeech => Err(DaemonError::NoSpeech),
-            _ => Err(DaemonError::NotCopied {
-                reason: result
-                    .error_message
-                    .unwrap_or_else(|| "the text was not copied".to_owned()),
-            }),
+            recording.session = None;
         }
     }
 
-    /// Ends the active dictation session with its final workflow transition:
+    /// Applies a signal that the daemon's own state already guarantees. An
+    /// out-of-order signal is logged; the next `settle` rebuilds the workflow.
+    fn advance(&mut self, id: JobId, signal: WorkflowSignal) {
+        if let Err(workflow_error) = self.workflow.apply(signal) {
+            tracing::warn!(job_id = %id, %workflow_error, ?signal, "workflow signal out of order");
+        }
+    }
+
+    /// Ends the active dictation with its final workflow transition:
     /// `Interrupted` keeps the job in Recovery, any other signal returns to
-    /// Ready. This never fails. It clears the active dictation first,
-    /// rebuilds the workflow when the transition is out of order, and
-    /// recounts Recovery best-effort, so a failed bookkeeping step can never
-    /// leave a stale active job that rejects every later command.
+    /// Ready. This never fails. It clears the activity first, rebuilds the
+    /// workflow when the transition is out of order, and recounts Recovery
+    /// best-effort, so a failed bookkeeping step can never leave a stale
+    /// active job that rejects every later command.
     fn settle(&mut self, id: JobId, end: WorkflowSignal) {
-        self.active = None;
+        self.activity = Activity::Idle;
         let needs_attention = matches!(end, WorkflowSignal::Interrupted { .. });
         if let Err(workflow_error) = self.workflow.apply(end) {
             tracing::warn!(job_id = %id, %workflow_error, ?end, "rebuilding the workflow");
@@ -717,44 +901,95 @@ where
                 let _ = self.workflow.apply(end);
             }
         }
-        match self.attention_recovery_count() {
-            Ok(count) => self.recoverable_count = count,
-            Err(recovery_error) => {
-                tracing::error!(
-                    job_id = %id,
-                    %recovery_error,
-                    "could not recount recoverable recordings"
-                );
-                if needs_attention {
-                    self.recoverable_count = self.recoverable_count.max(1);
-                }
-            }
+        if !self.recount_recoveries() && needs_attention {
+            self.recoverable_count = self.recoverable_count.max(1);
         }
         self.publish_overlay_update();
+    }
+
+    /// Clears a Recovery prompt about `id`, and only about `id`.
+    fn clear_attention_for(&mut self, id: JobId) {
+        if matches!(self.workflow.snapshot().phase, WorkflowPhase::NeedsAttention { job_id, .. } if job_id == id)
+        {
+            self.workflow = Workflow::new();
+        }
+    }
+
+    /// Recounts Recovery best-effort; returns whether the count is current.
+    fn recount_recoveries(&mut self) -> bool {
+        match self.attention_recovery_count() {
+            Ok(count) => {
+                self.recoverable_count = count;
+                true
+            }
+            Err(recovery_error) => {
+                tracing::error!(%recovery_error, "could not recount recoverable recordings");
+                false
+            }
+        }
     }
 
     fn attention_recovery_count(&self) -> Result<usize, RuntimeError> {
         Ok(self.runtime.recoveries()?.len())
     }
 
-    fn active_job(&self) -> Option<JobId> {
-        self.active.as_ref().map(|active| active.job_id)
+    /// The job's stored stage, for the workflow after a failed step.
+    fn persisted_stage(&self, id: JobId) -> JobStage {
+        self.runtime
+            .job(id)
+            .ok()
+            .flatten()
+            .map_or(JobStage::Failed, |job| job.stage)
+    }
+
+    fn require_idle(&self) -> Result<(), DaemonError> {
+        match self.activity {
+            Activity::Idle => Ok(()),
+            Activity::Recording(_) | Activity::Processing(_) => Err(DaemonError::Busy {
+                phase: self.phase(),
+            }),
+        }
+    }
+
+    /// The job being recorded, for the commands that act on a recording.
+    fn recording_job(&self) -> Result<JobId, DaemonError> {
+        match &self.activity {
+            Activity::Recording(recording) => Ok(recording.job_id),
+            Activity::Idle => Err(DaemonError::NotRecording),
+            Activity::Processing(_) => Err(DaemonError::Busy {
+                phase: self.phase(),
+            }),
+        }
     }
 
     /// The overlay samples the recording's audio only while it is captured.
+    /// Recovery retries run from the settings window, so they show no overlay.
     fn overlay_update(&self) -> OverlayUpdate {
-        let workflow = self.workflow.snapshot();
-        let capturing = matches!(
-            workflow.phase,
-            WorkflowPhase::Recording { .. } | WorkflowPhase::Stopping { .. }
-        );
+        let workflow = match self.activity {
+            Activity::Processing(ActiveProcessing {
+                delivery: DeliveryMethod::CopyOnly,
+                ..
+            }) => WorkflowSnapshot {
+                phase: WorkflowPhase::Ready,
+            },
+            Activity::Idle | Activity::Recording(_) | Activity::Processing(_) => {
+                self.workflow.snapshot()
+            }
+        };
+        let active_recording = match &self.activity {
+            Activity::Recording(recording)
+                if matches!(
+                    workflow.phase,
+                    WorkflowPhase::Recording { .. } | WorkflowPhase::Stopping { .. }
+                ) =>
+            {
+                Some(recording.overlay.clone())
+            }
+            Activity::Idle | Activity::Recording(_) | Activity::Processing(_) => None,
+        };
         OverlayUpdate {
             workflow,
-            active_recording: self
-                .active
-                .as_ref()
-                .filter(|_| capturing)
-                .map(|active| active.recording.clone()),
+            active_recording,
         }
     }
 
@@ -769,5 +1004,20 @@ where
                 tracing::warn!(job_id = %job.id, %error, "could not remove completed recording audio");
             }
         }
+    }
+}
+
+/// What a Recovery retry tells the settings window: success only once the
+/// text is on the clipboard, so the window never asks the user to paste text
+/// that is not there.
+pub(crate) fn copied(job: RecordingJob) -> Result<RecordingJob, DaemonError> {
+    match job.stage {
+        JobStage::Delivered => Ok(job),
+        JobStage::NoSpeech => Err(DaemonError::NoSpeech),
+        _ => Err(DaemonError::NotCopied {
+            reason: job
+                .error_message
+                .unwrap_or_else(|| "the text was not copied".to_owned()),
+        }),
     }
 }
