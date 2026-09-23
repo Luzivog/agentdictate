@@ -882,16 +882,22 @@ where
     }
 
     /// Finalizes active audio without transcribing or deleting it, so process
-    /// shutdown can never discard an in-progress dictation.
+    /// shutdown can never discard an in-progress dictation. From then on,
+    /// dictations end without announcements; after a failure the daemon
+    /// keeps running, and announces them again.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
         self.quiet = true;
-        if matches!(self.activity, Activity::Recording(_)) {
+        let preserved = if matches!(self.activity, Activity::Recording(_)) {
             self.preserve_active_recording(JobFailure::new(
                 FailureKind::Unexpected,
                 "AgentDictate shut down before this dictation completed; audio was preserved",
-            ))?;
-        }
-        Ok(())
+            ))
+            .map(drop)
+        } else {
+            Ok(())
+        };
+        self.quiet = preserved.is_ok();
+        preserved
     }
 
     /// "Transcribe again" from Recovery. The returned ticket transcribes the

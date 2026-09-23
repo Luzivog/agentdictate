@@ -282,11 +282,16 @@ where
 
     /// Shuts down gracefully: an active recording is preserved for Recovery,
     /// and a transcription in progress gets `SHUTDOWN_PROCESSING_GRACE` to be
-    /// delivered. Then the IPC accept loop is woken to end.
+    /// delivered. Then the IPC accept loop is woken to end. When the
+    /// recording cannot be preserved, the daemon keeps running and takes
+    /// work again, and the error says why it did not quit.
     pub fn quit(&self) -> Result<(), DaemonError> {
         self.shared.quitting.store(true, Ordering::Release);
         let mut process = self.lock();
-        process.daemon_mut().shutdown()?;
+        if let Err(error) = process.daemon_mut().shutdown() {
+            self.shared.quitting.store(false, Ordering::Release);
+            return Err(error);
+        }
         let (process, waited) = self
             .shared
             .processing_settled

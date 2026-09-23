@@ -342,6 +342,37 @@ fn quit_leaves_a_transcription_that_outlasts_the_grace_for_recovery() {
     gate.open();
 }
 
+/// A Quit that could not preserve the recording leaves a working daemon,
+/// not one that refuses every start as shutting down.
+#[test]
+fn a_failed_quit_leaves_the_daemon_taking_work() {
+    let directory = tempdir().unwrap();
+    let (handle, paths) = handle_with(directory.path(), GatedTranscriber::default());
+    assert!(matches!(
+        handle.trigger(Trigger::TrayToggle),
+        TriggerOutcome::Started { .. }
+    ));
+    let database = rusqlite::Connection::open(&paths.database_file).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER reject_interruption BEFORE UPDATE OF stage ON dictation_jobs
+             WHEN NEW.stage = 'interrupted'
+             BEGIN SELECT RAISE(FAIL, 'disk full'); END;",
+        )
+        .unwrap();
+
+    assert!(handle.quit().is_err());
+
+    assert!(!handle.should_quit());
+    database
+        .execute_batch("DROP TRIGGER reject_interruption")
+        .unwrap();
+    assert!(matches!(
+        handle.trigger(Trigger::TrayToggle),
+        TriggerOutcome::Started { .. }
+    ));
+}
+
 #[test]
 fn processing_panic_is_reported_as_a_failed_job() {
     let directory = tempdir().unwrap();
