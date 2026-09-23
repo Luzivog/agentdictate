@@ -51,6 +51,17 @@ restart per update. It records the overlay's health in `overlay-health` in the
 runtime directory, which the settings window watches so it can show a notice when
 the overlay cannot render.
 
+**Notices.** A dictation that ends without a paste is announced twice. The overlay
+turns into a notice card for 2.5 s, such as "Couldn't reach OpenAI · Saved to
+Recovery", "Didn't hear anything · Check your microphone", or "Copied — press
+Ctrl+V". It has no buttons, and its window's input region is empty, so it never
+takes a click. The daemon also shows a desktop notification through
+`org.freedesktop.Notifications` on the session bus, which never takes the focus.
+Clicking it opens the window. A failure that transcribing again can fix offers
+**Try again**, which transcribes the Recovery item and copies its text. Each
+notification replaces the previous one. A retry from the settings window, and a
+shutdown, announce nothing.
+
 **Tray.** The tray runs inside the daemon as a StatusNotifier item when
 `show_tray_icon` is on. That is a `config.json` setting and it defaults to on. The
 menu has **Open AgentDictate**, **Toggle dictation**, **Start literal dictation**,

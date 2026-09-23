@@ -242,6 +242,17 @@ where
         outcome
     }
 
+    /// "Try again" on a failure notification: transcribes the job again on
+    /// its own thread; the result is copied and announced.
+    pub fn try_again(&self, job_id: JobId) -> Result<(), DaemonError> {
+        if self.shared.quitting.load(Ordering::Acquire) {
+            return Err(DaemonError::ShuttingDown);
+        }
+        let ticket = self.lock().daemon_mut().try_again(job_id)?;
+        self.spawn_processing(ticket);
+        Ok(())
+    }
+
     /// Runs `f` under the process lock, for composition and tests.
     pub fn with_process<O>(&self, f: impl FnOnce(&mut AgentProcess<R, T, D>) -> O) -> O {
         f(&mut self.lock())

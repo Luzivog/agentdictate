@@ -9,7 +9,7 @@ use agentdictate_app::{
     ActiveRecordingUpdate, OverlayProcessAction, OverlayProcessState, OverlayUpdate,
     start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
-use agentdictate_core::{JobId, Workflow, WorkflowSignal};
+use agentdictate_core::{DictationNotice, FailureKind, JobId, Workflow, WorkflowSignal};
 use agentdictate_runtime::DeliveryGate;
 use tempfile::tempdir;
 
@@ -17,6 +17,7 @@ fn update(workflow: &Workflow) -> OverlayUpdate {
     OverlayUpdate {
         workflow: workflow.snapshot(),
         active_recording: None,
+        notice: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn helper_update_serializes_only_overlay_workflow_and_active_recording_metadata(
             audio_path: PathBuf::from("/tmp/recording.wav"),
             started_at_unix_millis: 1_726_000_000_250,
         }),
+        notice: None,
     };
 
     let encoded = serde_json::to_string(&update).unwrap();
@@ -142,6 +144,7 @@ fn visible_overlay_is_relaunched_when_its_helper_exits_without_an_update() {
             audio_path: directory.path().join("active-recording.wav"),
             started_at_unix_millis: 1_726_000_000_250,
         }),
+        notice: None,
     };
     let hidden = update(&Workflow::new());
     let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
@@ -418,6 +421,51 @@ fn repeated_helper_crashes_are_bounded_until_a_new_visible_update_arrives() {
         recovered_after_update,
         "a new visible update did not reset the helper restart budget"
     );
+}
+
+#[test]
+fn a_notice_outlasts_hidden_updates_and_gives_way_to_the_next_dictation() {
+    let directory = tempdir().unwrap();
+    let executable = directory.path().join("overlay-helper");
+    let launches = directory.path().join("launches");
+    let received = directory.path().join("received");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf 'launch\\n' >> '{}'\nprintf '{{\"status\":\"frame_submitted\"}}\\n'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; done\n",
+            launches.display(),
+            received.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let notice = OverlayUpdate {
+        notice: Some(DictationNotice::Failed {
+            failure: FailureKind::Offline,
+        }),
+        ..update(&Workflow::new())
+    };
+    let next_dictation = recording_update();
+    let (overlay, presenter) = start_overlay_presenter(executable).unwrap();
+
+    overlay.update(notice.clone());
+    // Settings saved meanwhile publish the idle workflow again.
+    overlay.update(update(&Workflow::new()));
+    overlay.update(next_dictation.clone());
+    wait_until(
+        || fs::read_to_string(&received).is_ok_and(|contents| contents.lines().count() == 2),
+        "the helper received the next dictation",
+    );
+    drop(overlay);
+    presenter.join().unwrap();
+
+    let updates = fs::read_to_string(&received)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<OverlayUpdate>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(updates, [notice, next_dictation]);
+    assert_eq!(fs::read_to_string(&launches).unwrap().lines().count(), 1);
 }
 
 /// A helper whose first launch fails, so the test can tell when the relaunched

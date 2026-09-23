@@ -14,8 +14,10 @@ use x11rb::{
     protocol::{
         Event,
         randr::{ConnectionExt as _, NotifyMask},
+        shape::{ConnectionExt as _, SK, SO},
         xproto::{
-            AtomEnum, ChangeWindowAttributesAux, ConfigureWindowAux, ConnectionExt as _, EventMask,
+            AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux,
+            ConnectionExt as _, EventMask,
         },
     },
     rust_connection::RustConnection,
@@ -189,6 +191,24 @@ impl DisplayConnection {
             .override_redirect)
     }
 
+    /// Empties the window's input region, so clicks on the overlay, even
+    /// on its transparent margin, go to whatever is below it.
+    fn pass_input_through(&self, window: u32) -> io::Result<()> {
+        self.connection
+            .shape_rectangles(
+                SO::SET,
+                SK::INPUT,
+                ClipOrdering::UNSORTED,
+                window,
+                0,
+                0,
+                &[],
+            )
+            .map_err(io::Error::other)?
+            .check()
+            .map_err(io::Error::other)
+    }
+
     fn place(&self, window: u32, size: [u32; 3], work_area: ScreenRect) -> io::Result<ScreenRect> {
         let bounds = frame(work_area, size[0], size[1], size[2]);
         if bounds.width == 0 || bounds.height == 0 {
@@ -245,6 +265,9 @@ impl OverlayPlacementWatcher {
                 tracing::warn!(window, %error, "could not read the overlay window attributes");
                 false
             });
+        if let Err(error) = display.pass_input_through(window) {
+            tracing::warn!(window, %error, "the overlay window may still take clicks");
+        }
         let area = display.work_area()?;
         display.place(window, size, area)?;
         let (stop, stopped) = UnixStream::pair()?;

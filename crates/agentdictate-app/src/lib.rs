@@ -8,6 +8,7 @@ pub mod diagnostics;
 mod handle;
 mod hotkey_dispatch;
 mod native_access;
+mod notifications;
 mod openai;
 mod opus_encoder;
 mod overlay_process;
@@ -29,6 +30,10 @@ pub use hotkey_dispatch::{
     HotkeyActionOutcome, HotkeyDispatchGate, HotkeyIgnoreReason, start_hotkey_listener,
 };
 pub use native_access::{NativeAccessError, grant_native_access};
+pub use notifications::{
+    Notification, NotificationAction, NotificationBus, Notifier, follow_notification_actions,
+    start_session_notifier,
+};
 pub use openai::{
     ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline, TranscriptionRequest,
 };

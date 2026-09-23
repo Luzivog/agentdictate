@@ -155,6 +155,10 @@ where
         self.daemon.set_overlay_controller(controller);
     }
 
+    pub fn set_notifier(&mut self, notifier: crate::Notifier) {
+        self.daemon.set_notifier(notifier);
+    }
+
     pub fn set_hotkey_control(&mut self, control: Arc<dyn HotkeyControl>) {
         self.hotkey_control = Some(control);
     }

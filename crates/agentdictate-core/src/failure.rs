@@ -70,6 +70,19 @@ impl FailureKind {
     }
 }
 
+/// What the overlay and a desktop notification say when a dictation ends
+/// without its text being pasted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "notice", rename_all = "snake_case")]
+pub enum DictationNotice {
+    /// The text is on the clipboard but was not pasted: press Ctrl+V.
+    Copied,
+    /// The recording was quiet, so nothing was transcribed or kept.
+    NothingHeard,
+    /// The dictation failed and waits in Recovery.
+    Failed { failure: FailureKind },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

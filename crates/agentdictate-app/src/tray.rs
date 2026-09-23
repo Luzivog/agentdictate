@@ -141,16 +141,7 @@ fn execute_tray_action(
     settings_executable: &Path,
 ) -> anyhow::Result<()> {
     let trigger = match action {
-        TrayAction::OpenSettings => {
-            drop(
-                Command::new(settings_executable)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()?,
-            );
-            return Ok(());
-        }
+        TrayAction::OpenSettings => return Ok(open_settings_window(settings_executable)?),
         TrayAction::Quit => return Ok(handle.quit()?),
         TrayAction::ToggleDictation => Trigger::TrayToggle,
         TrayAction::StartLiteral => Trigger::TrayStartLiteral,
@@ -163,4 +154,16 @@ fn execute_tray_action(
             Ok(())
         }
     }
+}
+
+/// Opens the settings window, or raises the one already open.
+pub(crate) fn open_settings_window(settings_executable: &Path) -> std::io::Result<()> {
+    drop(
+        Command::new(settings_executable)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    Ok(())
 }

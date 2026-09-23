@@ -2,8 +2,12 @@ use gpui::{Context, Hsla, IntoElement, Render, Window, prelude::*, px};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
-    OverlayPresentation, OverlayState, WaveformFrame, overlay_fade_active, overlay_opacity,
+    NOTICE_CARD_WIDTH, OVERLAY_CARD_HEIGHT, OVERLAY_WIDTH, OverlayPresentation, OverlayState,
+    RECORDING_CARD_WIDTH, WaveformFrame, notice_wording, overlay_fade_active, overlay_opacity,
 };
+
+/// The label of the card shown while a dictation is transcribing.
+const TRANSCRIBING_LABEL: &str = "Transcribing";
 
 /// Per-dot opacities for the processing ellipsis: a soft sequential pulse
 /// derived from wall-clock time so every frame is deterministic to render.
@@ -19,7 +23,8 @@ fn busy_dot_alphas() -> [f32; 3] {
     })
 }
 
-/// GPUI content for the bottom-centered recording status window.
+/// GPUI content for the bottom-centered recording status window: the
+/// recording card, the transcribing card, or a notice after a dictation.
 pub struct RecordingOverlay {
     state: OverlayState,
     active_recording: Option<crate::ActiveRecordingPresentation>,
@@ -87,13 +92,26 @@ impl RecordingOverlay {
 
 impl Render for RecordingOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = self.state.label().to_owned();
         let stable_id = self.state.stable_id().to_owned();
         let recording = self.state == OverlayState::Recording;
         let recording_card = self.state.shows_recording_card();
         // The transcribing state animates a small pulsing ellipsis so the
         // helper visibly shows work in progress.
-        let busy = self.state.is_visible() && !recording_card;
+        let busy = self.state == OverlayState::Transcribing;
+        let notice = match self.state {
+            OverlayState::Notice(notice) => Some(notice_wording(notice)),
+            OverlayState::Hidden
+            | OverlayState::Starting
+            | OverlayState::Recording
+            | OverlayState::Transcribing => None,
+        };
+        let card_width = if notice.is_some() {
+            NOTICE_CARD_WIDTH
+        } else {
+            RECORDING_CARD_WIDTH
+        };
+        // Cards are centered in the window, which fits the widest one.
+        let card_left = ((OVERLAY_WIDTH as f32 - card_width) / 2.0).floor();
         let now = cx.background_executor().now();
         let shown_at = *self.shown_at.get_or_insert(now);
         let since_shown = now.saturating_duration_since(shown_at);
@@ -112,10 +130,6 @@ impl Render for RecordingOverlay {
         if recording || busy || overlay_fade_active(since_shown, since_dismissal) {
             window.request_animation_frame();
         }
-        let busy_label = label
-            .trim_end_matches(['\u{2026}', '.'])
-            .trim_end()
-            .to_owned();
         let busy_dot_alphas = busy_dot_alphas();
         if recording
             && self.last_sample_at.is_none_or(|sampled| {
@@ -168,10 +182,10 @@ impl Render for RecordingOverlay {
                 root.child(
                     gpui::div()
                         .absolute()
-                        .left(px(6.))
+                        .left(px(card_left))
                         .top(px(8.))
-                        .w(px(127.))
-                        .h(px(42.))
+                        .w(px(card_width))
+                        .h(px(OVERLAY_CARD_HEIGHT))
                         .rounded(px(14.))
                         .bg(gpui::rgba(0x0000003d)),
                 )
@@ -179,10 +193,10 @@ impl Render for RecordingOverlay {
                     gpui::div()
                         .debug_selector(|| "recording-overlay-card".to_owned())
                         .absolute()
-                        .left(px(6.))
+                        .left(px(card_left))
                         .top(px(6.))
-                        .w(px(127.))
-                        .h(px(42.))
+                        .w(px(card_width))
+                        .h(px(OVERLAY_CARD_HEIGHT))
                         .relative()
                         .overflow_hidden()
                         .rounded(px(14.))
@@ -220,7 +234,46 @@ impl Render for RecordingOverlay {
                                     .child(timer),
                             )
                         })
-                        .when(!recording_card, |card| {
+                        .when_some(notice, |card, notice| {
+                            card.child(
+                                gpui::div()
+                                    .debug_selector(|| "recording-overlay-notice".to_owned())
+                                    .size_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .px_3()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_color(gpui::rgba(0xf5f5f5f5))
+                                    .child(
+                                        gpui::div()
+                                            .debug_selector(|| {
+                                                "recording-overlay-notice-title".to_owned()
+                                            })
+                                            .max_w_full()
+                                            .truncate()
+                                            .text_size(px(13.))
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .child(notice.title),
+                                    )
+                                    .when_some(notice.detail, |text, detail| {
+                                        text.child(
+                                            gpui::div()
+                                                .debug_selector(|| {
+                                                    "recording-overlay-notice-detail".to_owned()
+                                                })
+                                                .max_w_full()
+                                                .truncate()
+                                                .text_size(px(11.5))
+                                                .text_color(gpui::rgba(0xf5f5f5b8))
+                                                .child(detail),
+                                        )
+                                    }),
+                            )
+                        })
+                        .when(busy, |card| {
                             card.child(
                                 gpui::div()
                                     .size_full()
@@ -234,33 +287,24 @@ impl Render for RecordingOverlay {
                                     .text_sm()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .text_color(gpui::rgba(0xf5f5f5f5))
-                                    .child(if busy { busy_label } else { label })
-                                    .when(busy, |row| {
-                                        row.child(
-                                            gpui::div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(3.))
-                                                .children(
-                                                    busy_dot_alphas.into_iter().enumerate().map(
-                                                        |(index, alpha)| {
-                                                            let dot_color: Hsla =
-                                                                gpui::rgb(0xf5f5f5).into();
-                                                            gpui::div()
-                                                                .debug_selector(move || {
-                                                                    format!(
-                                                                        "recording-overlay-busy-dot-{index}"
-                                                                    )
-                                                                })
-                                                                .w(px(3.5))
-                                                                .h(px(3.5))
-                                                                .rounded_full()
-                                                                .bg(dot_color.opacity(alpha))
-                                                        },
-                                                    ),
-                                                ),
-                                        )
-                                    }),
+                                    .child(TRANSCRIBING_LABEL)
+                                    .child(gpui::div().flex().items_center().gap(px(3.)).children(
+                                        busy_dot_alphas.into_iter().enumerate().map(
+                                            |(index, alpha)| {
+                                                let dot_color: Hsla = gpui::rgb(0xf5f5f5).into();
+                                                gpui::div()
+                                                    .debug_selector(move || {
+                                                        format!(
+                                                            "recording-overlay-busy-dot-{index}"
+                                                        )
+                                                    })
+                                                    .w(px(3.5))
+                                                    .h(px(3.5))
+                                                    .rounded_full()
+                                                    .bg(dot_color.opacity(alpha))
+                                            },
+                                        ),
+                                    )),
                             )
                         }),
                 )

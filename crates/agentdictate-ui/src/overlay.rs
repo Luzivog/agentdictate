@@ -5,11 +5,16 @@ use std::{
     time::Duration,
 };
 
-use agentdictate_core::{ProcessingStage, WorkflowPhase, WorkflowSnapshot};
+use agentdictate_core::{DictationNotice, WorkflowPhase, WorkflowSnapshot};
 
-use crate::StatusTone;
-
-pub const OVERLAY_WIDTH: u32 = 143;
+/// The recording card is this wide; the waveform and timer fill it.
+pub const RECORDING_CARD_WIDTH: f32 = 127.0;
+/// A notice card is wider, to fit a short sentence.
+pub const NOTICE_CARD_WIDTH: f32 = 204.0;
+pub const OVERLAY_CARD_HEIGHT: f32 = 42.0;
+/// The window fits the widest card plus room for its shadow. Its input
+/// region is empty, so the transparent margin never takes a click.
+pub const OVERLAY_WIDTH: u32 = NOTICE_CARD_WIDTH as u32 + 16;
 pub const OVERLAY_HEIGHT: u32 = 56;
 pub const OVERLAY_BOTTOM_GAP: u32 = 72;
 pub const WAVEFORM_SOURCE_BIN_COUNT: usize = 44;
@@ -22,6 +27,8 @@ pub const OVERLAY_FADE_OUT: Duration = Duration::from_millis(120);
 /// Hold between dismissal and window destruction: the fade-out plus two
 /// 60 Hz frames of margin so the destroyed frame is fully transparent.
 pub const OVERLAY_FADE_HOLD: Duration = Duration::from_millis(150);
+/// How long a notice stays up before the overlay fades out.
+pub const OVERLAY_NOTICE_HOLD: Duration = Duration::from_millis(2_500);
 const WAV_HEADER_BYTES: u64 = 44;
 const RECENT_SAMPLE_COUNT: usize = 2_816;
 
@@ -40,11 +47,18 @@ pub struct ActiveRecordingPresentation {
 pub struct OverlayPresentation {
     pub workflow: WorkflowSnapshot,
     pub active_recording: Option<ActiveRecordingPresentation>,
+    /// How the dictation that just ended went, when it was not pasted.
+    pub notice: Option<DictationNotice>,
 }
 
 impl OverlayPresentation {
+    /// The workflow's state while a dictation runs; once it has ended, the
+    /// notice about it, if any.
     pub fn state(&self) -> OverlayState {
-        OverlayState::from(self.workflow)
+        match (OverlayState::from(self.workflow), self.notice) {
+            (OverlayState::Hidden, Some(notice)) => OverlayState::Notice(notice),
+            (state, _) => state,
+        }
     }
 
     /// Elapsed recording time against an injected clock, kept deterministic
@@ -318,35 +332,25 @@ fn fade_progress(elapsed: Duration, span: Duration) -> f32 {
     (elapsed.as_secs_f32() / span.as_secs_f32()).clamp(0.0, 1.0)
 }
 
-/// Presentation state derived from the workflow.
+/// What the overlay shows.
 ///
-/// The transient window opens at the start request, so its window is ready
-/// by the time the microphone is, and stays open while recording and
-/// transcribing, then lingers up to `OVERLAY_FADE_HOLD` while it fades out.
-/// Recovery remains durable in History rather than turning the overlay into
-/// a second action surface.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The transient window opens at the start request, so it is ready by the
+/// time the microphone is, and stays open while recording and transcribing.
+/// The delivery gate dismisses it before a paste. A dictation that ends
+/// without a paste shows a notice instead, for `OVERLAY_NOTICE_HOLD`; the
+/// overlay never offers actions, which Recovery and notifications do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayState {
     Hidden,
     Starting,
     Recording,
-    Finishing,
     Transcribing,
-    ReadyToDeliver,
-    Delivering,
-    RecoverableFailure { message: String, action: String },
+    Notice(DictationNotice),
 }
 
 impl OverlayState {
-    pub fn recoverable_failure(message: impl Into<String>, action: impl Into<String>) -> Self {
-        Self::RecoverableFailure {
-            message: message.into(),
-            action: action.into(),
-        }
-    }
-
     pub const fn is_visible(&self) -> bool {
-        matches!(self, Self::Starting | Self::Recording | Self::Transcribing)
+        !matches!(self, Self::Hidden)
     }
 
     /// Whether the overlay shows the recording card. While starting it is the
@@ -362,35 +366,8 @@ impl OverlayState {
             Self::Hidden => "recording-overlay-hidden",
             Self::Starting => "recording-overlay-starting",
             Self::Recording => "recording-overlay-recording",
-            Self::Finishing => "recording-overlay-finishing",
             Self::Transcribing => "recording-overlay-transcribing",
-            Self::ReadyToDeliver => "recording-overlay-ready-to-deliver",
-            Self::Delivering => "recording-overlay-delivering",
-            Self::RecoverableFailure { .. } => "recording-overlay-recoverable-failure",
-        }
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Hidden => "",
-            Self::Starting => "Starting…",
-            Self::Recording => "Listening…",
-            Self::Finishing => "Securing recording…",
-            Self::Transcribing => "Transcribing",
-            Self::ReadyToDeliver => "Ready to paste",
-            Self::Delivering => "Pasting…",
-            Self::RecoverableFailure { message, .. } => message,
-        }
-    }
-
-    pub const fn tone(&self) -> StatusTone {
-        match self {
-            Self::Hidden => StatusTone::Neutral,
-            Self::Starting => StatusTone::Starting,
-            Self::Recording => StatusTone::Recording,
-            Self::Finishing | Self::Transcribing => StatusTone::Processing,
-            Self::ReadyToDeliver | Self::Delivering => StatusTone::Success,
-            Self::RecoverableFailure { .. } => StatusTone::Danger,
+            Self::Notice(_) => "recording-overlay-notice",
         }
     }
 }
@@ -398,21 +375,13 @@ impl OverlayState {
 impl From<WorkflowSnapshot> for OverlayState {
     fn from(snapshot: WorkflowSnapshot) -> Self {
         match snapshot.phase {
-            WorkflowPhase::Ready => Self::Hidden,
+            WorkflowPhase::Ready | WorkflowPhase::NeedsAttention { .. } => Self::Hidden,
             WorkflowPhase::Starting { .. } => Self::Starting,
             WorkflowPhase::Recording { .. } => Self::Recording,
-            // The previous overlay transitioned directly from its waveform to
-            // "Transcribing". Keeping the helper visible across the brief
-            // recorder-finalization phase avoids a close/relaunch flicker.
-            WorkflowPhase::Stopping { .. } => Self::Transcribing,
-            WorkflowPhase::Processing { stage, .. } => match stage {
-                ProcessingStage::Transcribing => Self::Transcribing,
-                ProcessingStage::ReadyToDeliver => Self::ReadyToDeliver,
-                ProcessingStage::Delivering => Self::Delivering,
-            },
-            WorkflowPhase::NeedsAttention { .. } => {
-                Self::recoverable_failure("Dictation needs attention", "Open recovery")
-            }
+            // Staying visible across the brief recorder finalization avoids
+            // a close/relaunch flicker between the waveform and
+            // "Transcribing". The card stays until the gate dismisses it.
+            WorkflowPhase::Stopping { .. } | WorkflowPhase::Processing { .. } => Self::Transcribing,
         }
     }
 }

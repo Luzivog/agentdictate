@@ -5,8 +5,9 @@ use std::sync::{
 
 use agentdictate_app::{
     AgentProcess, AppPaths, DaemonHandle, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
-    connect_or_start_daemon, init_file_logging, settings_executable_for_current_process,
-    start_hotkey_listener, start_overlay_presenter, start_system_tray,
+    connect_or_start_daemon, follow_notification_actions, init_file_logging,
+    settings_executable_for_current_process, start_hotkey_listener, start_overlay_presenter,
+    start_session_notifier, start_system_tray,
 };
 use agentdictate_runtime::{IpcClient, IpcServer, load_settings};
 
@@ -57,7 +58,16 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
             None
         }
     };
+    let (notification_actions, clicked_notifications) = std::sync::mpsc::channel();
+    if let Some(notifier) = start_session_notifier(notification_actions) {
+        process.set_notifier(notifier);
+    }
     let show_tray_icon = process.show_tray_icon();
+    let settings_executable = settings_executable_for_current_process()
+        .inspect_err(|error| {
+            tracing::warn!(%error, "settings launcher is unavailable; tray will stay hidden");
+        })
+        .ok();
     let handle = DaemonHandle::new(process, runtime.clone());
     handle.forward_recorder_events(recorder_events)?;
     start_hotkey_listener(&handle)?;
@@ -95,22 +105,21 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     if let Err(error) = start_signal_listener(handle.clone(), runtime.clone(), shutdown_failed) {
         tracing::warn!(%error, "signal listener is unavailable; daemon will continue");
     }
-    let _tray_handle = if show_tray_icon {
-        match settings_executable_for_current_process() {
-            Ok(executable) => match start_system_tray(handle, executable) {
-                Ok(handle) => Some(handle),
-                Err(error) => {
-                    tracing::warn!(%error, "native tray is unavailable; daemon will continue");
-                    None
-                }
-            },
+    if let Some(executable) = settings_executable.clone()
+        && let Err(error) =
+            follow_notification_actions(handle.clone(), clicked_notifications, executable)
+    {
+        tracing::warn!(%error, "notification buttons are unavailable");
+    }
+    let _tray_handle = match settings_executable {
+        Some(executable) if show_tray_icon => match start_system_tray(handle, executable) {
+            Ok(handle) => Some(handle),
             Err(error) => {
-                tracing::warn!(%error, "settings launcher is unavailable; tray will stay hidden");
+                tracing::warn!(%error, "native tray is unavailable; daemon will continue");
                 None
             }
-        }
-    } else {
-        None
+        },
+        Some(_) | None => None,
     };
     ipc_thread
         .join()

@@ -27,16 +27,19 @@ pub use desktop::{
     APPLICATION_ID, HotkeyCaptureSink, RecordingOverlay, SettingsShell, SettingsSink,
     SettingsWindow, run_recording_overlay, run_settings_window,
 };
-pub use failure::{FailureWording, failure_wording, recovery_reason};
+pub use failure::{
+    FailureWording, NoticeWording, failure_wording, notice_wording, recovery_reason,
+};
 pub use history::{
     HistoryViewModel, RecoveryItemViewModel, RecoveryStage, RecoveryViewModel, TranscriptViewModel,
 };
 pub use overlay::{
-    ActiveRecordingPresentation, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD, OVERLAY_FADE_IN,
-    OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPresentation, OverlayState,
-    RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT, WaveformArea,
-    WaveformBar, WaveformFrame, elapsed_seconds, format_elapsed, overlay_fade_active,
-    overlay_opacity, recording_overlay_layout, sample_recent_wav, waveform_bars,
+    ActiveRecordingPresentation, NOTICE_CARD_WIDTH, OVERLAY_BOTTOM_GAP, OVERLAY_CARD_HEIGHT,
+    OVERLAY_FADE_HOLD, OVERLAY_FADE_IN, OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_NOTICE_HOLD,
+    OVERLAY_WIDTH, OverlayPresentation, OverlayState, RECORDING_CARD_WIDTH, RecordingOverlayLayout,
+    WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT, WaveformArea, WaveformBar, WaveformFrame,
+    elapsed_seconds, format_elapsed, overlay_fade_active, overlay_opacity,
+    recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 pub use route::Route;
 pub use settings::SettingsRequest;

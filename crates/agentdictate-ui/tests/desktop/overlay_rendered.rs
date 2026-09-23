@@ -7,10 +7,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use agentdictate_core::{JobId, Workflow, WorkflowSignal};
+use agentdictate_core::{DictationNotice, FailureKind, JobId, JobStage, Workflow, WorkflowSignal};
 use agentdictate_ui::{
-    ActiveRecordingPresentation, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPresentation,
-    RecordingOverlay, test_support,
+    ActiveRecordingPresentation, NOTICE_CARD_WIDTH, OVERLAY_HEIGHT, OVERLAY_WIDTH,
+    OverlayPresentation, RecordingOverlay, test_support,
 };
 use gpui::{
     AppContext, Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point, px,
@@ -94,6 +94,7 @@ fn open_recording_overlay(
             audio_path: audio_path.clone(),
             started_at_unix_millis: now_unix_millis().saturating_sub(elapsed_millis),
         }),
+        notice: None,
     };
     let (overlay, cx) = open_overlay(cx, presentation);
     (audio_path, overlay, cx)
@@ -213,6 +214,7 @@ fn starting_shows_a_still_recording_card_that_goes_live_with_the_microphone(
         OverlayPresentation {
             workflow: workflow.snapshot(),
             active_recording: None,
+            notice: None,
         },
     );
     let bar_height = |cx: &mut VisualTestContext| {
@@ -239,6 +241,7 @@ fn starting_shows_a_still_recording_card_that_goes_live_with_the_microphone(
                 audio_path: audio_path.clone(),
                 started_at_unix_millis: now_unix_millis(),
             }),
+            notice: None,
         });
         cx.notify();
     });
@@ -249,4 +252,66 @@ fn starting_shows_a_still_recording_card_that_goes_live_with_the_microphone(
         "the waveform follows the microphone"
     );
     fs::remove_file(audio_path).unwrap();
+}
+
+#[gpui::test]
+fn a_failure_notice_replaces_the_transcribing_card_without_actions(cx: &mut TestAppContext) {
+    test_support::initialize(cx);
+    let job_id = JobId::new();
+    let mut workflow = Workflow::new();
+    for signal in [
+        WorkflowSignal::StartRequested { job_id },
+        WorkflowSignal::FirstAudioFrameWritten { job_id },
+        WorkflowSignal::StopRequested,
+        WorkflowSignal::CaptureFinalized { job_id },
+    ] {
+        workflow.apply(signal).unwrap();
+    }
+    let (overlay, cx) = open_overlay(
+        cx,
+        OverlayPresentation {
+            workflow: workflow.snapshot(),
+            active_recording: None,
+            notice: None,
+        },
+    );
+    cx.debug_bounds("recording-overlay-busy-dot-0")
+        .expect("transcribing shows progress");
+
+    workflow
+        .apply(WorkflowSignal::Interrupted {
+            job_id,
+            at: JobStage::Failed,
+            failure: FailureKind::Offline,
+        })
+        .unwrap();
+    overlay.update(cx, |overlay, cx| {
+        overlay.set_presentation(OverlayPresentation {
+            workflow: workflow.snapshot(),
+            active_recording: None,
+            notice: Some(DictationNotice::Failed {
+                failure: FailureKind::Offline,
+            }),
+        });
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let card = cx
+        .debug_bounds("recording-overlay-card")
+        .expect("the notice card renders");
+    assert_eq!(card.size.width, px(NOTICE_CARD_WIDTH));
+    // Bottom-centered placement centers the window, so the card must be
+    // centered within it.
+    assert_eq!(card.left(), px(OVERLAY_WIDTH as f32) - card.right());
+    for selector in [
+        "recording-overlay-notice-title",
+        "recording-overlay-notice-detail",
+    ] {
+        let line = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        assert!(line.left() >= card.left() && line.right() <= card.right());
+    }
+    assert!(cx.debug_bounds("recording-overlay-busy-dot-0").is_none());
 }

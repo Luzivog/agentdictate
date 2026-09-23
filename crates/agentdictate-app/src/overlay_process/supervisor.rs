@@ -12,7 +12,7 @@ use std::{
 };
 
 use agentdictate_runtime::{DeliveryGate, DeliveryGateError};
-use agentdictate_ui::OverlayState;
+use agentdictate_ui::{OVERLAY_NOTICE_HOLD, OverlayState};
 use thiserror::Error;
 
 use super::{
@@ -143,7 +143,7 @@ pub struct OverlayProcessState {
 
 impl OverlayProcessState {
     pub fn transition(&mut self, update: &OverlayUpdate) -> OverlayProcessAction {
-        let visible = OverlayState::from(update.workflow).is_visible();
+        let visible = update.state().is_visible();
         match (self.running, visible) {
             (false, false) => OverlayProcessAction::StayHeadless,
             (false, true) => {
@@ -217,7 +217,7 @@ fn overlay_presenter_loop(
 
     let mut supervisor = OverlaySupervisor::new(executable, ready_timeout, events.clone(), health);
     loop {
-        let event = match supervisor.teardown_deadline() {
+        let event = match supervisor.next_deadline() {
             None => event_receiver
                 .recv()
                 .map_err(|_| RecvTimeoutError::Disconnected),
@@ -228,7 +228,7 @@ fn overlay_presenter_loop(
         let event = match event {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => {
-                supervisor.teardown_timed_out();
+                supervisor.deadline_passed();
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -274,6 +274,9 @@ struct OverlaySupervisor<'a> {
     remaining_restarts: u8,
     next_generation: u64,
     pending_dismissal: Option<PendingDismissal>,
+    /// When the notice on screen fades. Until then only a new dictation
+    /// replaces it; a hidden update is ignored.
+    notice_until: Option<Instant>,
 }
 
 /// A dismissed helper that is fading out. It leaves `helper` at dismissal, so
@@ -306,6 +309,7 @@ impl<'a> OverlaySupervisor<'a> {
             remaining_restarts: 0,
             next_generation: 0,
             pending_dismissal: None,
+            notice_until: None,
         }
     }
 
@@ -318,6 +322,7 @@ impl<'a> OverlaySupervisor<'a> {
     }
 
     fn dismiss(&mut self, reply: DismissalReply) {
+        self.notice_until = None;
         self.last_visible_update = None;
         self.remaining_restarts = 0;
         self.lifecycle.mark_stopped();
@@ -353,13 +358,44 @@ impl<'a> OverlaySupervisor<'a> {
         }
     }
 
-    /// When the supervisor must kill a dismissed helper that no paste waits
-    /// on. A waiting paste enforces the same deadline through `ForceDismiss`.
-    fn teardown_deadline(&self) -> Option<Instant> {
-        self.pending_dismissal
+    /// The next moment the supervisor acts on its own: when a notice fades,
+    /// or when it must kill a dismissed helper that no paste waits on. A
+    /// waiting paste enforces the teardown deadline through `ForceDismiss`.
+    fn next_deadline(&self) -> Option<Instant> {
+        let teardown = self
+            .pending_dismissal
             .as_ref()
             .filter(|pending| pending.reply.is_none())
-            .map(|pending| pending.deadline)
+            .map(|pending| pending.deadline);
+        match (teardown, self.notice_until) {
+            (Some(teardown), Some(notice)) => Some(teardown.min(notice)),
+            (teardown, notice) => teardown.or(notice),
+        }
+    }
+
+    fn deadline_passed(&mut self) {
+        let now = Instant::now();
+        if self.notice_until.is_some_and(|until| until <= now) {
+            self.end_notice();
+        }
+        if self
+            .pending_dismissal
+            .as_ref()
+            .is_some_and(|pending| pending.reply.is_none() && pending.deadline <= now)
+        {
+            self.teardown_timed_out();
+        }
+    }
+
+    /// Lets the notice's helper fade out and exit.
+    fn end_notice(&mut self) {
+        self.notice_until = None;
+        self.last_visible_update = None;
+        self.remaining_restarts = 0;
+        self.lifecycle.mark_stopped();
+        if let Some(mut child) = self.helper.take() {
+            child.finish();
+        }
     }
 
     fn teardown_timed_out(&mut self) {
@@ -381,7 +417,14 @@ impl<'a> OverlaySupervisor<'a> {
     }
 
     fn handle_update(&mut self, update: OverlayUpdate) {
-        if OverlayState::from(update.workflow).is_visible() {
+        let state = update.state();
+        if !state.is_visible() && self.notice_until.is_some() {
+            // The notice stays up until its deadline.
+            return;
+        }
+        self.notice_until =
+            matches!(state, OverlayState::Notice(_)).then(|| Instant::now() + OVERLAY_NOTICE_HOLD);
+        if state.is_visible() {
             self.last_visible_update = Some(update.clone());
             self.remaining_restarts = AUTOMATIC_RESTART_LIMIT_PER_UPDATE;
         } else {
@@ -550,6 +593,7 @@ impl<'a> OverlaySupervisor<'a> {
     }
 
     fn shutdown(&mut self) {
+        self.notice_until = None;
         self.last_visible_update = None;
         self.remaining_restarts = 0;
         self.lifecycle.mark_stopped();

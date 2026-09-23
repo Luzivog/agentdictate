@@ -1,4 +1,4 @@
-use agentdictate_core::FailureKind;
+use agentdictate_core::{DictationNotice, FailureKind};
 
 /// How the app words a failed dictation: a short headline, and advice that
 /// says what happened and what to do next.
@@ -20,7 +20,7 @@ pub const fn failure_wording(kind: FailureKind) -> FailureWording {
             "Add your API key in Settings, then transcribe it again.",
         ),
         FailureKind::CredentialRejected => (
-            "OpenAI refused the API key",
+            "API key refused",
             "Check your API key in Settings, then transcribe it again.",
         ),
         FailureKind::RateLimited => (
@@ -53,6 +53,43 @@ pub const fn failure_wording(kind: FailureKind) -> FailureWording {
         ),
     };
     FailureWording { headline, advice }
+}
+
+/// What a notice says: a title, a detail when there is more to say, and
+/// the sentence a desktop notification adds below the title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoticeWording {
+    pub title: &'static str,
+    pub detail: Option<&'static str>,
+    pub body: &'static str,
+}
+
+#[must_use]
+pub const fn notice_wording(notice: DictationNotice) -> NoticeWording {
+    match notice {
+        DictationNotice::Copied => NoticeWording {
+            title: "Copied — press Ctrl+V",
+            detail: None,
+            body: "The text wasn't pasted, so it's on the clipboard. Press Ctrl+V where you want it.",
+        },
+        DictationNotice::NothingHeard => NoticeWording {
+            title: "Didn't hear anything",
+            detail: Some("Check your microphone"),
+            body: "The recording was silent. Check that the right microphone is on and not muted.",
+        },
+        DictationNotice::Failed { failure } => {
+            let wording = failure_wording(failure);
+            NoticeWording {
+                title: wording.headline,
+                detail: Some(match failure {
+                    // Nothing was recorded, so there is nothing to recover.
+                    FailureKind::MicrophoneUnavailable => "Check your microphone",
+                    _ => "Saved to Recovery",
+                }),
+                body: wording.advice,
+            }
+        }
+    }
 }
 
 /// The reason a Recovery item shows: its failure's wording, or for an item

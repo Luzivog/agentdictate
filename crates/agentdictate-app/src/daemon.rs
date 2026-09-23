@@ -6,8 +6,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{
-    AppSnapshot, FailureKind, HotkeyReadiness, JobId, JobStage, RecordingMode, Settings, Workflow,
-    WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
+    AppSnapshot, DictationNotice, FailureKind, HotkeyReadiness, JobId, JobStage, RecordingMode,
+    Settings, Workflow, WorkflowError, WorkflowPhase, WorkflowSignal, WorkflowSnapshot,
 };
 use agentdictate_runtime::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod, ExternalError,
@@ -18,7 +18,7 @@ use chrono::Utc;
 use thiserror::Error;
 
 use crate::{
-    ActiveRecordingUpdate, AppPaths, FinishingEncode, OverlayController, OverlayUpdate,
+    ActiveRecordingUpdate, AppPaths, FinishingEncode, Notifier, OverlayController, OverlayUpdate,
     ProcessingTicket, Transcriber, TranscriptionCompletion,
 };
 
@@ -242,8 +242,21 @@ struct ActiveProcessing {
     job_id: JobId,
     /// When the user stopped the recording or asked to transcribe it again.
     stopped_at: Instant,
-    /// `Paste` for a dictation, `CopyOnly` for a Recovery retry.
-    delivery: DeliveryMethod,
+    requester: Requester,
+}
+
+/// Who asked for a transcription, which decides how its text is delivered
+/// and whether its end is announced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Requester {
+    /// A dictation: pasted, or copied when it arrives late; announced on
+    /// the overlay and as a notification when it is not pasted.
+    Dictation,
+    /// "Transcribe again" in the settings window, which has the focus and
+    /// reports the result itself: copied, and not announced.
+    Window,
+    /// "Try again" on a notification: copied, and announced.
+    Notification,
 }
 
 /// Owns the dictation lifecycle and its durable checkpoints. Every method is
@@ -262,6 +275,9 @@ pub struct Daemon<R, T, D> {
     recoverable_count: usize,
     last_transcript: Option<String>,
     overlay: OverlayDeliveryGate,
+    notifier: Option<Notifier>,
+    /// Set while shutting down, when a dictation ending is not announced.
+    quiet: bool,
     status: Arc<DaemonStatus>,
 }
 
@@ -294,6 +310,8 @@ where
             recoverable_count,
             last_transcript: None,
             overlay: OverlayDeliveryGate::Headless(HeadlessDeliveryGate),
+            notifier: None,
+            quiet: false,
             status,
         }
     }
@@ -456,7 +474,7 @@ where
         self.activity = Activity::Processing(ActiveProcessing {
             job_id: id,
             stopped_at,
-            delivery: DeliveryMethod::Paste,
+            requester: Requester::Dictation,
         });
         self.advance(id, WorkflowSignal::CaptureFinalized { job_id: id });
         self.publish_overlay_update();
@@ -557,8 +575,8 @@ where
     ) -> Result<RecordingJob, DaemonError> {
         let id = ready.id;
         let waited = finished_at.saturating_duration_since(processing.stopped_at);
-        let method = match processing.delivery {
-            DeliveryMethod::Paste if waited > stale_paste_after(ready.duration_seconds) => {
+        let method = match processing.requester {
+            Requester::Dictation if waited > stale_paste_after(ready.duration_seconds) => {
                 tracing::info!(
                     job_id = %id,
                     waited_ms = millis(waited),
@@ -566,7 +584,8 @@ where
                 );
                 DeliveryMethod::CopyOnly
             }
-            method => method,
+            Requester::Dictation => DeliveryMethod::Paste,
+            Requester::Window | Requester::Notification => DeliveryMethod::CopyOnly,
         };
         self.advance(id, WorkflowSignal::TranscriptStored { job_id: id });
         self.advance(id, WorkflowSignal::DeliveryStarted { job_id: id });
@@ -601,7 +620,7 @@ where
                 return Err(error.into());
             }
         };
-        let end = if result.stage == JobStage::Delivered {
+        let (end, notice) = if result.stage == JobStage::Delivered {
             if let Err(error) = self.runtime.complete_delivered(id, &self.settings) {
                 // The paste command was already submitted. A bookkeeping failure
                 // must never make it retryable and risk a duplicate paste; the
@@ -609,12 +628,25 @@ where
                 tracing::error!(job_id = %id, %error, "could not complete delivered dictation");
             }
             self.cleanup_completed_audio(&result);
-            WorkflowSignal::DeliverySubmitted { job_id: id }
+            (
+                WorkflowSignal::DeliverySubmitted { job_id: id },
+                (method == DeliveryMethod::CopyOnly).then_some(DictationNotice::Copied),
+            )
         } else {
-            interruption(&result, FailureKind::PasteNotConfirmed)
+            let end = interruption(&result, FailureKind::PasteNotConfirmed);
+            // A failed paste whose text reached the clipboard only needs
+            // Ctrl+V; the job also waits in Recovery.
+            let notice = match end {
+                _ if result.copied_to_clipboard => DictationNotice::Copied,
+                WorkflowSignal::Interrupted { failure, .. } => DictationNotice::Failed { failure },
+                _ => DictationNotice::Failed {
+                    failure: FailureKind::PasteNotConfirmed,
+                },
+            };
+            (end, Some(notice))
         };
         self.last_transcript = Some(result.final_text.clone());
-        self.settle(id, end);
+        self.settle_with_notice(id, end, notice);
         tracing::info!(
             job_id = %id,
             stage = ?result.stage,
@@ -745,6 +777,7 @@ where
     /// Finalizes active audio without transcribing or deleting it, so process
     /// shutdown can never discard an in-progress dictation.
     pub fn shutdown(&mut self) -> Result<(), DaemonError> {
+        self.quiet = true;
         if matches!(self.activity, Activity::Recording(_)) {
             self.preserve_active_recording(JobFailure::new(
                 FailureKind::Unexpected,
@@ -759,8 +792,23 @@ where
     /// because the request came from AgentDictate's own window, which has the
     /// focus. No other dictation can start meanwhile.
     pub fn retry_transcription(&mut self, id: JobId) -> Result<ProcessingTicket<T>, DaemonError> {
+        self.begin_retry(id, Requester::Window)
+    }
+
+    /// "Try again" on a failure notification. Like "Transcribe again", the
+    /// text is copied, since the user may be anywhere by now; its end is
+    /// announced like a dictation's.
+    pub fn try_again(&mut self, id: JobId) -> Result<ProcessingTicket<T>, DaemonError> {
+        self.begin_retry(id, Requester::Notification)
+    }
+
+    fn begin_retry(
+        &mut self,
+        id: JobId,
+        requester: Requester,
+    ) -> Result<ProcessingTicket<T>, DaemonError> {
         self.require_idle()?;
-        tracing::info!(job_id = %id, "recovery transcription retry requested");
+        tracing::info!(job_id = %id, ?requester, "recovery transcription retry requested");
         let job = self
             .runtime
             .prepare_transcription_retry(id)
@@ -768,7 +816,7 @@ where
         self.activity = Activity::Processing(ActiveProcessing {
             job_id: id,
             stopped_at: Instant::now(),
-            delivery: DeliveryMethod::CopyOnly,
+            requester,
         });
         self.advance(id, WorkflowSignal::RetryRequested { job_id: id });
         self.publish_overlay_update();
@@ -867,6 +915,11 @@ where
         self.publish_overlay_update();
     }
 
+    /// Shows how dictations that are not pasted end as desktop notifications.
+    pub fn set_notifier(&mut self, notifier: Notifier) {
+        self.notifier = Some(notifier);
+    }
+
     /// State other threads read without the daemon lock.
     #[must_use]
     pub fn status(&self) -> Arc<DaemonStatus> {
@@ -909,13 +962,28 @@ where
     /// Publishes the workflow to the overlay helper and the status mirror.
     /// Every workflow change ends with this call.
     fn publish_overlay_update(&self) {
+        self.publish(None);
+    }
+
+    /// Publishes the workflow, and announces how the dictation `job_id`
+    /// ended when it was not pasted: on the overlay and as a notification.
+    fn publish(&self, announcement: Option<(DictationNotice, JobId)>) {
         let recording = matches!(
             self.workflow.snapshot().phase,
             WorkflowPhase::Starting { .. } | WorkflowPhase::Recording { .. }
         );
         self.status.recording.store(recording, Ordering::Release);
         if let OverlayDeliveryGate::Live(overlay) = &self.overlay {
-            overlay.update(self.overlay_update());
+            overlay.update(OverlayUpdate {
+                notice: announcement.map(|(notice, _)| notice),
+                ..self.overlay_update()
+            });
+        }
+        if let Some((notice, job_id)) = announcement {
+            tracing::info!(%job_id, ?notice, "dictation ended without a paste");
+            if let Some(notifier) = &self.notifier {
+                notifier.notify(notice, job_id);
+            }
         }
     }
 
@@ -1010,11 +1078,38 @@ where
 
     /// Ends the active dictation with its final workflow transition:
     /// `Interrupted` keeps the job in Recovery, any other signal returns to
-    /// Ready. This never fails. It clears the activity first, rebuilds the
-    /// workflow when the transition is out of order, and recounts Recovery
-    /// best-effort, so a failed bookkeeping step can never leave a stale
-    /// active job that rejects every later command.
+    /// Ready. A failure, or a recording where nothing was heard, is
+    /// announced. This never fails. It clears the activity first, rebuilds
+    /// the workflow when the transition is out of order, and recounts
+    /// Recovery best-effort, so a failed bookkeeping step can never leave a
+    /// stale active job that rejects every later command.
     fn settle(&mut self, id: JobId, end: WorkflowSignal) {
+        let notice = match end {
+            WorkflowSignal::Interrupted { failure, .. } => {
+                Some(DictationNotice::Failed { failure })
+            }
+            WorkflowSignal::NoSpeechDetected { .. } => Some(DictationNotice::NothingHeard),
+            _ => None,
+        };
+        self.settle_with_notice(id, end, notice);
+    }
+
+    /// `settle`, announcing `notice` about the dictation. The settings
+    /// window reports its own retries, and a shutdown announces nothing.
+    fn settle_with_notice(
+        &mut self,
+        id: JobId,
+        end: WorkflowSignal,
+        notice: Option<DictationNotice>,
+    ) {
+        let announced = !self.quiet
+            && !matches!(
+                self.activity,
+                Activity::Processing(ActiveProcessing {
+                    requester: Requester::Window,
+                    ..
+                })
+            );
         self.activity = Activity::Idle;
         let needs_attention = matches!(end, WorkflowSignal::Interrupted { .. });
         if let Err(workflow_error) = self.workflow.apply(end) {
@@ -1030,7 +1125,7 @@ where
         if !self.recount_recoveries() && needs_attention {
             self.recoverable_count = self.recoverable_count.max(1);
         }
-        self.publish_overlay_update();
+        self.publish(notice.filter(|_| announced).map(|notice| (notice, id)));
     }
 
     /// Clears a Recovery prompt about `id`, and only about `id`.
@@ -1093,11 +1188,12 @@ where
     }
 
     /// The overlay samples the recording's audio only while it is captured.
-    /// Recovery retries run from the settings window, so they show no overlay.
+    /// Only a dictation shows its progress: a Recovery retry was asked for
+    /// away from the text field, so it only announces its end.
     fn overlay_update(&self) -> OverlayUpdate {
         let workflow = match self.activity {
             Activity::Processing(ActiveProcessing {
-                delivery: DeliveryMethod::CopyOnly,
+                requester: Requester::Window | Requester::Notification,
                 ..
             }) => WorkflowSnapshot {
                 phase: WorkflowPhase::Ready,
@@ -1120,6 +1216,7 @@ where
         OverlayUpdate {
             workflow,
             active_recording,
+            notice: None,
         }
     }
 

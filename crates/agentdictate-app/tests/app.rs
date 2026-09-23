@@ -1,3 +1,5 @@
+#[path = "app/announcements.rs"]
+mod announcements;
 #[path = "app/daemon_flow.rs"]
 mod daemon_flow;
 #[path = "app/daemon_handle.rs"]

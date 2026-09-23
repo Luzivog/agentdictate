@@ -12,6 +12,7 @@ the real compositor.
 """
 
 import argparse
+import ctypes
 import json
 import math
 import os
@@ -260,6 +261,26 @@ def geometry(desktop, window):
     return [value("Absolute upper-left X"), value("Absolute upper-left Y"), value("Width"), value("Height")]
 
 
+def input_rectangles(desktop, window):
+    """How many rectangles make up the window's X input region; zero means
+    every click passes through to whatever is below."""
+    x11 = ctypes.CDLL("libX11.so.6")
+    xext = ctypes.CDLL("libXext.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xext.XShapeGetRectangles.restype = ctypes.c_void_p
+    xext.XShapeGetRectangles.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                                         ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+    os.environ["XAUTHORITY"] = desktop.env["XAUTHORITY"]
+    display = x11.XOpenDisplay(desktop.env["DISPLAY"].encode())
+    assert display, "could not open the private X display"
+    count, ordering = ctypes.c_int(), ctypes.c_int()
+    shape_input = 2
+    xext.XShapeGetRectangles(display, int(window, 16), shape_input, ctypes.byref(count), ctypes.byref(ordering))
+    x11.XCloseDisplay(display)
+    return count.value
+
+
 def helper_window(desktop):
     tree = desktop.run(["xwininfo", "-root", "-tree"])
     match = re.search(r'(0x[0-9a-f]+).*\("local.agentdictate.AgentDictate"', tree)
@@ -276,7 +297,7 @@ def expected_frame(desktop, scale, primary=None):
         right, bottom = min(x + width, ax + aw), min(y + height, ay + ah)
         x, y = max(x, ax), max(y, ay)
         width, height = right - x, bottom - y
-    w, h, gap = [round(n * scale) for n in [143, 56, 72]]
+    w, h, gap = [round(n * scale) for n in [220, 56, 72]]
     return [x + (width - w) // 2, y + height - gap - h, w, h]
 
 
@@ -292,8 +313,9 @@ def assert_transparent_corners(desktop, window, baseline, scale):
         assert all(abs(a - e) <= 6 for a, e in zip(actual, expected)), \
             f"overlay corner ({cx}, {cy}) covers the desktop: {actual}, desktop {expected}"
         corners[f"{cx},{cy}"] = actual
-    # Card-local (4, 21): inside the card, left of the waveform.
-    card = image.getpixel((x + round(10 * scale), y + round(27 * scale)))
+    # Card-local (4, 21): inside the 127-wide recording card, centered in
+    # the 220-wide window, left of the waveform.
+    card = image.getpixel((x + round(50 * scale), y + round(27 * scale)))
     assert max(card) < 0x40, f"overlay card body is not dark: {card}"
     return {"desktop": baseline.getpixel((x + 1, y + 1)), "corners": corners, "card": card}
 
@@ -328,13 +350,20 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
     statuses = []
     status_ms = {}
     def send(phase):
-        state = {"phase": phase if phase in {"starting", "recording"} else "processing",
-                 "job_id": "00000000-0000-4000-8000-000000000001"}
-        if state["phase"] == "processing":
-            state["stage"] = phase
-        recording = None if phase == "starting" else {
-            "audio_path": str(audio), "started_at_unix_millis": round(time.time() * 1000) - 2000}
-        helper.stdin.write(json.dumps({"workflow": {"phase": state}, "active_recording": recording}) + "\n")
+        job_id = "00000000-0000-4000-8000-000000000001"
+        if phase == "notice":
+            # A dictation that failed: the card turns into its notice.
+            update = {"workflow": {"phase": {"phase": "needs_attention", "job_id": job_id, "at": "failed",
+                                             "failure": "offline"}},
+                      "active_recording": None, "notice": {"notice": "failed", "failure": "offline"}}
+        else:
+            state = {"phase": phase if phase in {"starting", "recording"} else "processing", "job_id": job_id}
+            if state["phase"] == "processing":
+                state["stage"] = phase
+            recording = None if phase == "starting" else {
+                "audio_path": str(audio), "started_at_unix_millis": round(time.time() * 1000) - 2000}
+            update = {"workflow": {"phase": state}, "active_recording": recording}
+        helper.stdin.write(json.dumps(update) + "\n")
         helper.stdin.flush()
     try:
         # The daemon launches the helper at the start request, before audio exists.
@@ -364,9 +393,11 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
         assert {"status": "window_created", "override_redirect": True} in statuses, statuses
         info = desktop.run(["xwininfo", "-id", window])
         assert "Override Redirect State: yes" in info and "Map State: IsViewable" in info
+        # The transparent margin around the card must never take a click.
+        assert input_rectangles(desktop, window) == 0, "the overlay takes clicks"
         assert window not in desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"])
         recognized = {}
-        for phase in ["recording", "transcribing"]:
+        for phase in ["recording", "transcribing", "notice"]:
             send(phase)
             def visible():
                 im = desktop.screenshot(f"{phase}.png")
@@ -378,10 +409,11 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
                     return sum(r > 150 and r > 2 * g and r > 2 * b for r, g, b in crop.getdata()) > 20 * scale
                 path = desktop.root / "label.png"
                 crop.resize((w * 4, h * 4)).save(path)
-                text = subprocess.check_output(["tesseract", str(path), "stdout", "--psm", "7"],
+                layout = "7" if phase == "transcribing" else "6"
+                text = subprocess.check_output(["tesseract", str(path), "stdout", "--psm", layout],
                                                 stderr=subprocess.DEVNULL, text=True).lower()
                 recognized[phase] = text.strip()
-                return "transcribing" in text
+                return "transcribing" in text if phase == "transcribing" else "saved to recovery" in text
             wait_until(visible, f"composited {phase} pixels")
             if phase == "recording":
                 transparency = assert_transparent_corners(desktop, window, baseline, scale)

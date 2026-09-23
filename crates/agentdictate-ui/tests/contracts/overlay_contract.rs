@@ -1,8 +1,10 @@
 //! Overlay model, waveform, timer and fade contracts.
 
-use agentdictate_core::{JobId, Workflow, WorkflowSignal};
+use agentdictate_core::{
+    DictationNotice, FailureKind, JobId, JobStage, Workflow, WorkflowSignal, WorkflowSnapshot,
+};
 use agentdictate_ui::{
-    ActiveRecordingPresentation, OverlayPresentation, OverlayState, StatusTone, WAVEFORM_BAR_COUNT,
+    ActiveRecordingPresentation, OverlayPresentation, OverlayState, WAVEFORM_BAR_COUNT,
     WaveformFrame, format_elapsed, recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 use agentdictate_ui::{
@@ -11,29 +13,44 @@ use agentdictate_ui::{
 use std::{fs, path::PathBuf, time::Duration};
 
 #[test]
-fn overlay_opens_at_the_start_request_and_stays_through_processing() {
-    for state in [
-        OverlayState::Starting,
-        OverlayState::Recording,
-        OverlayState::Transcribing,
-    ] {
-        assert!(state.is_visible(), "{state:?} should open the overlay");
-    }
-    assert_eq!(OverlayState::Transcribing.label(), "Transcribing");
+fn a_notice_shows_only_once_the_dictation_has_ended() {
+    let notice = DictationNotice::Failed {
+        failure: FailureKind::Offline,
+    };
+    let job_id = JobId::new();
+    let mut workflow = Workflow::new();
+    workflow
+        .apply(WorkflowSignal::StartRequested { job_id })
+        .unwrap();
+    let starting = presentation(workflow.snapshot(), Some(notice));
+    workflow
+        .apply(WorkflowSignal::Interrupted {
+            job_id,
+            at: JobStage::Failed,
+            failure: FailureKind::Offline,
+        })
+        .unwrap();
+    let failed = presentation(workflow.snapshot(), Some(notice));
 
-    let state = OverlayState::recoverable_failure("Could not paste", "Copy again");
-    for state in [
-        OverlayState::Hidden,
-        OverlayState::Finishing,
-        OverlayState::ReadyToDeliver,
-        OverlayState::Delivering,
-        state.clone(),
-    ] {
-        assert!(!state.is_visible(), "{state:?} belongs outside the overlay");
-    }
+    // A new dictation replaces the notice of the last one.
+    assert_eq!(starting.state(), OverlayState::Starting);
+    assert_eq!(failed.state(), OverlayState::Notice(notice));
+    assert!(failed.state().is_visible());
+    assert_eq!(
+        presentation(workflow.snapshot(), None).state(),
+        OverlayState::Hidden
+    );
+}
 
-    assert_eq!(state.label(), "Could not paste");
-    assert_eq!(state.tone(), StatusTone::Danger);
+fn presentation(
+    workflow: WorkflowSnapshot,
+    notice: Option<DictationNotice>,
+) -> OverlayPresentation {
+    OverlayPresentation {
+        workflow,
+        active_recording: None,
+        notice,
+    }
 }
 
 #[test]
@@ -52,6 +69,7 @@ fn recording_presentation_keeps_audio_telemetry_outside_the_workflow_snapshot() 
             audio_path: PathBuf::from("/tmp/active-recording.wav"),
             started_at_unix_millis: 1_726_000_000_250,
         }),
+        notice: None,
     };
 
     assert_eq!(presentation.state(), OverlayState::Recording);
@@ -86,6 +104,7 @@ fn recording_elapsed_time_uses_an_injected_clock_and_never_goes_negative() {
             audio_path: PathBuf::from("/tmp/active-recording.wav"),
             started_at_unix_millis: 10_000,
         }),
+        notice: None,
     };
 
     assert_eq!(presentation.elapsed_seconds(12_345), 2.345);
