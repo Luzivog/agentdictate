@@ -6,12 +6,16 @@ use std::{
         Arc,
         mpsc::{self, Sender},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
+use agentdictate_core::{Hotkey, HotkeyCaptureOutcome};
+
 use crate::hotkey::{
-    DeviceId, HotkeyListenerStatus, HotkeyParseError, HotkeySignal, HotkeySpec, KeyInput,
+    CaptureStep, DeviceId, HotkeyListenerStatus, HotkeyParseError, HotkeySignal, HotkeySpec,
+    KeyInput,
 };
+use crate::key_label::key_label;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceOpenFailure {
@@ -116,6 +120,13 @@ pub(super) enum ListenerCommand {
         requested: HotkeySpec,
         response: mpsc::SyncSender<Result<(), ReconfigurationFailure>>,
     },
+    /// Arms a one-shot capture, replacing (and cancelling) any pending one.
+    /// The reply is `None` when `timeout` passes without a chord.
+    Capture {
+        timeout: Duration,
+        response: mpsc::SyncSender<Option<CaptureStep>>,
+    },
+    CancelCapture,
     Stop,
 }
 
@@ -148,6 +159,36 @@ impl NativeHotkeyControl {
                 reason: error.reason,
             }),
         }
+    }
+
+    /// Captures the next shortcut pressed on any open keyboard, blocking up
+    /// to `timeout`. Until it ends, the listener withholds hotkey signals.
+    pub fn capture(
+        &self,
+        timeout: Duration,
+    ) -> Result<HotkeyCaptureOutcome, NativeHotkeyControlError> {
+        let (response_sender, response) = mpsc::sync_channel(1);
+        self.send(ListenerCommand::Capture {
+            timeout,
+            response: response_sender,
+        })?;
+        Ok(
+            match response
+                .recv()
+                .map_err(|_| NativeHotkeyControlError::ListenerStopped)?
+            {
+                Some(CaptureStep::Chord { modifiers, key }) => HotkeyCaptureOutcome::Captured {
+                    hotkey: Hotkey::captured(modifiers, key, &key_label(key)),
+                },
+                Some(CaptureStep::Cancelled) => HotkeyCaptureOutcome::Cancelled,
+                None => HotkeyCaptureOutcome::TimedOut,
+            },
+        )
+    }
+
+    /// Ends a pending capture, which then reports `Cancelled`.
+    pub fn cancel_capture(&self) -> Result<(), NativeHotkeyControlError> {
+        self.send(ListenerCommand::CancelCapture)
     }
 
     pub fn reconfigure_text(&self, spec: &str) -> Result<(), NativeHotkeyControlError> {

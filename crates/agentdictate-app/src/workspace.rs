@@ -47,6 +47,8 @@ pub enum WorkspaceError {
     UnexpectedLifecycleSnapshot,
     #[error("daemon returned history data for a workspace request")]
     UnexpectedHistoryPage,
+    #[error("daemon returned a shortcut capture for a workspace request")]
+    UnexpectedHotkeyCapture,
 }
 
 pub struct WorkspaceClient {
@@ -230,7 +232,9 @@ impl WorkspaceClient {
             ServerMessageKind::CommandRejected { error, .. } => {
                 return Err(WorkspaceError::CommandRejected { message: error });
             }
-            ServerMessageKind::Snapshot { .. } | ServerMessageKind::Workspace { .. } => {
+            ServerMessageKind::Snapshot { .. }
+            | ServerMessageKind::Workspace { .. }
+            | ServerMessageKind::HotkeyCaptured { .. } => {
                 return Err(WorkspaceError::UnexpectedHistoryResponse);
             }
         };
@@ -278,6 +282,9 @@ impl WorkspaceClient {
             }
             ServerMessageKind::HistoryPage { .. } => {
                 return Err(WorkspaceError::UnexpectedHistoryPage);
+            }
+            ServerMessageKind::HotkeyCaptured { .. } => {
+                return Err(WorkspaceError::UnexpectedHotkeyCapture);
             }
         };
         let mut state = self.lock_state()?;

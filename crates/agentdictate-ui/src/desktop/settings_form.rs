@@ -80,14 +80,6 @@ macro_rules! define_settings_form {
                 },
             )*
         }
-        shortcut {
-            $(
-                $shortcut_field:ident: $shortcut_type:ty {
-                    from: $shortcut_from:ident,
-                    apply: $shortcut_apply_kind:ident($shortcut_apply:ident),
-                },
-            )*
-        }
     ) => {
         #[derive(Clone)]
         pub(super) struct SettingsFormState {
@@ -225,15 +217,6 @@ macro_rules! define_settings_form {
                         },
                     )
                 }));
-                $(
-                    let _ = stringify!($shortcut_field);
-                    subscriptions.push(cx.observe_keystrokes(|shell, event, _window, cx| {
-                        if shell.settings.shortcut_capture_active {
-                            shell.capture_shortcut(&event.keystroke, cx);
-                            cx.stop_propagation();
-                        }
-                    }));
-                )*
                 subscriptions
             }
         }

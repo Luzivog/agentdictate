@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+use crate::hotkey::Hotkey;
 use crate::settings::{SecretString, Settings, SettingsSnapshot};
 use crate::snapshots::{
     HistoryPageCursor, HistoryPageRequest, HistoryPageSnapshot, WorkspaceSnapshot,
 };
 use crate::workflow::{JobId, WorkflowSnapshot};
 
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {
@@ -112,6 +113,19 @@ impl ClientCommand {
         Self::with_kind(ClientCommandKind::CopyTranscript { request_id, id })
     }
 
+    /// Asks the daemon to capture the next shortcut pressed on any keyboard.
+    /// The reply is [`ServerMessageKind::HotkeyCaptured`].
+    #[must_use]
+    pub const fn capture_hotkey(request_id: u64) -> Self {
+        Self::with_kind(ClientCommandKind::CaptureHotkey { request_id })
+    }
+
+    /// Ends a pending shortcut capture; it replies `Cancelled`.
+    #[must_use]
+    pub const fn cancel_hotkey_capture(request_id: u64) -> Self {
+        Self::with_kind(ClientCommandKind::CancelHotkeyCapture { request_id })
+    }
+
     #[must_use]
     pub const fn quit(request_id: u64) -> Self {
         Self::with_kind(ClientCommandKind::Quit { request_id })
@@ -162,6 +176,8 @@ impl ClientCommand {
             ClientCommandKind::UpdateSettings { .. } => ClientCommandTag::UpdateSettings,
             ClientCommandKind::SetApiKey { .. } => ClientCommandTag::SetApiKey,
             ClientCommandKind::HotkeyStatusChanged { .. } => ClientCommandTag::HotkeyStatusChanged,
+            ClientCommandKind::CaptureHotkey { .. } => ClientCommandTag::CaptureHotkey,
+            ClientCommandKind::CancelHotkeyCapture { .. } => ClientCommandTag::CancelHotkeyCapture,
             ClientCommandKind::Quit { .. } => ClientCommandTag::Quit,
         }
     }
@@ -189,6 +205,8 @@ pub enum ClientCommandTag {
     UpdateSettings,
     SetApiKey,
     HotkeyStatusChanged,
+    CaptureHotkey,
+    CancelHotkeyCapture,
     Quit,
 }
 
@@ -255,6 +273,12 @@ pub enum ClientCommandKind {
         request_id: u64,
         readiness: HotkeyReadiness,
     },
+    CaptureHotkey {
+        request_id: u64,
+    },
+    CancelHotkeyCapture {
+        request_id: u64,
+    },
     Quit {
         request_id: u64,
     },
@@ -266,6 +290,19 @@ pub enum HotkeyReadiness {
     Starting,
     Ready,
     Unavailable { message: String },
+}
+
+/// How a shortcut capture ended.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum HotkeyCaptureOutcome {
+    Captured {
+        hotkey: Hotkey,
+    },
+    /// Esc was pressed, or the capture was cancelled or replaced.
+    Cancelled,
+    /// No shortcut was pressed in time.
+    TimedOut,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -319,6 +356,17 @@ impl ServerMessage {
     }
 
     #[must_use]
+    pub const fn hotkey_captured(request_id: u64, outcome: HotkeyCaptureOutcome) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            kind: ServerMessageKind::HotkeyCaptured {
+                request_id,
+                outcome,
+            },
+        }
+    }
+
+    #[must_use]
     pub fn command_rejected(request_id: u64, error: impl Into<String>) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -345,6 +393,10 @@ pub enum ServerMessageKind {
     HistoryPage {
         request_id: u64,
         page: Box<HistoryPageSnapshot>,
+    },
+    HotkeyCaptured {
+        request_id: u64,
+        outcome: HotkeyCaptureOutcome,
     },
     CommandRejected {
         request_id: u64,

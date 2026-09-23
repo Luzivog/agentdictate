@@ -23,8 +23,8 @@ mod workspace;
 pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
-    APPLICATION_ID, CommandSink, RecordingOverlay, SettingsShell, run_recording_overlay,
-    run_settings_shell_with_workspace_actions,
+    APPLICATION_ID, CommandSink, HotkeyCaptureSink, RecordingOverlay, SettingsShell,
+    run_recording_overlay, run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
 pub use history::{

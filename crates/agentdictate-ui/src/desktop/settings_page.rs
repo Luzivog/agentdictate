@@ -629,7 +629,7 @@ fn number_row(
 }
 
 fn shortcut_row(
-    hotkey: &str,
+    hotkey: &agentdictate_core::Hotkey,
     capture_active: bool,
     capture_error: Option<String>,
     theme: ThemeTokens,
@@ -670,15 +670,15 @@ fn shortcut_row(
                                     .px_3()
                                     .py_1()
                                     .text_sm()
-                                    .child(hotkey.to_owned()),
+                                    .child(hotkey.label().to_owned()),
                             )
                             .child(
                                 action_button("settings-hotkey-change")
                                     .debug_selector(|| "settings-hotkey-change".to_owned())
                                     .small()
                                     .label("Change")
-                                    .on_click(cx.listener(|shell, _, _, cx| {
-                                        shell.begin_shortcut_capture(cx);
+                                    .on_click(cx.listener(|shell, _, window, cx| {
+                                        shell.begin_shortcut_capture(window, cx);
                                     })),
                             ),
                     )
@@ -700,7 +700,7 @@ fn shortcut_row(
                                         .px_3()
                                         .py_1()
                                         .text_sm()
-                                        .child("Press a shortcut…"),
+                                        .child("Press the new shortcut…"),
                                 )
                                 .child(
                                     action_button("settings-hotkey-cancel")
@@ -712,14 +712,23 @@ fn shortcut_row(
                                         })),
                                 ),
                         )
-                        .when_some(capture_error, |control, error| {
-                            control.child(
-                                gpui::div()
-                                    .text_xs()
-                                    .text_color(gpui_color(theme.danger))
-                                    .child(error),
-                            )
-                        })
+                        .child(
+                            gpui::div()
+                                .text_xs()
+                                .text_color(gpui_color(theme.text_muted))
+                                .child(
+                                    "Hold Ctrl, Alt, Shift or Super and press a key. Esc cancels.",
+                                ),
+                        )
+                })
+                .when_some(capture_error, |control, error| {
+                    control.child(
+                        gpui::div()
+                            .debug_selector(|| "settings-hotkey-capture-error".to_owned())
+                            .text_xs()
+                            .text_color(gpui_color(theme.danger))
+                            .child(error),
+                    )
                 }),
         )
 }

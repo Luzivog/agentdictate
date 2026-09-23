@@ -11,14 +11,14 @@ use std::{
 };
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, Settings, VocabularyEntry, WorkflowPhase, WorkflowSnapshot,
-    parse_vocabulary,
+    ClientCommand, ClientCommandKind, Hotkey, HotkeyCaptureOutcome, HotkeyModifier, Settings,
+    VocabularyEntry, WorkflowPhase, WorkflowSnapshot, parse_vocabulary,
 };
 use agentdictate_ui::{
-    AgentDictateWindowFrame, CommandSink, HistoryViewModel, RecoveryItemViewModel, RecoveryStage,
-    Route, SettingsShell, ShellViewModel, TranscriptViewModel, UsageDayViewModel, UsagePeriod,
-    UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel,
-    test_support,
+    AgentDictateWindowFrame, CommandSink, HistoryViewModel, HotkeyCaptureSink,
+    RecoveryItemViewModel, RecoveryStage, Route, SettingsShell, ShellViewModel,
+    TranscriptViewModel, UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel,
+    WorkspaceAction, WorkspaceActionSink, WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
@@ -123,6 +123,7 @@ impl Harness {
             Settings::default(),
             false,
             Arc::new(|_| Ok(())),
+            no_capture(),
             action_sink,
         )
     }
@@ -149,6 +150,19 @@ impl Harness {
         has_api_key: bool,
         commands: Arc<Mutex<Vec<ClientCommand>>>,
     ) -> Self {
+        Self::open_connected_capturing(cx, model, settings, has_api_key, commands, no_capture())
+    }
+
+    /// Opens Settings on a fake daemon whose shortcut capture answers with
+    /// `hotkey_capture`.
+    fn open_connected_capturing(
+        cx: &mut TestAppContext,
+        model: ShellViewModel,
+        settings: Settings,
+        has_api_key: bool,
+        commands: Arc<Mutex<Vec<ClientCommand>>>,
+        hotkey_capture: HotkeyCaptureSink,
+    ) -> Self {
         let workspace = model.workspace.clone();
         Self::open_shell(
             cx,
@@ -160,6 +174,7 @@ impl Harness {
                 commands.lock().expect("command lock").push(command);
                 Ok(())
             }),
+            hotkey_capture,
             Arc::new(move |_| Ok(workspace.clone())),
         )
     }
@@ -184,11 +199,13 @@ impl Harness {
                 commands.lock().expect("command lock").push(command);
                 Ok(())
             }),
+            no_capture(),
             Arc::new(|_| Ok(WorkspaceViewModel::default())),
         )
     }
 
     /// Opens the production window composition (Root, frame, shell) headlessly.
+    #[allow(clippy::too_many_arguments)]
     fn open_shell(
         cx: &mut TestAppContext,
         viewport: Size<Pixels>,
@@ -196,6 +213,7 @@ impl Harness {
         settings: Settings,
         has_api_key: bool,
         command_sink: CommandSink,
+        hotkey_capture: HotkeyCaptureSink,
         action_sink: WorkspaceActionSink,
     ) -> Self {
         test_support::initialize(cx);
@@ -217,6 +235,7 @@ impl Harness {
                             settings,
                             has_api_key,
                             command_sink,
+                            hotkey_capture,
                             action_sink,
                             window,
                             cx,
@@ -1162,7 +1181,7 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     assert!(matches!(
         &commands[0].kind,
         ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.hotkey == "Ctrl+Space"
+            if settings.hotkey == Hotkey::default()
                 && settings.recording_mode == agentdictate_core::RecordingMode::Toggle
                 && settings.max_recording_seconds == 300
                 && settings.audio_ducking_fade_out_ms == 600
@@ -1172,18 +1191,27 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
 }
 
 #[gpui::test]
-fn shortcut_capture_accepts_a_supported_chord_and_saves_it(cx: &mut TestAppContext) {
+fn shortcut_capture_saves_the_physical_key_the_daemon_captured(cx: &mut TestAppContext) {
+    // Ctrl+A on AZERTY: the physical Q key, which QWERTY names "Q".
+    let captured = Hotkey::captured(
+        std::collections::BTreeSet::from([HotkeyModifier::Ctrl]),
+        16,
+        "A",
+    );
     let commands = Arc::new(Mutex::new(Vec::new()));
-    let mut harness = Harness::open_connected(cx, Arc::clone(&commands));
+    let mut harness = open_settings_capturing(
+        cx,
+        Arc::clone(&commands),
+        HotkeyCaptureOutcome::Captured {
+            hotkey: captured.clone(),
+        },
+    );
 
     harness.scroll_to("settings-hotkey-change");
     harness.click("settings-hotkey-change");
-    harness.bounds("settings-hotkey-capture");
-    harness.bounds("settings-hotkey-cancel");
-    harness.cx.simulate_keystrokes("ctrl-alt-d");
-    harness.cx.run_until_parked();
 
     assert!(!harness.has("settings-hotkey-capture"));
+    assert!(!harness.has("settings-hotkey-capture-error"));
     harness.bounds("settings-save-bar");
     harness.scroll_route_by(10_000.);
     harness.click("save-settings");
@@ -1192,8 +1220,50 @@ fn shortcut_capture_accepts_a_supported_chord_and_saves_it(cx: &mut TestAppConte
     assert!(matches!(
         &commands[0].kind,
         ClientCommandKind::UpdateSettings { settings, .. }
-            if settings.hotkey == "Ctrl+Alt+D"
+            if settings.hotkey == captured && settings.hotkey.key() == 16
     ));
+}
+
+#[gpui::test]
+fn a_capture_that_times_out_says_so_and_keeps_the_shortcut(cx: &mut TestAppContext) {
+    let mut harness = open_settings_capturing(
+        cx,
+        Arc::new(Mutex::new(Vec::new())),
+        HotkeyCaptureOutcome::TimedOut,
+    );
+
+    harness.scroll_to("settings-hotkey-change");
+    harness.click("settings-hotkey-change");
+
+    harness.bounds("settings-hotkey-capture-error");
+    harness.bounds("settings-hotkey-change");
+    assert!(!harness.has("settings-save-bar"));
+}
+
+/// A fake daemon that never captures, for tests that do not press Change.
+fn no_capture() -> HotkeyCaptureSink {
+    Arc::new(|| Ok(HotkeyCaptureOutcome::Cancelled))
+}
+
+/// Opens Settings on a fake daemon that answers every capture with `outcome`.
+fn open_settings_capturing(
+    cx: &mut TestAppContext,
+    commands: Arc<Mutex<Vec<ClientCommand>>>,
+    outcome: HotkeyCaptureOutcome,
+) -> Harness {
+    Harness::open_connected_capturing(
+        cx,
+        ShellViewModel::from_snapshot(
+            Route::Settings,
+            WorkflowSnapshot {
+                phase: WorkflowPhase::Ready,
+            },
+        ),
+        Settings::default(),
+        false,
+        commands,
+        Arc::new(move || Ok(outcome.clone())),
+    )
 }
 
 #[gpui::test]

@@ -1,5 +1,7 @@
 #[path = "core/dictation.rs"]
 mod dictation;
+#[path = "core/hotkey.rs"]
+mod hotkey;
 #[path = "core/property.rs"]
 mod property;
 #[path = "core/protocol.rs"]

@@ -1,11 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::{fs, io};
 
+use agentdictate_core::HotkeyCaptureOutcome;
 use agentdictate_runtime::{
-    AppSnapshot, ClientCommand, ClientCommandKind, HotkeyReadiness, IpcClient, IpcError,
-    IpcHandler, IpcServer, ServerMessage, ServerMessageKind, Settings, Workflow, WorkflowPhase,
-    WorkflowSignal,
+    AppSnapshot, ClientCommand, ClientCommandKind, DeferredReply, HotkeyReadiness, IpcClient,
+    IpcError, IpcHandler, IpcServer, ServerMessage, ServerMessageKind, Settings, Workflow,
+    WorkflowPhase, WorkflowSignal,
 };
 use tempfile::TempDir;
 
@@ -151,6 +152,85 @@ fn silent_client_does_not_block_a_second_command_session() {
     ));
     drop(active);
     drop(silent);
+    let (first, second) = accepts.join().unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+}
+
+/// Answers shortcut captures only when the test sends an outcome, and
+/// reports each capture that starts waiting.
+struct CapturingHandler {
+    waiting: mpsc::Sender<()>,
+    outcomes: Arc<Mutex<mpsc::Receiver<HotkeyCaptureOutcome>>>,
+}
+
+impl IpcHandler for CapturingHandler {
+    fn snapshot(&self, request_id: u64) -> ServerMessage {
+        let snapshot = AppSnapshot {
+            workflow: Workflow::new().snapshot(),
+            hotkey: HotkeyReadiness::Ready,
+            recoverable_count: 0,
+            last_transcript: None,
+        };
+        ServerMessage::snapshot(request_id, snapshot, &Settings::default())
+    }
+
+    fn handle(&mut self, command: ClientCommand) -> ServerMessage {
+        match command.kind {
+            ClientCommandKind::GetSnapshot { request_id } => self.snapshot(request_id),
+            _ => panic!("test handler received an unexpected command"),
+        }
+    }
+
+    fn deferred_reply(&self, command: &ClientCommand) -> Option<DeferredReply> {
+        let ClientCommandKind::CaptureHotkey { request_id } = command.kind else {
+            return None;
+        };
+        let waiting = self.waiting.clone();
+        let outcomes = Arc::clone(&self.outcomes);
+        Some(Box::new(move || {
+            waiting.send(()).unwrap();
+            let outcome = outcomes.lock().unwrap().recv().unwrap();
+            ServerMessage::hotkey_captured(request_id, outcome)
+        }))
+    }
+}
+
+#[test]
+fn a_waiting_shortcut_capture_does_not_block_other_sessions() {
+    let directory = TempDir::new().unwrap();
+    let runtime_directory = directory.path().join("runtime");
+    let (waiting, capture_waiting) = mpsc::channel();
+    let (send_outcome, outcomes) = mpsc::channel();
+    let handler = Arc::new(Mutex::new(CapturingHandler {
+        waiting,
+        outcomes: Arc::new(Mutex::new(outcomes)),
+    }));
+    let server = IpcServer::bind(&runtime_directory).unwrap();
+    let accepts = thread::spawn(move || {
+        let first = server.serve_next_concurrent(Arc::clone(&handler)).unwrap();
+        let second = server.serve_next_concurrent(handler).unwrap();
+        (first, second)
+    });
+
+    let (mut capturing, _) = IpcClient::connect(&runtime_directory).unwrap();
+    let capture = thread::spawn(move || capturing.send(ClientCommand::capture_hotkey(5)).unwrap());
+    capture_waiting.recv().unwrap();
+    let (mut other, _) = IpcClient::connect(&runtime_directory).unwrap();
+    assert!(matches!(
+        other.send(ClientCommand::get_snapshot(6)).unwrap().kind,
+        ServerMessageKind::Snapshot { request_id: 6, .. }
+    ));
+
+    send_outcome.send(HotkeyCaptureOutcome::TimedOut).unwrap();
+    assert!(matches!(
+        capture.join().unwrap().kind,
+        ServerMessageKind::HotkeyCaptured {
+            request_id: 5,
+            outcome: HotkeyCaptureOutcome::TimedOut,
+        }
+    ));
+    drop(other);
     let (first, second) = accepts.join().unwrap();
     first.join().unwrap().unwrap();
     second.join().unwrap().unwrap();

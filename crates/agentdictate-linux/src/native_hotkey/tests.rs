@@ -3,9 +3,12 @@ use super::events::{
     NativeHotkeySignalTrigger, ReconfigurationFailure,
 };
 use super::listener::{DiscoverDevices, NativeHotkeyListener};
-use crate::hotkey::{AGENTDICTATE_TEST_DEVICE_NAME, HotkeyListenerStatus, HotkeySignal};
+use crate::hotkey::{
+    AGENTDICTATE_TEST_DEVICE_NAME, CaptureStep, HotkeyListenerStatus, HotkeySignal,
+};
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode, uinput::VirtualDevice};
 use std::{
+    collections::BTreeSet,
     io::{self, Write},
     os::unix::net::UnixDatagram,
     path::PathBuf,
@@ -195,6 +198,51 @@ fn failed_reconfiguration_keeps_the_ready_hotkey_active() {
 }
 
 #[test]
+fn capture_withholds_the_hotkey_and_ends_with_the_chord_or_its_deadline() {
+    let Some((mut keyboard, path)) = test_keyboard_or_skip(
+        "capture_withholds_the_hotkey_and_ends_with_the_chord_or_its_deadline",
+    ) else {
+        return;
+    };
+    let discovered = vec![path];
+    let discover: Arc<DiscoverDevices> = Arc::new(move |_| Ok(discovered.clone()));
+    let listener =
+        NativeHotkeyListener::start_with_discovery("F24".parse().expect("valid hotkey"), discover)
+            .expect("native listener starts");
+    wait_until_ready(&listener);
+    let control = listener.control_handle();
+
+    let unanswered = arm_capture(&control, Duration::from_millis(50));
+    assert_eq!(
+        unanswered.recv_timeout(Duration::from_secs(2)),
+        Ok(None),
+        "a capture nobody answers ends at its deadline"
+    );
+
+    // F24 is the live hotkey, and a function key may be captured alone.
+    let capture = arm_capture(&control, Duration::from_secs(2));
+    tap_f24(&mut keyboard);
+    assert_eq!(
+        capture.recv_timeout(Duration::from_secs(2)),
+        Ok(Some(CaptureStep::Chord {
+            modifiers: BTreeSet::new(),
+            key: KeyCode::KEY_F24.code(),
+        }))
+    );
+
+    // Neither edge of the captured tap reached dispatch; the next tap does.
+    let second_tap_at = Instant::now();
+    tap_f24(&mut keyboard);
+    let NativeHotkeyEvent::Signal(signal) = receive_until(&listener, |event| {
+        matches!(event, NativeHotkeyEvent::Signal(_))
+    }) else {
+        unreachable!("the predicate accepts only hotkey signals")
+    };
+    assert_eq!(signal.signal, HotkeySignal::Pressed);
+    assert!(signal.observed_at >= second_tap_at);
+}
+
+#[test]
 fn control_only_returns_success_after_the_worker_accepts_reconfiguration() {
     let (wake, control_reader) = UnixDatagram::pair().unwrap();
     wake.set_nonblocking(true).unwrap();
@@ -227,6 +275,24 @@ fn control_only_returns_success_after_the_worker_accepts_reconfiguration() {
         NativeHotkeyControlError::ReconfigurationRejected { .. }
     ));
     worker.join().unwrap();
+}
+
+/// Arms a capture as `NativeHotkeyControl::capture` does, without naming
+/// the key through X11, and returns once the worker holds it: commands run
+/// in order, so the synchronous reconfiguration queued after it proves that.
+fn arm_capture(
+    control: &NativeHotkeyControl,
+    timeout: Duration,
+) -> mpsc::Receiver<Option<CaptureStep>> {
+    let (response, reply) = mpsc::sync_channel(1);
+    control
+        .commands
+        .send(ListenerCommand::Capture { timeout, response })
+        .expect("listener is running");
+    control
+        .reconfigure("F24".parse().expect("valid hotkey"))
+        .expect("listener keeps F24");
+    reply
 }
 
 /// Creates the test keyboard, or prints a visible skip when this environment

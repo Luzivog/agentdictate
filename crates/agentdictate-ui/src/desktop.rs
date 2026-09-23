@@ -45,12 +45,19 @@ pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 pub type CommandSink =
     Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), UiActionError> + Send + Sync>;
 
+/// Asks the daemon to capture the next shortcut pressed on any keyboard. It
+/// blocks until the chord, Esc, a cancel or the daemon's timeout, so the
+/// window calls it off the UI thread.
+pub type HotkeyCaptureSink =
+    Arc<dyn Fn() -> Result<agentdictate_core::HotkeyCaptureOutcome, UiActionError> + Send + Sync>;
+
 /// Starts the settings window with connected workspace actions.
 pub fn run_settings_shell_with_workspace_actions(
     model: ShellViewModel,
     settings: agentdictate_core::Settings,
     has_api_key: bool,
     command_sink: CommandSink,
+    hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
 ) {
     run_settings_shell_internal(
@@ -58,6 +65,7 @@ pub fn run_settings_shell_with_workspace_actions(
         settings,
         has_api_key,
         command_sink,
+        hotkey_capture,
         action_sink,
         None,
     );
@@ -71,6 +79,7 @@ pub fn run_settings_shell_with_workspace_actions_and_updates(
     settings: agentdictate_core::Settings,
     has_api_key: bool,
     command_sink: CommandSink,
+    hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
     updates: Receiver<WorkspaceViewModel>,
 ) {
@@ -79,6 +88,7 @@ pub fn run_settings_shell_with_workspace_actions_and_updates(
         settings,
         has_api_key,
         command_sink,
+        hotkey_capture,
         action_sink,
         Some(updates),
     );
@@ -89,6 +99,7 @@ fn run_settings_shell_internal(
     settings: agentdictate_core::Settings,
     has_api_key: bool,
     command_sink: CommandSink,
+    hotkey_capture: HotkeyCaptureSink,
     action_sink: WorkspaceActionSink,
     workspace_updates: Option<Receiver<WorkspaceViewModel>>,
 ) {
@@ -116,6 +127,7 @@ fn run_settings_shell_internal(
                             settings,
                             has_api_key,
                             command_sink,
+                            hotkey_capture,
                             action_sink,
                             window,
                             cx,

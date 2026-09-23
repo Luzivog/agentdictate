@@ -22,7 +22,7 @@ fn stored_settings_keep_their_values_and_ignore_retired_or_unknown_fields() {
     assert_eq!(
         settings,
         Settings {
-            hotkey: "Alt+Space".into(),
+            hotkey: "Alt+Space".parse().unwrap(),
             max_recording_seconds: 45,
             ..Settings::default()
         }

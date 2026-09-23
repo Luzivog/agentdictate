@@ -32,7 +32,7 @@ pub use overlay_process::{
     OverlayProcessAction, OverlayProcessState, OverlayTeardownError, OverlayUpdate,
     is_overlay_helper_argument, start_overlay_presenter, start_overlay_presenter_with_timeout,
 };
-pub use process::{AgentProcess, HotkeyReconfigurer, ProductionDaemon, command_for_hotkey};
+pub use process::{AgentProcess, HotkeyControl, ProductionDaemon, command_for_hotkey};
 pub use startup::{
     DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
 };

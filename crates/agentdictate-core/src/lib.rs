@@ -2,6 +2,7 @@
 
 mod costs;
 mod dictation;
+mod hotkey;
 mod protocol;
 mod settings;
 mod snapshots;
@@ -10,6 +11,7 @@ mod workflow;
 
 pub use costs::*;
 pub use dictation::*;
+pub use hotkey::*;
 pub use protocol::*;
 pub use settings::*;
 pub use snapshots::*;

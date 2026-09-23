@@ -6,6 +6,7 @@ pub mod command;
 pub mod focus;
 pub mod hotkey;
 pub mod injection;
+pub mod key_label;
 pub mod native_hotkey;
 pub mod overlay_placement;
 pub mod paste;

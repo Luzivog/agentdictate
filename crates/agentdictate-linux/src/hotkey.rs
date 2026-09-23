@@ -1,12 +1,10 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    error::Error,
-    fmt,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-pub type KeyCode = u16;
+pub use agentdictate_core::{Hotkey, HotkeyModifier, HotkeyParseError, KeyCode};
 
 pub const KEY_LEFT_CTRL: KeyCode = 29;
 pub const KEY_RIGHT_CTRL: KeyCode = 97;
@@ -17,8 +15,6 @@ pub const KEY_RIGHT_META: KeyCode = 126;
 pub const KEY_LEFT_SHIFT: KeyCode = 42;
 pub const KEY_RIGHT_SHIFT: KeyCode = 54;
 pub const KEY_ESC: KeyCode = 1;
-pub const KEY_TAB: KeyCode = 15;
-pub const KEY_ENTER: KeyCode = 28;
 pub const KEY_SPACE: KeyCode = 57;
 pub const KEY_F8: KeyCode = 66;
 pub const KEY_F9: KeyCode = 67;
@@ -231,6 +227,20 @@ impl HotkeySession {
             .flatten()
     }
 
+    /// Feeds one key event while a shortcut capture is armed. Pressed keys
+    /// stay tracked, but hotkey signals are withheld: pressing the current
+    /// shortcut to capture it never starts dictation, and its release after
+    /// the capture is swallowed like one after Esc.
+    pub fn capture_input(&mut self, device: DeviceId, input: KeyInput) -> Option<CaptureStep> {
+        if !self.connected_devices.contains(&device) {
+            return None;
+        }
+        if self.tracker.input(device, input) == Some(HotkeySignal::Pressed) {
+            self.tracker.swallow_until_release();
+        }
+        capture_step(self.tracker.pressed(device), input)
+    }
+
     pub fn finish_initial_scan(&mut self) -> HotkeyListenerStatus {
         self.initial_scan_finished = true;
         self.status()
@@ -249,6 +259,8 @@ impl HotkeySession {
     }
 }
 
+/// The key groups one shortcut needs held: one group per modifier (either
+/// side's key) and one for the key itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HotkeySpec {
     display: String,
@@ -272,121 +284,93 @@ impl HotkeySpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HotkeyParseError {
-    Empty,
-    UnsupportedPart(String),
-}
-
-impl fmt::Display for HotkeyParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => formatter.write_str("hotkey is empty"),
-            Self::UnsupportedPart(part) => write!(formatter, "unsupported hotkey part: {part}"),
+impl From<&Hotkey> for HotkeySpec {
+    fn from(hotkey: &Hotkey) -> Self {
+        let mut groups = hotkey
+            .modifiers()
+            .iter()
+            .map(|modifier| modifier_key_codes(*modifier).to_vec())
+            .collect::<Vec<_>>();
+        groups.push(vec![hotkey.key()]);
+        Self {
+            display: hotkey.label().to_owned(),
+            groups,
         }
     }
 }
-
-impl Error for HotkeyParseError {}
 
 impl FromStr for HotkeySpec {
     type Err = HotkeyParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut groups = Vec::new();
-        for part in value
-            .split(|character: char| character == '+' || character.is_whitespace())
-            .filter(|part| !part.is_empty())
-        {
-            let normalized = part.to_ascii_lowercase();
-            let group = match normalized.as_str() {
-                "ctrl" | "control" => vec![KEY_LEFT_CTRL, KEY_RIGHT_CTRL],
-                "alt" => vec![KEY_LEFT_ALT, KEY_RIGHT_ALT],
-                "super" | "meta" => vec![KEY_LEFT_META, KEY_RIGHT_META],
-                "shift" => vec![KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT],
-                other => captured_key_code(other)
-                    .map(|code| vec![code])
-                    .ok_or_else(|| HotkeyParseError::UnsupportedPart(other.to_owned()))?,
-            };
-            groups.push(group);
-        }
-        if groups.is_empty() {
-            return Err(HotkeyParseError::Empty);
-        }
-        Ok(Self {
-            display: value.to_owned(),
-            groups,
-        })
+        value.parse::<Hotkey>().map(|hotkey| Self::from(&hotkey))
     }
 }
 
-fn captured_key_code(key: &str) -> Option<KeyCode> {
-    Some(match key {
-        "space" => KEY_SPACE,
-        "tab" => KEY_TAB,
-        "enter" | "return" => KEY_ENTER,
-        "1" => 2,
-        "2" => 3,
-        "3" => 4,
-        "4" => 5,
-        "5" => 6,
-        "6" => 7,
-        "7" => 8,
-        "8" => 9,
-        "9" => 10,
-        "0" => 11,
-        "q" => 16,
-        "w" => 17,
-        "e" => 18,
-        "r" => 19,
-        "t" => 20,
-        "y" => 21,
-        "u" => 22,
-        "i" => 23,
-        "o" => 24,
-        "p" => 25,
-        "a" => 30,
-        "s" => 31,
-        "d" => 32,
-        "f" => 33,
-        "g" => 34,
-        "h" => 35,
-        "j" => 36,
-        "k" => 37,
-        "l" => 38,
-        "z" => 44,
-        "x" => 45,
-        "c" => 46,
-        "v" => 47,
-        "b" => 48,
-        "n" => 49,
-        "m" => 50,
-        "f1" => 59,
-        "f2" => 60,
-        "f3" => 61,
-        "f4" => 62,
-        "f5" => 63,
-        "f6" => 64,
-        "f7" => 65,
-        "f8" => KEY_F8,
-        "f9" => KEY_F9,
-        "f10" => 68,
-        "f11" => 87,
-        "f12" => 88,
-        "f13" => 183,
-        "f14" => 184,
-        "f15" => 185,
-        "f16" => 186,
-        "f17" => 187,
-        "f18" => 188,
-        "f19" => 189,
-        "f20" => 190,
-        "f21" => 191,
-        "f22" => 192,
-        "f23" => 193,
-        "f24" => 194,
-        _ => return None,
+const fn modifier_key_codes(modifier: HotkeyModifier) -> [KeyCode; 2] {
+    match modifier {
+        HotkeyModifier::Ctrl => [KEY_LEFT_CTRL, KEY_RIGHT_CTRL],
+        HotkeyModifier::Alt => [KEY_LEFT_ALT, KEY_RIGHT_ALT],
+        HotkeyModifier::Shift => [KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT],
+        HotkeyModifier::Super => [KEY_LEFT_META, KEY_RIGHT_META],
+    }
+}
+
+const fn key_modifier(code: KeyCode) -> Option<HotkeyModifier> {
+    match code {
+        KEY_LEFT_CTRL | KEY_RIGHT_CTRL => Some(HotkeyModifier::Ctrl),
+        KEY_LEFT_ALT | KEY_RIGHT_ALT => Some(HotkeyModifier::Alt),
+        KEY_LEFT_SHIFT | KEY_RIGHT_SHIFT => Some(HotkeyModifier::Shift),
+        KEY_LEFT_META | KEY_RIGHT_META => Some(HotkeyModifier::Super),
+        _ => None,
+    }
+}
+
+/// A key press that ends a shortcut capture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaptureStep {
+    /// `key` went down while `modifiers` were held on the same keyboard.
+    Chord {
+        modifiers: BTreeSet<HotkeyModifier>,
+        key: KeyCode,
+    },
+    /// Esc: stop capturing without a shortcut.
+    Cancelled,
+}
+
+/// Decides whether a key event ends a shortcut capture. `pressed` holds the
+/// keys down on the event's keyboard, this one included. Only a fresh press
+/// counts; lone modifiers wait for their key, and a bare key needs a
+/// modifier unless it is a function key, so typing never becomes a shortcut.
+pub fn capture_step(pressed: Option<&HashSet<KeyCode>>, input: KeyInput) -> Option<CaptureStep> {
+    if input.state != KeyState::Pressed || is_pointer_button(input.code) {
+        return None;
+    }
+    if input.code == KEY_ESC {
+        return Some(CaptureStep::Cancelled);
+    }
+    if key_modifier(input.code).is_some() {
+        return None;
+    }
+    let modifiers = pressed
+        .into_iter()
+        .flatten()
+        .filter_map(|code| key_modifier(*code))
+        .collect::<BTreeSet<_>>();
+    (!modifiers.is_empty() || is_function_key(input.code)).then_some(CaptureStep::Chord {
+        modifiers,
+        key: input.code,
     })
+}
+
+/// Mouse and joystick buttons (evdev `BTN_*`), which some keyboards report.
+const fn is_pointer_button(code: KeyCode) -> bool {
+    matches!(code, 0x100..=0x15f)
+}
+
+/// F1–F24.
+const fn is_function_key(code: KeyCode) -> bool {
+    matches!(code, 59..=68 | 87 | 88 | 183..=194)
 }
 
 pub struct HotkeyTracker {
@@ -418,8 +402,7 @@ impl HotkeyTracker {
         }
 
         if input.code == KEY_ESC && input.state == KeyState::Pressed {
-            self.matched = false;
-            self.cancelled_until_release = true;
+            self.swallow_until_release();
             return Some(HotkeySignal::Cancelled);
         }
 
@@ -428,6 +411,17 @@ impl HotkeyTracker {
             .values()
             .any(|pressed| self.spec.matches_set(pressed));
         self.transition(matches)
+    }
+
+    /// Ends the current match without a release signal and ignores the
+    /// hotkey until its keys are let go.
+    fn swallow_until_release(&mut self) {
+        self.matched = false;
+        self.cancelled_until_release = true;
+    }
+
+    fn pressed(&self, device: DeviceId) -> Option<&HashSet<KeyCode>> {
+        self.pressed_by_device.get(&device)
     }
 
     pub fn remove_device(&mut self, device: DeviceId) -> Option<HotkeySignal> {

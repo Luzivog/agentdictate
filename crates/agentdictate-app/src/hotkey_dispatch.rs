@@ -1,6 +1,5 @@
 use std::{
     path::Path,
-    str::FromStr,
     sync::{
         Arc, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -9,8 +8,8 @@ use std::{
 };
 
 use agentdictate_core::{
-    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyReadiness, JobId, RecordingMode,
-    ServerMessageKind, WorkflowPhase,
+    AppSnapshot, ClientCommand, ClientCommandTag, HotkeyCaptureOutcome, HotkeyReadiness, JobId,
+    RecordingMode, ServerMessageKind, WorkflowPhase,
 };
 use agentdictate_linux::{
     hotkey::{HotkeyListenerStatus, HotkeySignal, HotkeySpec},
@@ -21,7 +20,7 @@ use agentdictate_linux::{
 };
 use agentdictate_runtime::IpcClient;
 
-use crate::{AgentProcess, HotkeyReconfigurer, command_for_hotkey};
+use crate::{AgentProcess, HotkeyControl, command_for_hotkey};
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -41,33 +40,24 @@ pub fn start_hotkey_listener(process: &mut AgentProcess, runtime: &Path) -> anyh
     let recording_mode = Arc::new(RwLock::new(process.recording_mode()));
     let recording = process.recording_flag();
     process.set_recording_mode_control(Arc::clone(&recording_mode));
-    process.set_hotkey_reconfigurer(Arc::new(SupervisedHotkeyControl {
+    process.set_hotkey_control(Arc::new(SupervisedHotkeyControl {
         events: events.clone(),
     }));
 
     let generation = 1_u64;
-    let (current_spec, active_listener) = match HotkeySpec::from_str(process.hotkey()) {
-        Ok(spec) => match NativeHotkeyListener::start(spec.clone()) {
-            Ok(listener) => {
-                log_initial_hotkey_readiness(generation, listener.readiness());
-                process.set_hotkey_readiness(readiness_from_initial(listener.readiness()));
-                let active = activate_listener(listener, generation, events.clone())?;
-                (Some(spec), Some(active))
-            }
-            Err(error) => {
-                process.set_hotkey_readiness(HotkeyReadiness::Unavailable {
-                    message: error.to_string(),
-                });
-                schedule_environment_retry(generation, events.clone());
-                (Some(spec), None)
-            }
-        },
+    let current_spec = HotkeySpec::from(process.hotkey());
+    let active_listener = match NativeHotkeyListener::start(current_spec.clone()) {
+        Ok(listener) => {
+            log_initial_hotkey_readiness(generation, listener.readiness());
+            process.set_hotkey_readiness(readiness_from_initial(listener.readiness()));
+            Some(activate_listener(listener, generation, events.clone())?)
+        }
         Err(error) => {
             process.set_hotkey_readiness(HotkeyReadiness::Unavailable {
-                message: format!("Invalid hotkey: {error}"),
+                message: error.to_string(),
             });
-            tracing::error!(%error, hotkey = process.hotkey(), "invalid configured hotkey");
-            (None, None)
+            schedule_environment_retry(generation, events.clone());
+            None
         }
     };
     let runtime = runtime.to_owned();
@@ -93,7 +83,23 @@ struct SupervisedHotkeyControl {
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
 }
 
-impl HotkeyReconfigurer for SupervisedHotkeyControl {
+impl SupervisedHotkeyControl {
+    /// The live listener's control, which changes when it is restarted.
+    fn listener_control(&self) -> anyhow::Result<NativeHotkeyControl> {
+        let (response_sender, response) = std::sync::mpsc::sync_channel(1);
+        self.events
+            .send(DispatchLoopEvent::ListenerControl {
+                response: response_sender,
+            })
+            .map_err(|_| anyhow::anyhow!("hotkey supervisor has stopped"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("hotkey supervisor stopped before responding"))?
+            .ok_or_else(|| anyhow::anyhow!("hotkey listener is not currently available"))
+    }
+}
+
+impl HotkeyControl for SupervisedHotkeyControl {
     fn reconfigure(&self, spec: HotkeySpec) -> anyhow::Result<()> {
         let (response_sender, response) = std::sync::mpsc::sync_channel(1);
         self.events
@@ -106,6 +112,16 @@ impl HotkeyReconfigurer for SupervisedHotkeyControl {
             .recv()
             .map_err(|_| anyhow::anyhow!("hotkey supervisor stopped before responding"))?
             .map_err(anyhow::Error::msg)
+    }
+
+    fn capture(&self, timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+        let outcome = self.listener_control()?.capture(timeout)?;
+        tracing::info!(?outcome, "shortcut capture finished");
+        Ok(outcome)
+    }
+
+    fn cancel_capture(&self) -> anyhow::Result<()> {
+        Ok(self.listener_control()?.cancel_capture()?)
     }
 }
 
@@ -199,7 +215,7 @@ struct HotkeyDispatchLoop {
     recording: Arc<AtomicBool>,
     events: std::sync::mpsc::Sender<DispatchLoopEvent>,
     incoming: std::sync::mpsc::Receiver<DispatchLoopEvent>,
-    current_spec: Option<HotkeySpec>,
+    current_spec: HotkeySpec,
     active_listener: Option<ActiveHotkeyListener>,
     generation: u64,
     status_updates: std::sync::mpsc::Sender<HotkeyReadiness>,
@@ -349,12 +365,9 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
             DispatchLoopEvent::EnvironmentChanged {
                 generation: retry_generation,
             } if retry_generation == generation && active_listener.is_none() => {
-                let Some(spec) = current_spec.clone() else {
-                    continue;
-                };
                 publish_hotkey_status(&status_updates, HotkeyReadiness::Starting);
                 generation += 1;
-                match NativeHotkeyListener::start(spec) {
+                match NativeHotkeyListener::start(current_spec.clone()) {
                     Ok(listener) => {
                         log_initial_hotkey_readiness(generation, listener.readiness());
                         let readiness = readiness_from_initial(listener.readiness());
@@ -398,9 +411,16 @@ fn hotkey_dispatch_loop(state: HotkeyDispatchLoop) {
                     },
                 );
                 if result.is_ok() {
-                    current_spec = Some(spec);
+                    current_spec = spec;
                 }
                 let _ = response.send(result);
+            }
+            DispatchLoopEvent::ListenerControl { response } => {
+                let _ = response.send(
+                    active_listener
+                        .as_ref()
+                        .map(|listener| listener.control.clone()),
+                );
             }
             DispatchLoopEvent::Native { .. }
             | DispatchLoopEvent::ListenerClosed { .. }
@@ -471,6 +491,9 @@ enum DispatchLoopEvent {
     Reconfigure {
         spec: HotkeySpec,
         response: std::sync::mpsc::SyncSender<Result<(), String>>,
+    },
+    ListenerControl {
+        response: std::sync::mpsc::SyncSender<Option<NativeHotkeyControl>>,
     },
 }
 
@@ -718,7 +741,9 @@ fn dispatch_hotkey(
             }
             mode == RecordingMode::Toggle && recording_job.is_some()
         }
-        ServerMessageKind::Workspace { .. } | ServerMessageKind::HistoryPage { .. } => false,
+        ServerMessageKind::Workspace { .. }
+        | ServerMessageKind::HistoryPage { .. }
+        | ServerMessageKind::HotkeyCaptured { .. } => false,
     };
     Ok(if toggle_recording_started {
         HotkeyActionOutcome::ToggleRecordingStarted

@@ -1,7 +1,6 @@
 use agentdictate_linux::hotkey::{
-    HotkeyParseError, HotkeySignal, HotkeySpec, HotkeyTracker, KEY_ESC, KEY_F8, KEY_F9,
-    KEY_LEFT_ALT, KEY_LEFT_CTRL, KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_RIGHT_CTRL, KEY_SPACE,
-    KeyInput, KeyState,
+    HotkeySignal, HotkeySpec, HotkeyTracker, KEY_ESC, KEY_F8, KEY_F9, KEY_LEFT_ALT, KEY_LEFT_CTRL,
+    KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_RIGHT_CTRL, KEY_SPACE, KeyInput, KeyState,
 };
 
 #[test]
@@ -119,13 +118,4 @@ fn shortcut_capture_vocabulary_accepts_letters_numbers_navigation_and_function_k
     assert!(number.matches([KEY_LEFT_META, 8]));
     assert!(tab.matches([KEY_LEFT_CTRL, 15]));
     assert!(function.matches([88]));
-}
-
-#[test]
-fn invalid_hotkeys_fail_with_actionable_parse_errors() {
-    assert_eq!("".parse::<HotkeySpec>(), Err(HotkeyParseError::Empty));
-    assert_eq!(
-        "Ctrl+Hyper".parse::<HotkeySpec>(),
-        Err(HotkeyParseError::UnsupportedPart("hyper".into()))
-    );
 }

@@ -16,15 +16,17 @@ fn settings_replacement_is_private_and_leaves_no_partial_file() {
     let settings_path = directory.path().join("config.json");
     let mut settings = Settings {
         openai_api_key: "secret-key".to_owned(),
-        hotkey: "Ctrl+Space".to_owned(),
         ..Settings::default()
     };
 
     save_settings(&settings_path, &settings).unwrap();
-    settings.hotkey = "Alt+Space".to_owned();
+    settings.hotkey = "Alt+Space".parse().unwrap();
     save_settings(&settings_path, &settings).unwrap();
 
-    assert_eq!(load_settings(&settings_path).unwrap().hotkey, "Alt+Space");
+    assert_eq!(
+        load_settings(&settings_path).unwrap().hotkey,
+        settings.hotkey
+    );
     assert_eq!(
         fs::metadata(&settings_path).unwrap().permissions().mode() & 0o777,
         0o600

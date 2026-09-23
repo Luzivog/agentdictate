@@ -13,7 +13,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
     let mut draft = SettingsDraft::from(&original);
     draft.language = "en".to_owned();
     draft.transcription_prompt = "Leadlord, AgentDictate".to_owned();
-    draft.hotkey = "Alt+Space".to_owned();
+    draft.hotkey = "Alt+Space".parse().unwrap();
     draft.recording_mode = "hold".to_owned();
     draft.max_recording_seconds = "420".to_owned();
     draft.audio_ducking_enabled = false;
@@ -29,7 +29,7 @@ fn settings_draft_validates_and_updates_every_editable_runtime_value() {
 
     assert_eq!(updated.language, "en");
     assert_eq!(updated.transcription_prompt, "Leadlord, AgentDictate");
-    assert_eq!(updated.hotkey, "Alt+Space");
+    assert_eq!(updated.hotkey.label(), "Alt+Space");
     assert_eq!(updated.recording_mode, RecordingMode::Hold);
     assert_eq!(updated.max_recording_seconds, 420);
     assert!(!updated.audio_ducking_enabled);

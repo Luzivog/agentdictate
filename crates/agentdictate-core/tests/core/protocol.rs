@@ -9,7 +9,7 @@ fn client_commands_have_a_versioned_stable_wire_shape() {
 
     assert_eq!(
         wire,
-        r#"{"protocol_version":8,"command":"start_recording","request_id":7}"#
+        r#"{"protocol_version":9,"command":"start_recording","request_id":7}"#
     );
 }
 
@@ -24,7 +24,7 @@ fn rejected_commands_return_a_correlated_error_instead_of_looking_successful() {
     ));
     assert_eq!(
         serde_json::to_string(&message).unwrap(),
-        r#"{"protocol_version":8,"message":"command_rejected","request_id":19,"error":"microphone unavailable"}"#
+        r#"{"protocol_version":9,"message":"command_rejected","request_id":19,"error":"microphone unavailable"}"#
     );
 }
 
@@ -62,7 +62,7 @@ fn history_page_requests_are_bounded_and_typed_on_the_wire() {
 
     assert_eq!(
         wire,
-        r#"{"protocol_version":8,"command":"get_history_page","request_id":12,"request":{"search":"database migration","page_size":20,"after":"opaque-page-2"}}"#
+        r#"{"protocol_version":9,"command":"get_history_page","request_id":12,"request":{"search":"database migration","page_size":20,"after":"opaque-page-2"}}"#
     );
     assert_eq!(
         serde_json::from_str::<ClientCommand>(&wire).unwrap(),
@@ -136,14 +136,14 @@ fn snapshot_messages_round_trip_without_secret_settings() {
 fn ordinary_settings_updates_cannot_overwrite_or_echo_the_api_key() {
     let settings = Settings {
         openai_api_key: "sk-existing-secret".into(),
-        hotkey: "F9".into(),
+        hotkey: "F9".parse().unwrap(),
         ..Settings::default()
     };
 
     let command = ClientCommand::update_settings(10, &settings);
     let wire = serde_json::to_string(&command).unwrap();
 
-    assert!(wire.contains("\"hotkey\":\"F9\""));
+    assert!(wire.contains("\"label\":\"F9\""));
     assert!(!wire.contains("sk-existing-secret"));
 }
 

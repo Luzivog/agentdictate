@@ -1,13 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use agentdictate_core::{
-    ClientCommand, ClientCommandKind, ClientCommandTag, HotkeyReadiness, RecordingMode,
-    ServerMessage, Settings, WorkflowPhase,
+    ClientCommand, ClientCommandKind, ClientCommandTag, Hotkey, HotkeyCaptureOutcome,
+    HotkeyReadiness, RecordingMode, ServerMessage, Settings, WorkflowPhase,
 };
 use agentdictate_linux::hotkey::{HotkeySignal, HotkeySpec};
 use agentdictate_runtime::{
-    FinishedJobCleanup, IpcClient, IpcHandler, Runtime, RuntimeError, load_settings, save_settings,
+    DeferredReply, FinishedJobCleanup, IpcClient, IpcHandler, Runtime, RuntimeError, load_settings,
+    save_settings,
 };
 
 use crate::{
@@ -19,10 +21,18 @@ pub type ProductionTranscriber = TranscriptionPipeline<ReqwestOpenAiTransport>;
 pub type ProductionDaemon =
     Daemon<SystemRecordingController, ProductionTranscriber, SystemDeliverer>;
 
-/// Stable control seam used by settings updates. Implementations must only
-/// return success after the live listener has accepted the new shortcut.
-pub trait HotkeyReconfigurer: Send + Sync {
+/// How long a shortcut capture waits for a key press.
+const HOTKEY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Control seam over the live shortcut listener, used by settings updates
+/// and the settings window's shortcut capture.
+pub trait HotkeyControl: Send + Sync {
+    /// Returns success only after the live listener accepted the shortcut.
     fn reconfigure(&self, spec: HotkeySpec) -> anyhow::Result<()>;
+    /// Blocks until the next chord, Esc, a cancel, or `timeout`. The shortcut
+    /// does not start dictation meanwhile.
+    fn capture(&self, timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome>;
+    fn cancel_capture(&self) -> anyhow::Result<()>;
 }
 
 pub struct AgentProcess {
@@ -32,7 +42,7 @@ pub struct AgentProcess {
     database_file: PathBuf,
     recordings_directory: PathBuf,
     runtime_directory: PathBuf,
-    hotkey_control: Option<Arc<dyn HotkeyReconfigurer>>,
+    hotkey_control: Option<Arc<dyn HotkeyControl>>,
     recording_mode_control: Option<Arc<RwLock<RecordingMode>>>,
     should_quit: bool,
 }
@@ -80,7 +90,7 @@ impl AgentProcess {
     }
 
     #[must_use]
-    pub fn hotkey(&self) -> &str {
+    pub const fn hotkey(&self) -> &Hotkey {
         &self.daemon.settings().hotkey
     }
 
@@ -108,7 +118,7 @@ impl AgentProcess {
         self.daemon.recording_flag()
     }
 
-    pub fn set_hotkey_reconfigurer(&mut self, control: Arc<dyn HotkeyReconfigurer>) {
+    pub fn set_hotkey_control(&mut self, control: Arc<dyn HotkeyControl>) {
         self.hotkey_control = Some(control);
     }
 
@@ -165,21 +175,14 @@ impl AgentProcess {
         let hotkey_changed = settings.hotkey != self.daemon.settings().hotkey;
         let recording_mode_changed =
             settings.recording_mode != self.daemon.settings().recording_mode;
-        let parsed_hotkey = hotkey_changed
-            .then(|| settings.hotkey.parse::<HotkeySpec>())
-            .transpose()?;
+        let new_hotkey = hotkey_changed.then(|| HotkeySpec::from(&settings.hotkey));
         settings.openai_api_key = self.daemon.settings().openai_api_key.clone();
-        let old_hotkey = hotkey_changed
-            .then(|| self.daemon.settings().hotkey.parse::<HotkeySpec>().ok())
-            .flatten();
-        if let Some(spec) = parsed_hotkey.as_ref() {
-            self.hotkey_control
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("hotkey listener is unavailable"))?
-                .reconfigure(spec.clone())?;
+        let old_hotkey = hotkey_changed.then(|| HotkeySpec::from(&self.daemon.settings().hotkey));
+        if let Some(spec) = new_hotkey.as_ref() {
+            self.hotkey_control()?.reconfigure(spec.clone())?;
         }
         if let Err(error) = save_settings(&self.config_file, &settings) {
-            if parsed_hotkey.is_some()
+            if new_hotkey.is_some()
                 && let Some(control) = &self.hotkey_control
                 && let Some(old_hotkey) = old_hotkey
                 && let Err(rollback_error) = control.reconfigure(old_hotkey)
@@ -216,6 +219,12 @@ impl AgentProcess {
                 self.daemon.settings().recording_mode;
         }
         Ok(())
+    }
+
+    fn hotkey_control(&self) -> anyhow::Result<&Arc<dyn HotkeyControl>> {
+        self.hotkey_control
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("hotkey listener is unavailable"))
     }
 
     fn set_api_key(&mut self, api_key: &str) -> anyhow::Result<()> {
@@ -284,6 +293,21 @@ fn run_post_listener_maintenance(
 impl IpcHandler for AgentProcess {
     fn snapshot(&self, request_id: u64) -> ServerMessage {
         self.snapshot_message(request_id)
+    }
+
+    /// A shortcut capture waits up to `HOTKEY_CAPTURE_TIMEOUT` for the user,
+    /// so it runs without the daemon lock.
+    fn deferred_reply(&self, command: &ClientCommand) -> Option<DeferredReply> {
+        let ClientCommandKind::CaptureHotkey { request_id } = command.kind else {
+            return None;
+        };
+        let control = self.hotkey_control().cloned();
+        Some(Box::new(move || {
+            match control.and_then(|control| control.capture(HOTKEY_CAPTURE_TIMEOUT)) {
+                Ok(outcome) => ServerMessage::hotkey_captured(request_id, outcome),
+                Err(error) => ServerMessage::command_rejected(request_id, error.to_string()),
+            }
+        }))
     }
 
     fn handle(&mut self, command: ClientCommand) -> ServerMessage {
@@ -373,6 +397,12 @@ impl IpcHandler for AgentProcess {
                 self.daemon.set_hotkey_readiness(readiness);
                 Ok(())
             }
+            ClientCommandKind::CaptureHotkey { .. } => Err(anyhow::anyhow!(
+                "shortcut capture must be answered by its deferred reply"
+            )),
+            ClientCommandKind::CancelHotkeyCapture { .. } => self
+                .hotkey_control()
+                .and_then(|control| control.cancel_capture()),
             ClientCommandKind::Quit { .. } => self
                 .daemon
                 .shutdown()
@@ -417,6 +447,8 @@ const fn request_id(command: &ClientCommandKind) -> u64 {
         | ClientCommandKind::UpdateSettings { request_id, .. }
         | ClientCommandKind::SetApiKey { request_id, .. }
         | ClientCommandKind::HotkeyStatusChanged { request_id, .. }
+        | ClientCommandKind::CaptureHotkey { request_id }
+        | ClientCommandKind::CancelHotkeyCapture { request_id }
         | ClientCommandKind::Quit { request_id } => *request_id,
     }
 }
@@ -458,7 +490,10 @@ pub fn command_for_hotkey(
 mod tests {
     use std::{
         path::Path,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
 
     use agentdictate_core::{ClientCommand, JobStage, ServerMessageKind};
@@ -475,11 +510,19 @@ mod tests {
         attempts: Mutex<Vec<String>>,
     }
 
-    impl HotkeyReconfigurer for RejectingHotkeyControl {
+    impl HotkeyControl for RejectingHotkeyControl {
         fn reconfigure(&self, spec: HotkeySpec) -> anyhow::Result<()> {
             let hotkey = spec.display().to_owned();
             self.attempts.lock().unwrap().push(hotkey.clone());
             anyhow::bail!("{hotkey} is not supported by an active keyboard")
+        }
+
+        fn capture(&self, _timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+            unreachable!("settings tests never capture a shortcut")
+        }
+
+        fn cancel_capture(&self) -> anyhow::Result<()> {
+            unreachable!("settings tests never capture a shortcut")
         }
     }
 
@@ -492,11 +535,19 @@ mod tests {
         observed_hotkey: Mutex<Option<String>>,
     }
 
-    impl HotkeyReconfigurer for PersistenceOrderingControl {
+    impl HotkeyControl for PersistenceOrderingControl {
         fn reconfigure(&self, _spec: HotkeySpec) -> anyhow::Result<()> {
             let persisted = load_settings(&self.config_file)?.hotkey;
-            *self.observed_hotkey.lock().unwrap() = Some(persisted);
+            *self.observed_hotkey.lock().unwrap() = Some(persisted.label().to_owned());
             Ok(())
+        }
+
+        fn capture(&self, _timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+            unreachable!("settings tests never capture a shortcut")
+        }
+
+        fn cancel_capture(&self) -> anyhow::Result<()> {
+            unreachable!("settings tests never capture a shortcut")
         }
     }
 
@@ -508,7 +559,7 @@ mod tests {
         }
     }
 
-    impl HotkeyReconfigurer for RecordingHotkeyControl {
+    impl HotkeyControl for RecordingHotkeyControl {
         fn reconfigure(&self, spec: HotkeySpec) -> anyhow::Result<()> {
             self.attempts
                 .lock()
@@ -516,6 +567,72 @@ mod tests {
                 .push(spec.display().to_owned());
             Ok(())
         }
+
+        fn capture(&self, _timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+            unreachable!("settings tests never capture a shortcut")
+        }
+
+        fn cancel_capture(&self) -> anyhow::Result<()> {
+            unreachable!("settings tests never capture a shortcut")
+        }
+    }
+
+    /// Captures F9 at once and counts cancellations.
+    #[derive(Default)]
+    struct CapturingHotkeyControl {
+        cancels: AtomicUsize,
+    }
+
+    impl HotkeyControl for CapturingHotkeyControl {
+        fn reconfigure(&self, _spec: HotkeySpec) -> anyhow::Result<()> {
+            unreachable!("capture tests never change the shortcut")
+        }
+
+        fn capture(&self, _timeout: Duration) -> anyhow::Result<HotkeyCaptureOutcome> {
+            Ok(HotkeyCaptureOutcome::Captured {
+                hotkey: "F9".parse()?,
+            })
+        }
+
+        fn cancel_capture(&self) -> anyhow::Result<()> {
+            self.cancels.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn shortcut_capture_replies_outside_the_daemon_lock_and_cancel_reaches_the_listener() {
+        let directory = tempdir().unwrap();
+        let mut process = AgentProcess::open(app_paths(directory.path())).unwrap();
+        let unavailable = process
+            .deferred_reply(&ClientCommand::capture_hotkey(2))
+            .expect("a capture always waits outside the lock");
+        assert!(matches!(
+            unavailable().kind,
+            ServerMessageKind::CommandRejected { request_id: 2, .. }
+        ));
+
+        let control = Arc::new(CapturingHotkeyControl::default());
+        process.set_hotkey_control(control.clone());
+        assert!(
+            process
+                .deferred_reply(&ClientCommand::get_snapshot(3))
+                .is_none()
+        );
+        let reply = process
+            .deferred_reply(&ClientCommand::capture_hotkey(4))
+            .expect("a capture always waits outside the lock");
+        assert!(matches!(
+            reply().kind,
+            ServerMessageKind::HotkeyCaptured {
+                request_id: 4,
+                outcome: HotkeyCaptureOutcome::Captured { hotkey },
+            } if hotkey.label() == "F9"
+        ));
+
+        let cancelled = process.handle(ClientCommand::cancel_hotkey_capture(5));
+        assert!(matches!(cancelled.kind, ServerMessageKind::Snapshot { .. }));
+        assert_eq!(control.cancels.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -524,9 +641,11 @@ mod tests {
         let paths = app_paths(directory.path());
         let mut process = AgentProcess::open(paths.clone()).unwrap();
         let control = Arc::new(RejectingHotkeyControl::default());
-        process.set_hotkey_reconfigurer(control.clone());
-        let mut changed = Settings::default();
-        changed.hotkey = "F9".into();
+        process.set_hotkey_control(control.clone());
+        let changed = Settings {
+            hotkey: "F9".parse().unwrap(),
+            ..Settings::default()
+        };
 
         let response = process.handle(ClientCommand::update_settings(7, &changed));
 
@@ -534,9 +653,9 @@ mod tests {
             response.kind,
             ServerMessageKind::CommandRejected { .. }
         ));
-        assert_eq!(process.hotkey(), "Ctrl+Space");
+        assert_eq!(process.hotkey().label(), "Ctrl+Space");
         assert_eq!(
-            load_settings(&paths.config_file).unwrap().hotkey,
+            load_settings(&paths.config_file).unwrap().hotkey.label(),
             "Ctrl+Space"
         );
         assert_eq!(control.attempts.lock().unwrap().as_slice(), ["F9"]);
@@ -548,11 +667,13 @@ mod tests {
         let paths = app_paths(directory.path());
         let mut process = AgentProcess::open(paths).unwrap();
         let control = Arc::new(RecordingHotkeyControl::new());
-        process.set_hotkey_reconfigurer(control.clone());
+        process.set_hotkey_control(control.clone());
         process.config_file = directory.path().join("not-a-file");
         std::fs::create_dir(&process.config_file).unwrap();
-        let mut changed = Settings::default();
-        changed.hotkey = "F9".into();
+        let changed = Settings {
+            hotkey: "F9".parse().unwrap(),
+            ..Settings::default()
+        };
 
         let response = process.handle(ClientCommand::update_settings(8, &changed));
 
@@ -560,7 +681,7 @@ mod tests {
             response.kind,
             ServerMessageKind::CommandRejected { .. }
         ));
-        assert_eq!(process.hotkey(), "Ctrl+Space");
+        assert_eq!(process.hotkey().label(), "Ctrl+Space");
         assert_eq!(
             control.attempts.lock().unwrap().as_slice(),
             ["F9", "Ctrl+Space"]
@@ -601,9 +722,11 @@ mod tests {
             config_file: paths.config_file.clone(),
             observed_hotkey: Mutex::new(None),
         });
-        process.set_hotkey_reconfigurer(control.clone());
-        let mut changed = Settings::default();
-        changed.hotkey = "F9".into();
+        process.set_hotkey_control(control.clone());
+        let changed = Settings {
+            hotkey: "F9".parse().unwrap(),
+            ..Settings::default()
+        };
 
         let response = process.handle(ClientCommand::update_settings(9, &changed));
 
@@ -612,8 +735,11 @@ mod tests {
             control.observed_hotkey.lock().unwrap().as_deref(),
             Some("Ctrl+Space")
         );
-        assert_eq!(load_settings(&paths.config_file).unwrap().hotkey, "F9");
-        assert_eq!(process.hotkey(), "F9");
+        assert_eq!(
+            load_settings(&paths.config_file).unwrap().hotkey.label(),
+            "F9"
+        );
+        assert_eq!(process.hotkey().label(), "F9");
     }
 
     #[test]

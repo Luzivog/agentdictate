@@ -92,8 +92,8 @@ impl RoutePageModel {
                 api_key_feedback: shell.settings_commands.api_key_feedback.clone(),
                 feedback: shell.routes.entry(Route::Settings).feedback.clone(),
                 settings_form: shell.settings.form.clone(),
-                shortcut_capture_active: shell.settings.shortcut_capture_active,
-                shortcut_capture_error: shell.settings.shortcut_capture_error.clone(),
+                shortcut_capture_active: shell.settings.shortcut_capture.is_listening(),
+                shortcut_capture_error: shell.settings.shortcut_capture.failure(),
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
             })),
         }

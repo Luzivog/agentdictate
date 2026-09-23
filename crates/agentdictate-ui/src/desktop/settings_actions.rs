@@ -1,56 +1,11 @@
-use gpui::{Context, Window};
+use std::sync::Arc;
+
+use agentdictate_core::HotkeyCaptureOutcome;
+use gpui::{AppContext, Context, Window};
 
 use crate::{SettingsDraft, UiActionError};
 
-use super::SettingsShell;
-
-fn captured_shortcut(keystroke: &gpui::Keystroke) -> Result<String, String> {
-    if keystroke.modifiers.function {
-        return Err("The Function modifier is not supported".to_owned());
-    }
-
-    let normalized = keystroke.key.to_ascii_lowercase();
-    let key = match normalized.as_str() {
-        "space" => "Space".to_owned(),
-        "tab" => "Tab".to_owned(),
-        "enter" | "return" => "Enter".to_owned(),
-        key if matches!(
-            key,
-            "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12"
-        ) =>
-        {
-            key.to_ascii_uppercase()
-        }
-        key if key.len() == 1 && key.bytes().all(|byte| byte.is_ascii_alphanumeric()) => {
-            key.to_ascii_uppercase()
-        }
-        _ => return Err("Use a letter, number, Space, Tab, Enter, or F1–F12".to_owned()),
-    };
-
-    let is_function_key = normalized.starts_with('f')
-        && normalized[1..]
-            .parse::<u8>()
-            .is_ok_and(|number| (1..=12).contains(&number));
-    if !keystroke.modifiers.modified() && !is_function_key {
-        return Err("Add Ctrl, Alt, Shift, or Super to this key".to_owned());
-    }
-
-    let mut parts = Vec::with_capacity(5);
-    if keystroke.modifiers.control {
-        parts.push("Ctrl".to_owned());
-    }
-    if keystroke.modifiers.alt {
-        parts.push("Alt".to_owned());
-    }
-    if keystroke.modifiers.shift {
-        parts.push("Shift".to_owned());
-    }
-    if keystroke.modifiers.platform {
-        parts.push("Super".to_owned());
-    }
-    parts.push(key);
-    Ok(parts.join("+"))
-}
+use super::{SettingsShell, settings_shell::ShortcutCapture};
 
 impl SettingsShell {
     #[cfg(feature = "test-support")]
@@ -119,40 +74,58 @@ impl SettingsShell {
         self.settings.current = baseline.clone();
         self.settings.form.reset(&baseline, window, cx);
         self.settings.dirty = false;
-        self.settings.shortcut_capture_active = false;
-        self.settings.shortcut_capture_error = None;
+        self.cancel_shortcut_capture(cx);
         self.clear_route_feedback();
         cx.notify();
     }
 
-    pub(super) fn begin_shortcut_capture(&mut self, cx: &mut Context<Self>) {
-        self.settings.shortcut_capture_active = true;
-        self.settings.shortcut_capture_error = None;
+    /// Asks the daemon for the next shortcut pressed on any keyboard. The
+    /// window drops keyboard focus so the chord cannot also edit a field.
+    pub(super) fn begin_shortcut_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.blur(cx);
+        let capture = Arc::clone(&self.settings_commands.hotkey_capture);
+        let answer = cx.background_spawn(async move { capture() });
+        let answer = cx.spawn(async move |shell, cx| {
+            let result = answer.await;
+            let _ = shell.update(cx, |shell, cx| shell.finish_shortcut_capture(result, cx));
+        });
+        self.settings.shortcut_capture = ShortcutCapture::Listening { _answer: answer };
         cx.notify();
     }
 
+    /// Stops a capture in progress and clears any capture message.
     pub(super) fn cancel_shortcut_capture(&mut self, cx: &mut Context<Self>) {
-        self.settings.shortcut_capture_active = false;
-        self.settings.shortcut_capture_error = None;
+        let previous =
+            std::mem::replace(&mut self.settings.shortcut_capture, ShortcutCapture::Idle);
+        if previous.is_listening() {
+            let request_id = self.settings_commands.next_request_id;
+            self.settings_commands.next_request_id += 1;
+            let command = agentdictate_core::ClientCommand::cancel_hotkey_capture(request_id);
+            if let Err(error) = (self.settings_commands.command_sink)(command) {
+                self.settings.shortcut_capture =
+                    ShortcutCapture::Failed(format!("Could not stop listening: {error}"));
+            }
+        }
         cx.notify();
     }
 
-    pub(super) fn capture_shortcut(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
-        if keystroke.key.eq_ignore_ascii_case("escape")
-            && keystroke.modifiers == gpui::Modifiers::none()
-        {
-            self.cancel_shortcut_capture(cx);
-            return;
-        }
-        match captured_shortcut(keystroke) {
-            Ok(shortcut) => {
-                self.settings.form.draft.hotkey = shortcut;
-                self.settings.shortcut_capture_active = false;
-                self.settings.shortcut_capture_error = None;
+    fn finish_shortcut_capture(
+        &mut self,
+        result: Result<HotkeyCaptureOutcome, UiActionError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.shortcut_capture = match result {
+            Ok(HotkeyCaptureOutcome::Captured { hotkey }) => {
+                self.settings.form.draft.hotkey = hotkey;
                 self.recompute_settings_dirty(cx);
+                ShortcutCapture::Idle
             }
-            Err(error) => self.settings.shortcut_capture_error = Some(error),
-        }
+            Ok(HotkeyCaptureOutcome::Cancelled) => ShortcutCapture::Idle,
+            Ok(HotkeyCaptureOutcome::TimedOut) => {
+                ShortcutCapture::Failed("No shortcut was pressed. Try again.".to_owned())
+            }
+            Err(error) => ShortcutCapture::Failed(format!("Could not capture: {error}")),
+        };
         cx.notify();
     }
 

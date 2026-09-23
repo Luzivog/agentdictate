@@ -4,7 +4,7 @@ use agentdictate_app::{
     AppPaths, WorkspaceClient, WorkspaceError, connect_or_start_daemon, grant_native_access,
     init_file_logging, is_overlay_helper_argument, run_overlay_helper,
 };
-use agentdictate_core::{ClientCommand, ServerMessageKind};
+use agentdictate_core::{ClientCommand, HotkeyCaptureOutcome, ServerMessageKind};
 use agentdictate_runtime::IpcClient;
 use agentdictate_ui::{
     Route, ShellViewModel, UiActionError, run_settings_shell_with_workspace_actions,
@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|error| -> UiActionError { Box::new(error) })
         })
     };
-    let command_sink = Arc::new(move |command| -> Result<(), UiActionError> {
+    let send = move |command| -> Result<ServerMessageKind, UiActionError> {
         let (mut client, _) = IpcClient::connect(&runtime)
             .map_err(|error| -> UiActionError { Box::new(WorkspaceError::from(error)) })?;
         let response = client
@@ -104,9 +104,17 @@ fn main() -> anyhow::Result<()> {
             ServerMessageKind::CommandRejected { error, .. } => {
                 Err(Box::new(WorkspaceError::CommandRejected { message: error }))
             }
-            ServerMessageKind::Snapshot { .. }
-            | ServerMessageKind::Workspace { .. }
-            | ServerMessageKind::HistoryPage { .. } => Ok(()),
+            reply => Ok(reply),
+        }
+    };
+    let command_sink = {
+        let send = send.clone();
+        Arc::new(move |command| send(command).map(drop))
+    };
+    let hotkey_capture = Arc::new(move || -> Result<HotkeyCaptureOutcome, UiActionError> {
+        match send(ClientCommand::capture_hotkey(1))? {
+            ServerMessageKind::HotkeyCaptured { outcome, .. } => Ok(outcome),
+            _ => Err("the daemon did not answer the shortcut capture".into()),
         }
     });
     let model = ShellViewModel::from_app_snapshot(Route::Overview, snapshot)
@@ -117,6 +125,7 @@ fn main() -> anyhow::Result<()> {
             settings.values,
             settings.has_api_key,
             command_sink,
+            hotkey_capture,
             workspace_action_sink,
             updates,
         ),
@@ -125,6 +134,7 @@ fn main() -> anyhow::Result<()> {
             settings.values,
             settings.has_api_key,
             command_sink,
+            hotkey_capture,
             workspace_action_sink,
         ),
     }

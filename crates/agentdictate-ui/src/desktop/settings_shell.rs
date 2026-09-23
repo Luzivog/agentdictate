@@ -6,7 +6,7 @@ use gpui_component::input::{InputEvent, InputState};
 use crate::{Route, ShellViewModel, ThemeTokens, WorkspaceAction, WorkspaceActionSink};
 
 use super::{
-    CommandSink, SettingsShell,
+    CommandSink, HotkeyCaptureSink, SettingsShell,
     history_action_lane::HistoryActionLane,
     settings_form::SettingsFormState,
     words_actions::{FixWordEditor, WordsUiState},
@@ -17,8 +17,32 @@ pub(super) struct SettingsEditState {
     pub(super) baseline: agentdictate_core::Settings,
     pub(super) form: SettingsFormState,
     pub(super) dirty: bool,
-    pub(super) shortcut_capture_active: bool,
-    pub(super) shortcut_capture_error: Option<String>,
+    pub(super) shortcut_capture: ShortcutCapture,
+}
+
+/// The Global shortcut control. The daemon captures the shortcut from the
+/// keyboards themselves, so it keeps the physical key on any layout.
+pub(super) enum ShortcutCapture {
+    Idle,
+    /// Waiting for the daemon's answer; dropping the task ignores it.
+    Listening {
+        _answer: Task<()>,
+    },
+    /// Why the last capture ended without a shortcut.
+    Failed(String),
+}
+
+impl ShortcutCapture {
+    pub(super) const fn is_listening(&self) -> bool {
+        matches!(self, Self::Listening { .. })
+    }
+
+    pub(super) fn failure(&self) -> Option<String> {
+        match self {
+            Self::Failed(reason) => Some(reason.clone()),
+            Self::Idle | Self::Listening { .. } => None,
+        }
+    }
 }
 
 pub(super) struct SettingsCommandState {
@@ -26,6 +50,7 @@ pub(super) struct SettingsCommandState {
     pub(super) api_key_input: Entity<InputState>,
     pub(super) api_key_feedback: Option<String>,
     pub(super) command_sink: CommandSink,
+    pub(super) hotkey_capture: HotkeyCaptureSink,
     pub(super) next_request_id: u64,
 }
 
@@ -96,12 +121,15 @@ pub(super) const fn route_index(route: Route) -> usize {
 
 impl SettingsShell {
     /// Builds the settings window's shell around the daemon's settings and the
-    /// sinks that send commands and workspace actions back to it.
+    /// sinks that send commands, shortcut captures and workspace actions back
+    /// to it.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: ShellViewModel,
         settings: agentdictate_core::Settings,
         has_api_key: bool,
         command_sink: CommandSink,
+        hotkey_capture: HotkeyCaptureSink,
         workspace_action_sink: WorkspaceActionSink,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -156,14 +184,14 @@ impl SettingsShell {
                 baseline: settings,
                 form,
                 dirty: false,
-                shortcut_capture_active: false,
-                shortcut_capture_error: None,
+                shortcut_capture: ShortcutCapture::Idle,
             },
             settings_commands: SettingsCommandState {
                 has_api_key,
                 api_key_input,
                 api_key_feedback: None,
                 command_sink,
+                hotkey_capture,
                 next_request_id: 1,
             },
             workspace_actions: WorkspaceActionState {

@@ -15,7 +15,7 @@ use super::events::{
     NativeHotkeySignalTrigger, ReconfigurationFailure,
 };
 use super::input::{InputDirectoryWatcher, evdev_key_input, poll_descriptor};
-use crate::hotkey::{DeviceId, HotkeyListenerStatus, HotkeySession, HotkeySpec};
+use crate::hotkey::{CaptureStep, DeviceId, HotkeyListenerStatus, HotkeySession, HotkeySpec};
 
 use super::listener::{DiscoverDevices, OpenKeyboard, open_initial_devices, open_keyboard};
 
@@ -44,6 +44,7 @@ impl ListenerWorker {
             events,
             discover,
         } = self;
+        let mut capture: Option<PendingCapture> = None;
         loop {
             let device_paths = devices.keys().cloned().collect::<Vec<_>>();
             let mut poll_descriptors = Vec::with_capacity(device_paths.len() + 2);
@@ -61,7 +62,7 @@ impl ListenerWorker {
                 libc::poll(
                     poll_descriptors.as_mut_ptr(),
                     poll_descriptors.len() as libc::nfds_t,
-                    -1,
+                    capture.as_ref().map_or(-1, PendingCapture::poll_timeout),
                 )
             };
             if result < 0 {
@@ -93,6 +94,20 @@ impl ListenerWorker {
                                 &events,
                             );
                             let _ = response.send(result);
+                        }
+                        ListenerCommand::Capture { timeout, response } => {
+                            let armed = PendingCapture {
+                                response,
+                                deadline: Instant::now() + timeout,
+                            };
+                            if let Some(replaced) = capture.replace(armed) {
+                                replaced.finish(Some(CaptureStep::Cancelled));
+                            }
+                        }
+                        ListenerCommand::CancelCapture => {
+                            if let Some(pending) = capture.take() {
+                                pending.finish(Some(CaptureStep::Cancelled));
+                            }
                         }
                     }
                 }
@@ -127,6 +142,13 @@ impl ListenerWorker {
                     }
                 };
                 for input in inputs {
+                    if let Some(pending) = capture.take() {
+                        match session.capture_input(keyboard.id, input) {
+                            Some(step) => pending.finish(Some(step)),
+                            None => capture = Some(pending),
+                        }
+                        continue;
+                    }
                     if let Some(signal) = session.input(keyboard.id, input) {
                         let _ = events.send(NativeHotkeyEvent::Signal(NativeHotkeySignal {
                             signal,
@@ -139,6 +161,13 @@ impl ListenerWorker {
             }
             for path in disconnected {
                 disconnect_path(&path, &mut devices, &mut session, &events);
+            }
+            if capture
+                .as_ref()
+                .is_some_and(|pending| Instant::now() >= pending.deadline)
+                && let Some(expired) = capture.take()
+            {
+                expired.finish(None);
             }
 
             if poll_descriptors[1].revents & libc::POLLIN != 0 {
@@ -163,6 +192,26 @@ impl ListenerWorker {
                 let _ = events.send(NativeHotkeyEvent::Status(status));
             }
         }
+    }
+}
+
+/// A capture armed by `NativeHotkeyControl::capture`; the worker answers it
+/// exactly once, with the chord, a cancellation, or `None` at the deadline.
+struct PendingCapture {
+    response: mpsc::SyncSender<Option<CaptureStep>>,
+    deadline: Instant,
+}
+
+impl PendingCapture {
+    /// How long `poll` may sleep, in milliseconds rounded up so it never
+    /// wakes just before the deadline and spins.
+    fn poll_timeout(&self) -> libc::c_int {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        libc::c_int::try_from(remaining.as_micros().div_ceil(1_000)).unwrap_or(libc::c_int::MAX)
+    }
+
+    fn finish(self, step: Option<CaptureStep>) {
+        let _ = self.response.send(step);
     }
 }
 

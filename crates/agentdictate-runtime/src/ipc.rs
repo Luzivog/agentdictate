@@ -30,9 +30,19 @@ pub enum IpcError {
     AlreadyRunning { path: PathBuf },
 }
 
+/// A reply that waits on something outside the handler, such as the user
+/// pressing a shortcut. It runs after the handler lock is released.
+pub type DeferredReply = Box<dyn FnOnce() -> ServerMessage + Send>;
+
 pub trait IpcHandler {
     fn snapshot(&self, request_id: u64) -> ServerMessage;
     fn handle(&mut self, command: ClientCommand) -> ServerMessage;
+
+    /// Takes a command whose reply must wait, so the wait never blocks
+    /// other sessions; `handle` answers every command this leaves alone.
+    fn deferred_reply(&self, _command: &ClientCommand) -> Option<DeferredReply> {
+        None
+    }
 }
 
 pub struct IpcServer {
@@ -123,7 +133,10 @@ impl IpcServer {
         let mut reader = BufReader::new(reader_stream);
         while let Some(command) = read_message::<ClientCommand>(&mut reader)? {
             check_version(command.protocol_version)?;
-            let response = handler.handle(command);
+            let response = match handler.deferred_reply(&command) {
+                Some(reply) => reply(),
+                None => handler.handle(command),
+            };
             check_version(response.protocol_version)?;
             write_message(&mut stream, &response)?;
         }
@@ -225,19 +238,22 @@ fn serve_shared<H>(mut stream: UnixStream, handler: &Arc<Mutex<H>>) -> Result<()
 where
     H: IpcHandler,
 {
-    let initial = handler
-        .lock()
-        .map_err(|_| std::io::Error::other("IPC handler lock is poisoned"))?
-        .snapshot(0);
+    let lock = || {
+        handler
+            .lock()
+            .map_err(|_| std::io::Error::other("IPC handler lock is poisoned"))
+    };
+    let initial = lock()?.snapshot(0);
     write_message(&mut stream, &initial)?;
     let reader_stream = stream.try_clone()?;
     let mut reader = BufReader::new(reader_stream);
     while let Some(command) = read_message::<ClientCommand>(&mut reader)? {
         check_version(command.protocol_version)?;
-        let response = handler
-            .lock()
-            .map_err(|_| std::io::Error::other("IPC handler lock is poisoned"))?
-            .handle(command);
+        let deferred = lock()?.deferred_reply(&command);
+        let response = match deferred {
+            Some(reply) => reply(),
+            None => lock()?.handle(command),
+        };
         check_version(response.protocol_version)?;
         write_message(&mut stream, &response)?;
     }

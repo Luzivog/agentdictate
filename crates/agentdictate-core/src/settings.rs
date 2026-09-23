@@ -22,7 +22,8 @@ pub struct Settings {
     pub project_context: String,
     pub dictation_mode: crate::DictationMode,
     pub streaming_enabled: bool,
-    pub hotkey: String,
+    #[serde(deserialize_with = "crate::hotkey::deserialize_hotkey")]
+    pub hotkey: crate::Hotkey,
     pub recording_mode: RecordingMode,
     pub max_recording_seconds: u32,
     pub audio_ducking_enabled: bool,
@@ -141,7 +142,7 @@ impl Default for Settings {
             project_context: String::new(),
             dictation_mode: crate::DictationMode::Dictate,
             streaming_enabled: false,
-            hotkey: "Ctrl+Space".into(),
+            hotkey: crate::Hotkey::default(),
             recording_mode: RecordingMode::Toggle,
             max_recording_seconds: 300,
             audio_ducking_enabled: true,
