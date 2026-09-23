@@ -2,9 +2,13 @@
 """Exercise the real helper on a private, headless GNOME/Mutter desktop.
 
 Requires GNOME Shell 46+, XWayland, gsettings, xrandr, xprop, xwininfo,
-GTK 3, xsel, Tesseract, Python GI and Pillow. No user-session windows, audio, input
-injection, configuration, or bus services are used. The session-service stub
-only acknowledges GNOME's startup target; rendering uses the real compositor.
+GTK 3, Tesseract, Python GI and Pillow, and the production clipboard owner's
+test client (`cargo build -p agentdictate-linux --example selection_probe`),
+found beside the binary unless --selection-probe names it. No user-session
+windows, audio, configuration, or bus services are used, and the paste chord
+goes only to the private compositor's own virtual keyboard. The
+session-service stub only acknowledges GNOME's startup target; rendering uses
+the real compositor.
 """
 
 import argparse
@@ -72,10 +76,40 @@ def typing_target(backend, root):
             request.unlink()
             values = [Gtk.Clipboard.get(selection).wait_for_text()
                       for selection in [Gdk.SELECTION_CLIPBOARD, Gdk.SELECTION_PRIMARY]]
-            result.write_text(json.dumps(values))
+            result.write_text(json.dumps({"selections": values, "entry": entry.get_text()}))
         return True
     GLib.timeout_add(30, check_clipboard)
     Gtk.main()
+
+
+def target_state(root):
+    """The typing target's CLIPBOARD and PRIMARY text and its entry text."""
+    result = root / "clipboard-result"
+    result.unlink(missing_ok=True)
+    (root / "clipboard-request").touch()
+    return json.loads(wait_until(lambda: result.read_text() if result.exists() else None,
+                                 "typing target state"))
+
+
+# Linux evdev key codes, as the daemon's uinput paste keyboard sends them.
+KEYS = {"shift": 42, "ctrl": 29, "insert": 110, "v": 47}
+
+
+class SelectionProbe:
+    """The production clipboard owner, driven line by line (see its source)."""
+
+    def __init__(self, program, env):
+        self.process = subprocess.Popen([str(program)], env=env, stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, text=True)
+
+    def ask(self, line):
+        self.process.stdin.write(line + "\n")
+        self.process.stdin.flush()
+        return self.process.stdout.readline().strip()
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=3)
 
 
 def wait_until(check, description, timeout=8):
@@ -148,6 +182,10 @@ class Desktop:
                 return False
 
         wait_until(initialized, "GNOME private inspection interface", 12)
+        # Created now because the compositor adds a new input device
+        # asynchronously and drops its first events.
+        seat = "imports.gi.Clutter.get_default_backend().get_default_seat()"
+        assert self.evaluate(f"Boolean(global.pasteKeyboard = {seat}.create_virtual_device(1))")
         text = (root / "shell.log").read_text()
         self.env["DISPLAY"] = re.search(r"public X11 display (:\d+)", text)[1]
         self.env["XAUTHORITY"] = str(next(runtime.glob(".mutter-Xwaylandauth.*")))
@@ -171,6 +209,16 @@ class Desktop:
         success, result = self.dbus("org.gnome.Shell", "/org/gnome/Shell", "org.gnome.Shell", "Eval",
                                     GLib.Variant("(s)", (code,)))
         return json.loads(result) if success and result not in {"", "undefined"} else None
+
+    def press_chord(self, *keys):
+        """Presses `keys` in order and releases them in reverse, paced like the
+        daemon's chord, on the private compositor's virtual keyboard."""
+        events = [(KEYS[key], 1) for key in keys] + [(KEYS[key], 0) for key in reversed(keys)]
+        for index, (code, state) in enumerate(events):
+            if index:
+                time.sleep(.025)
+            assert self.evaluate("Boolean(global.pasteKeyboard.notify_key("
+                                 f"imports.gi.GLib.get_monotonic_time(), {code}, {state}) ?? true)")
 
     def screenshot(self, name):
         path = self.root / name
@@ -250,7 +298,7 @@ def assert_transparent_corners(desktop, window, baseline, scale):
     return {"desktop": baseline.getpixel((x + 1, y + 1)), "corners": corners, "card": card}
 
 
-def exercise(desktop, binary, scale, monitors, backend):
+def exercise(desktop, binary, probe_program, scale, monitors, backend):
     import struct
     audio = desktop.root / "fixture.wav"
     with wave.open(str(audio), "wb") as writer:
@@ -272,6 +320,7 @@ def exercise(desktop, binary, scale, monitors, backend):
                "typing target focused")
     focus_before = desktop.evaluate("global.display.focus_window?.get_title() ?? null")
     clients_before = desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"])
+    probe = SelectionProbe(probe_program, desktop.env)
     baseline = desktop.screenshot("baseline.png")
     spawned = time.monotonic()
     helper = subprocess.Popen([str(binary), "--overlay-helper"], env=env, stdin=subprocess.PIPE,
@@ -337,20 +386,30 @@ def exercise(desktop, binary, scale, monitors, backend):
             if phase == "recording":
                 transparency = assert_transparent_corners(desktop, window, baseline, scale)
             assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
-        for selection in ["--clipboard", "--primary"]:
-            subprocess.run(["xsel", "--input", selection], input="overlay clipboard fixture",
-                           env=desktop.env, text=True, check=True, timeout=3)
-        (desktop.root / "clipboard-result").unlink(missing_ok=True)
-        (desktop.root / "clipboard-request").touch()
-        clipboard = wait_until(lambda: (desktop.root / "clipboard-result").read_text()
-                               if (desktop.root / "clipboard-result").exists() else None,
-                               "target clipboard retrieval")
-        values = json.loads(clipboard)
-        assert values[0] == "overlay clipboard fixture", clipboard
-        if backend == "x11":
-            assert values[1] == "overlay clipboard fixture", clipboard
-        for selection in ["--clipboard", "--primary"]:
-            assert desktop.run(["xsel", "--output", selection]) == "overlay clipboard fixture"
+        # Copying without pasting publishes the clipboard alone.
+        assert probe.ask("publish clipboard copied fixture") == "published"
+        copied = target_state(desktop.root)["selections"]
+        assert copied[0] == "copied fixture", copied
+        fixture = "overlay clipboard fixture déjà vu"
+        assert probe.ask("pressed") == "marked"
+        assert probe.ask(f"publish both {fixture}") == "published"
+        # Mutter saves each new clipboard as soon as it is published. That
+        # fetch comes before the paste key, so it never acknowledges a paste.
+        eager_save = probe.ask("requested 500")
+        assert eager_save.startswith("requested "), eager_save
+        assert probe.ask("pressed") == "marked"
+        assert probe.ask("requested 200") == "not-requested"
+        # The paste comes first: toolkits may answer a later paste of the
+        # same offer from the copy an earlier read cached.
+        assert probe.ask("pressed") == "marked"
+        chord = ("shift", "insert") if backend == "wayland" else ("ctrl", "v")
+        desktop.press_chord(*chord)
+        acknowledgement = probe.ask("requested 1000")
+        assert acknowledgement.startswith("requested "), acknowledgement
+        entry = wait_until(lambda: (lambda text: text if fixture in text else None)(
+            target_state(desktop.root)["entry"]), "pasted text in the typing target")
+        values = target_state(desktop.root)["selections"]
+        assert values == [fixture, fixture], values
         assert desktop.evaluate("global.display.focus_window?.get_title() ?? null") == focus_before
         assert desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"]) == clients_before
         if len(monitors) > 1:
@@ -383,11 +442,15 @@ def exercise(desktop, binary, scale, monitors, backend):
         return {"binary": str(binary), "scale": scale, "statuses": statuses, "initial_frame": actual,
                 "target": backend, "recognized_labels": recognized, "transparency": transparency,
                 "gpu_adapter": adapters, "status_ms_since_launch": status_ms,
-                "clipboard": {"x11_selections": "both preserved", "target_selections": values}, "dismissal_ms": round((time.monotonic() - start) * 1000)}
+                "clipboard": {"target_selections": values, "paste_chord": "+".join(chord), "entry": entry,
+                              "eager_save_ms_after_publish_start": int(eager_save.split()[1]),
+                              "request_ms_after_chord_start": int(acknowledgement.split()[1])},
+                "dismissal_ms": round((time.monotonic() - start) * 1000)}
     finally:
         if helper.poll() is None:
             helper.kill()
             helper.wait()
+        probe.close()
         target.terminate()
         target.wait(timeout=3)
 
@@ -398,13 +461,19 @@ def main():
     parser.add_argument("--scale", type=float, default=1)
     parser.add_argument("--monitor", action="append")
     parser.add_argument("--target", choices=["wayland", "x11"], default="wayland")
+    parser.add_argument("--selection-probe", type=Path)
     args = parser.parse_args()
+    probe = (args.selection_probe or args.binary.resolve().parent / "examples" / "selection_probe").resolve()
+    if not probe.is_file():
+        parser.error(f"{probe} is missing; build it with "
+                     "`cargo build -p agentdictate-linux --example selection_probe` or pass --selection-probe")
     monitors = args.monitor or ["1920x1080", "1600x900", "1920x1200"]
     with tempfile.TemporaryDirectory(prefix="agentdictate-overlay-desktop-") as directory:
         desktop = Desktop.__new__(Desktop)
         try:
             desktop.__init__(Path(directory), monitors)
-            print(json.dumps(exercise(desktop, args.binary.resolve(), args.scale, monitors, args.target), indent=2))
+            print(json.dumps(exercise(desktop, args.binary.resolve(), probe, args.scale, monitors, args.target),
+                             indent=2, ensure_ascii=False))
         finally:
             desktop.close()
 

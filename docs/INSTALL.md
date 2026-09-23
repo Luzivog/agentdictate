@@ -8,16 +8,17 @@ install the runtime and build dependencies:
 ```bash
 sudo apt install build-essential git pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
   libfontconfig1-dev libfreetype6-dev libvulkan1 libegl1 \
-  pipewire-bin pulseaudio-utils xsel ffmpeg
+  pipewire-bin pulseaudio-utils ffmpeg
 ```
 
 `pulseaudio-utils` provides `pactl`, which lowers other audio while you
 dictate. `ffmpeg` compresses each recording before upload; without it,
 AgentDictate uploads the raw WAV, about 8 times larger.
 
-Debian 13 uses the same package list. Paste injection is built into
-AgentDictate (an in-process uinput virtual keyboard) and needs write access to
-`/dev/uinput`, granted by the packaged udev rule.
+Debian 13 uses the same package list. The clipboard and paste injection are
+built into AgentDictate: it serves the clipboard itself over X11 or XWayland,
+and pastes through an in-process uinput virtual keyboard, which needs write
+access to `/dev/uinput`, granted by the packaged udev rule.
 
 Install [Rust with rustup](https://rustup.rs/). The repository selects Rust
 1.95.0 through `rust-toolchain.toml`. Recording also requires a running

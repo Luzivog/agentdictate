@@ -34,7 +34,7 @@ case "${1:-}" in
         fi
       done
     fi
-    for tool in cargo-deny shellcheck gdb ffmpeg pw-record xsel; do
+    for tool in cargo-deny shellcheck gdb ffmpeg pw-record; do
       command -v "$tool" >/dev/null || echo "UNAVAILABLE optional check/debug/runtime tool: $tool"
     done
     git status --short --branch

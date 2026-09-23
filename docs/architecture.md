@@ -100,13 +100,16 @@ After transcription, the daemon delivers text to the focused application:
    counts as the target.
 2. Publish the transcript. Automatic mode on native Wayland publishes the
    same text to both the clipboard and the primary selection; other
-   deliveries publish only to the clipboard. Both selections are owned by
-   live non-detaching `xsel` owners over XWayland, and the compositor's
-   XWayland selection bridge carries them to Wayland-native applications.
+   deliveries publish only to the clipboard. The daemon owns both X11
+   selections itself: one long-lived thread keeps an unmapped window on the
+   X server (X11 or XWayland) and answers `TARGETS`, `UTF8_STRING`, `TEXT`
+   and Latin-1 `STRING` requests until the next delivery, or until another
+   application takes the selection. The compositor's XWayland selection
+   bridge carries both selections to Wayland-native applications.
    wl-clipboard is deliberately unused: without a data-control protocol on
    GNOME, every `wl-copy`/`wl-paste` call pops a transient toplevel that
-   visibly re-layouts the taskbar at paste time. Read the published
-   selections back through `xsel` to verify that the text landed.
+   visibly re-layouts the taskbar at paste time. Publication is confirmed
+   when the X server reports AgentDictate's window as each selection's owner.
 3. Select the paste chord. On X11 or XWayland, Automatic mode uses
    `Ctrl+Shift+V` for detected terminals and `Ctrl+V` for regular or unknown
    targets. On native Wayland, Automatic mode uses `Shift+Insert`. Standard
@@ -115,13 +118,22 @@ After transcription, the daemon delivers text to the focused application:
    (`evdev`). Press and release always run in-process and stay paired, and
    the kernel releases any held key if the daemon dies, so a chord can never
    leave a key stuck.
+5. Watch for the acknowledgement. A request for the text that reaches the
+   selection owner after the paste key press means the target took the
+   paste: the daemon waits up to 150 ms after the press for it, logs
+   "target requested the text", and records `consumed` in the delivery
+   result and the `paste command submitted` log line. Earlier requests do
+   not count, because clipboard managers fetch each new clipboard as soon as
+   it is published (Mutter's own does so within milliseconds). A missing
+   acknowledgement means unconfirmed rather than failed: a toolkit can answer
+   a repeated paste of the same clipboard from its own cache.
 
 Injection follows a single-injection-no-retry policy. A retry after a failed
 or ambiguous paste risks duplicating already-inserted text, which is worse
 than missing text the user can re-dictate. A successful injection command is
-stored as `submitted`: the backend accepted the command, but the target
-application did not acknowledge consuming it. Submitted delivery is therefore
-complete and non-retryable rather than falsely reported as confirmed.
+stored as `submitted` whether or not the target acknowledged it, and
+submitted delivery is complete and non-retryable. The acknowledgement is only
+logged for now.
 
 ## Runtime Data Locations
 

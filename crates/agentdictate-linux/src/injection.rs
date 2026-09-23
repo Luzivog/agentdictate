@@ -99,16 +99,18 @@ impl PasteInjector {
         injector
     }
 
-    /// Sends exactly one paste chord. The deadline is checked before the first
-    /// press; a started chord always runs to completion so press/release stay
-    /// paired. Failures are intentionally returned to the delivery state
-    /// machine because retrying an ambiguous injection can duplicate text in
-    /// the focused application.
+    /// Sends exactly one paste chord and returns when its paste key went
+    /// down: a request for the clipboard text after that instant answers
+    /// this chord. The deadline is checked before the first press; a started
+    /// chord always runs to completion so press/release stay paired. Failures
+    /// are intentionally returned to the delivery state machine because
+    /// retrying an ambiguous injection can duplicate text in the focused
+    /// application.
     pub fn inject(
         &mut self,
         shortcut: PasteShortcut,
         deadline: Instant,
-    ) -> Result<(), InjectionError> {
+    ) -> Result<Instant, InjectionError> {
         let (modifiers, key) = chord(shortcut);
         let ready = self.ensure_device()?;
         let start = ready.ready_at.max(Instant::now());
@@ -181,11 +183,13 @@ struct PressedKeys<'a> {
 }
 
 impl PressedKeys<'_> {
-    fn press(&mut self, key: KeyCode) -> Result<(), InjectionError> {
+    /// Returns when the press was sent.
+    fn press(&mut self, key: KeyCode) -> Result<Instant, InjectionError> {
+        let pressed_at = Instant::now();
         emit_key(self.device, key, 1)?;
         self.pressed.push(key);
         thread::sleep(KEY_EVENT_GAP);
-        Ok(())
+        Ok(pressed_at)
     }
 
     /// Releases in reverse order and empties `pressed` so Drop is a no-op.
@@ -210,11 +214,13 @@ impl Drop for PressedKeys<'_> {
     }
 }
 
+/// Presses the modifiers, then `key`, then releases all of them. Returns
+/// when `key` went down.
 fn emit_chord(
     device: &mut VirtualDevice,
     modifiers: &[KeyCode],
     key: KeyCode,
-) -> Result<(), InjectionError> {
+) -> Result<Instant, InjectionError> {
     let mut chord = PressedKeys {
         device,
         pressed: Vec::with_capacity(modifiers.len() + 1),
@@ -222,8 +228,9 @@ fn emit_chord(
     for modifier in modifiers {
         chord.press(*modifier)?;
     }
-    chord.press(key)?;
-    chord.release_all()
+    let key_pressed = chord.press(key)?;
+    chord.release_all()?;
+    Ok(key_pressed)
 }
 
 fn emit_key(device: &mut VirtualDevice, key: KeyCode, value: i32) -> Result<(), InjectionError> {

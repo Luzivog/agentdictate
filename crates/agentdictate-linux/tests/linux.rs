@@ -1,9 +1,5 @@
 #[path = "linux/audio_ducking.rs"]
 mod audio_ducking;
-#[path = "linux/availability.rs"]
-mod availability;
-#[path = "linux/clipboard_commands.rs"]
-mod clipboard_commands;
 #[path = "linux/command_output.rs"]
 mod command_output;
 #[path = "linux/device_discovery.rs"]

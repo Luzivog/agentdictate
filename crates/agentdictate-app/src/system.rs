@@ -9,8 +9,8 @@ use agentdictate_core::TranscriptionProvider;
 use agentdictate_core::{ClientCommand, JobId, PasteShortcut, ServerMessageKind, Settings};
 use agentdictate_linux::{
     audio_ducking::{PlaybackDucker, SystemPactl},
-    clipboard::{ClipboardPublication, ClipboardSelection, CommandClipboard},
-    command::{PlatformCommandError, SystemCommandRunner},
+    clipboard::{ClipboardError, ClipboardSelection, SelectionOwner},
+    command::SystemCommandRunner,
     focus::{FocusError, observe_x11_focus},
     injection::PasteInjector,
     paste::{
@@ -29,6 +29,10 @@ use crate::{CapturedRecording, RecordingController};
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long after the paste key press a target may take to request the
+/// text and still count as having taken the paste. The chord itself takes
+/// 50–75 ms of this.
+const PASTE_REQUEST_WINDOW: Duration = Duration::from_millis(150);
 static RECORDER_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1_000_000);
 
 struct ActiveRecording {
@@ -325,30 +329,58 @@ impl RecordingController for SystemRecordingController {
 /// Reads the active X11 window before a paste; tests substitute a fake.
 type FocusReader = fn(Instant) -> Result<X11FocusObservation, FocusError>;
 
+/// The X selections a delivery publishes to; tests substitute a fake.
+trait Selections: Send {
+    /// Serves `text` on exactly `selections` once the X server confirms
+    /// AgentDictate owns them.
+    fn publish(
+        &mut self,
+        text: &str,
+        selections: &[ClipboardSelection],
+        deadline: Instant,
+    ) -> Result<(), ClipboardError>;
+
+    /// When an application requested the text at or after `since`, waiting
+    /// until `until` for it.
+    fn text_requested_since(&self, since: Instant, until: Instant) -> Option<Instant>;
+}
+
+impl Selections for SelectionOwner {
+    fn publish(
+        &mut self,
+        text: &str,
+        selections: &[ClipboardSelection],
+        deadline: Instant,
+    ) -> Result<(), ClipboardError> {
+        SelectionOwner::publish(self, text, selections, deadline)
+    }
+
+    fn text_requested_since(&self, since: Instant, until: Instant) -> Option<Instant> {
+        SelectionOwner::text_requested_since(self, since, until)
+    }
+}
+
 pub struct SystemDeliverer {
-    clipboard: CommandClipboard,
+    /// Serves the published text until the next delivery or until another
+    /// application takes the selection, so a target that reads
+    /// asynchronously never finds it empty.
+    selections: Box<dyn Selections>,
     focus: FocusReader,
     injector: PasteInjector,
     shortcut_mode: ShortcutMode,
     wayland_session: bool,
-    /// Clipboard protocols are ownership based. Keeping the publisher alive
-    /// after injection prevents a target that reads asynchronously from seeing
-    /// an empty clipboard.
-    active_publications: Vec<ClipboardPublication>,
 }
 
 impl SystemDeliverer {
     #[must_use]
     pub fn for_environment(paste_shortcut: PasteShortcut) -> Self {
-        let runner = SystemCommandRunner;
         Self {
-            clipboard: CommandClipboard::for_system(runner),
+            selections: Box::new(SelectionOwner::new()),
             focus: observe_x11_focus,
             injector: PasteInjector::new(),
             shortcut_mode: paste_shortcut.into(),
             wayland_session: std::env::var("XDG_SESSION_TYPE")
                 .is_ok_and(|session| session.eq_ignore_ascii_case("wayland")),
-            active_publications: Vec::new(),
         }
     }
 
@@ -371,37 +403,30 @@ impl SystemDeliverer {
     }
 
     pub fn copy_text(&mut self, text: &str) -> Result<(), ExternalError> {
-        let publication = self
-            .clipboard
-            .publish(text.as_bytes(), Instant::now() + DELIVERY_TIMEOUT)
-            .map_err(|error| ExternalError::new(error.to_string()))?;
-        self.active_publications = vec![publication];
-        Ok(())
+        self.selections
+            .publish(
+                text,
+                &[ClipboardSelection::Clipboard],
+                Instant::now() + DELIVERY_TIMEOUT,
+            )
+            .map_err(|error| ExternalError::new(error.to_string()))
     }
 
     fn publish_delivery_text(
-        &self,
+        &mut self,
         protocol: ClipboardProtocol,
-        contents: &[u8],
+        text: &str,
         deadline: Instant,
-    ) -> Result<Vec<ClipboardPublication>, PlatformCommandError> {
+    ) -> Result<(), ClipboardError> {
         let selections: &[ClipboardSelection] = match (self.shortcut_mode, protocol) {
-            (ShortcutMode::Auto, ClipboardProtocol::Wayland) => &[
-                // Some terminals bind Shift+Insert to the primary selection,
-                // while regular applications bind it to the clipboard. Publish
-                // primary first so a later failure never claims a new clipboard.
-                ClipboardSelection::Primary,
-                ClipboardSelection::Clipboard,
-            ],
+            // Some terminals bind Shift+Insert to the primary selection,
+            // while regular applications bind it to the clipboard.
+            (ShortcutMode::Auto, ClipboardProtocol::Wayland) => {
+                &[ClipboardSelection::Primary, ClipboardSelection::Clipboard]
+            }
             _ => &[ClipboardSelection::Clipboard],
         };
-        selections
-            .iter()
-            .map(|selection| {
-                self.clipboard
-                    .publish_selection(*selection, contents, deadline)
-            })
-            .collect()
+        self.selections.publish(text, selections, deadline)
     }
 
     /// Pastes with exactly one injected shortcut. Every failure before that
@@ -436,26 +461,16 @@ impl SystemDeliverer {
                 }
                 DeliveryAction::PublishClipboard(protocol) => {
                     let started = Instant::now();
-                    let published =
-                        self.publish_delivery_text(protocol, job.final_text.as_bytes(), deadline);
+                    let published = self.publish_delivery_text(protocol, &job.final_text, deadline);
                     clipboard_time += started.elapsed();
-                    let publications = match published {
-                        Ok(publications) => publications,
-                        Err(error) => {
-                            return DeliveryDisposition::NotSent {
-                                copied_to_clipboard: false,
-                                reason: format!(
-                                    "could not copy the text, so nothing was pasted: {error}"
-                                ),
-                            };
-                        }
-                    };
-                    debug_assert!(
-                        publications
-                            .iter()
-                            .all(|publication| publication.evidence.confirms_ready())
-                    );
-                    self.active_publications = publications;
+                    if let Err(error) = published {
+                        return DeliveryDisposition::NotSent {
+                            copied_to_clipboard: false,
+                            reason: format!(
+                                "could not copy the text, so nothing was pasted: {error}"
+                            ),
+                        };
+                    }
                     copied_this_attempt = true;
                     delivery.advance(DeliveryObservation::ClipboardReady(protocol))
                 }
@@ -466,8 +481,15 @@ impl SystemDeliverer {
                     let started = Instant::now();
                     let injected = self.injector.inject(shortcut, deadline);
                     let inject_ms = started.elapsed().as_millis() as u64;
-                    let sent = match injected {
-                        Ok(()) => {
+                    match injected {
+                        Ok(key_pressed) => {
+                            // Clipboard managers fetch the text as soon as it
+                            // is published; only a request after the key
+                            // press comes from the paste.
+                            let requested = self.selections.text_requested_since(
+                                key_pressed,
+                                key_pressed + PASTE_REQUEST_WINDOW,
+                            );
                             tracing::info!(
                                 job_id = %job.id,
                                 ?protocol,
@@ -476,9 +498,20 @@ impl SystemDeliverer {
                                 focus_ms = focus_time.as_millis() as u64,
                                 clipboard_ms = clipboard_time.as_millis() as u64,
                                 inject_ms,
+                                consumed = requested.is_some(),
                                 "paste command submitted"
                             );
-                            true
+                            if let Some(requested) = requested {
+                                tracing::info!(
+                                    job_id = %job.id,
+                                    request_ms =
+                                        requested.duration_since(key_pressed).as_millis() as u64,
+                                    "target requested the text"
+                                );
+                            }
+                            delivery.advance(DeliveryObservation::PasteSent {
+                                consumed: requested.is_some(),
+                            })
                         }
                         Err(error) => {
                             tracing::warn!(
@@ -487,10 +520,9 @@ impl SystemDeliverer {
                                 %error,
                                 "paste command outcome is ambiguous"
                             );
-                            false
+                            delivery.advance(DeliveryObservation::InjectionFailed)
                         }
-                    };
-                    delivery.advance(DeliveryObservation::InjectionFinished(sent))
+                    }
                 }
                 DeliveryAction::Finished(result) => {
                     return match result.failure {
@@ -549,7 +581,6 @@ impl Deliverer for SystemDeliverer {
 
 #[cfg(test)]
 mod tests {
-    use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
     use std::{
         fs,
         io::Write,
@@ -620,6 +651,55 @@ mod tests {
         events
     }
 
+    /// Records publications instead of owning the desktop's selections, and
+    /// reports every paste as requested by its target.
+    #[derive(Clone, Default)]
+    struct FakeSelections {
+        published: Arc<Mutex<Vec<Publication>>>,
+    }
+
+    type Publication = (String, Vec<ClipboardSelection>);
+
+    impl Selections for FakeSelections {
+        fn publish(
+            &mut self,
+            text: &str,
+            selections: &[ClipboardSelection],
+            _deadline: Instant,
+        ) -> Result<(), ClipboardError> {
+            self.published
+                .lock()
+                .unwrap()
+                .push((text.to_owned(), selections.to_vec()));
+            Ok(())
+        }
+
+        fn text_requested_since(&self, since: Instant, _until: Instant) -> Option<Instant> {
+            Some(since)
+        }
+    }
+
+    fn ready_job(directory: &std::path::Path, final_text: &str) -> RecordingJob {
+        let now = Utc::now();
+        RecordingJob {
+            options: None,
+            id: JobId::new(),
+            started_at: now,
+            updated_at: now,
+            stage: JobStage::ReadyToDeliver,
+            audio_path: directory.join("recording.wav"),
+            duration_seconds: 1.0,
+            transcription_provider: TranscriptionProvider::OpenAiApi,
+            transcription_model: "test".to_owned(),
+            raw_transcript: final_text.to_lowercase(),
+            final_text: final_text.to_owned(),
+            copied_to_clipboard: false,
+            paste_triggered: false,
+            delivery_status: DeliveryStatus::NotAttempted,
+            error_message: None,
+        }
+    }
+
     #[test]
     fn successful_paste_command_is_reported_as_submitted() {
         if !std::path::Path::new("/dev/uinput").exists() {
@@ -629,30 +709,9 @@ mod tests {
         let mut injector = PasteInjector::new();
         let mut reader = grab_injection_device(&mut injector);
         let directory = tempdir().unwrap();
-        let clipboard_state = directory.path().join("clipboard.txt");
-        let xsel = directory.path().join("xsel");
-        fs::write(
-            &xsel,
-            format!(
-                concat!(
-                    "#!/bin/sh\n",
-                    "case \"$*\" in\n",
-                    "  *--output*) cat '{}' ;;\n",
-                    "  *) cat > '{}'; exec tail -f /dev/null ;;\n",
-                    "esac\n",
-                ),
-                clipboard_state.display(),
-                clipboard_state.display(),
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&xsel, fs::Permissions::from_mode(0o755)).unwrap();
-        let runner = SystemCommandRunner;
+        let selections = FakeSelections::default();
         let mut deliverer = SystemDeliverer {
-            clipboard: CommandClipboard::new(
-                runner,
-                PlatformExecutable::at(PlatformTool::Xsel, xsel),
-            ),
+            selections: Box::new(selections.clone()),
             focus: |_| {
                 Ok(X11FocusObservation {
                     window_id: 42,
@@ -663,26 +722,8 @@ mod tests {
             injector,
             shortcut_mode: ShortcutMode::Standard,
             wayland_session: false,
-            active_publications: Vec::new(),
         };
-        let now = Utc::now();
-        let job = RecordingJob {
-            options: None,
-            id: JobId::new(),
-            started_at: now,
-            updated_at: now,
-            stage: JobStage::ReadyToDeliver,
-            audio_path: directory.path().join("recording.wav"),
-            duration_seconds: 1.0,
-            transcription_provider: TranscriptionProvider::OpenAiApi,
-            transcription_model: "test".to_owned(),
-            raw_transcript: "submitted words".to_owned(),
-            final_text: "Submitted words.".to_owned(),
-            copied_to_clipboard: false,
-            paste_triggered: false,
-            delivery_status: DeliveryStatus::NotAttempted,
-            error_message: None,
-        };
+        let job = ready_job(directory.path(), "Submitted words.");
 
         let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
 
@@ -692,6 +733,10 @@ mod tests {
                 copied_to_clipboard: true,
                 paste_triggered: true,
             }
+        );
+        assert_eq!(
+            *selections.published.lock().unwrap(),
+            [(job.final_text.clone(), vec![ClipboardSelection::Clipboard])]
         );
         assert_eq!(
             injected_key_events(&mut reader, 4),
@@ -713,62 +758,15 @@ mod tests {
         let mut injector = PasteInjector::new();
         let mut reader = grab_injection_device(&mut injector);
         let directory = tempdir().unwrap();
-        let clipboard_state = directory.path().join("clipboard.txt");
-        let primary_state = directory.path().join("primary.txt");
-        let xsel_log = directory.path().join("xsel.log");
-        let xsel = directory.path().join("xsel");
-        fs::write(
-            &xsel,
-            format!(
-                concat!(
-                    "#!/bin/sh\n",
-                    "printf '%s\\n' \"$*\" >> '{}'\n",
-                    "case \"$*\" in\n",
-                    "  *--primary*) state='{}' ;;\n",
-                    "  *) state='{}' ;;\n",
-                    "esac\n",
-                    "case \"$*\" in\n",
-                    "  *--output*) cat \"$state\" ;;\n",
-                    "  *) cat > \"$state\"; exec tail -f /dev/null ;;\n",
-                    "esac\n",
-                ),
-                xsel_log.display(),
-                primary_state.display(),
-                clipboard_state.display(),
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&xsel, fs::Permissions::from_mode(0o755)).unwrap();
-        let runner = SystemCommandRunner;
+        let selections = FakeSelections::default();
         let mut deliverer = SystemDeliverer {
-            clipboard: CommandClipboard::new(
-                runner,
-                PlatformExecutable::at(PlatformTool::Xsel, xsel),
-            ),
+            selections: Box::new(selections.clone()),
             focus: |_| Err(FocusError::NoActiveWindow),
             injector,
             shortcut_mode: ShortcutMode::Auto,
             wayland_session: true,
-            active_publications: Vec::new(),
         };
-        let now = Utc::now();
-        let job = RecordingJob {
-            options: None,
-            id: JobId::new(),
-            started_at: now,
-            updated_at: now,
-            stage: JobStage::ReadyToDeliver,
-            audio_path: directory.path().join("recording.wav"),
-            duration_seconds: 1.0,
-            transcription_provider: TranscriptionProvider::OpenAiApi,
-            transcription_model: "test".to_owned(),
-            raw_transcript: "wayland transcript".to_owned(),
-            final_text: "Wayland transcript.".to_owned(),
-            copied_to_clipboard: false,
-            paste_triggered: false,
-            delivery_status: DeliveryStatus::NotAttempted,
-            error_message: None,
-        };
+        let job = ready_job(directory.path(), "Wayland transcript.");
 
         let disposition = deliverer.deliver(&job, DeliveryMethod::Paste).unwrap();
 
@@ -780,43 +778,12 @@ mod tests {
             }
         );
         assert_eq!(
-            fs::read(&clipboard_state).unwrap(),
-            job.final_text.as_bytes()
+            *selections.published.lock().unwrap(),
+            [(
+                job.final_text.clone(),
+                vec![ClipboardSelection::Primary, ClipboardSelection::Clipboard]
+            )]
         );
-        assert_eq!(fs::read(&primary_state).unwrap(), job.final_text.as_bytes());
-        let xsel_arguments = fs::read_to_string(xsel_log).unwrap();
-        let owner_lines = xsel_arguments
-            .lines()
-            .filter(|arguments| arguments.ends_with("--input --nodetach"))
-            .collect::<Vec<_>>();
-        // Primary is claimed before the clipboard so a later failure never
-        // leaves a fresh clipboard without its primary counterpart.
-        assert_eq!(
-            owner_lines,
-            [
-                "--primary --input --nodetach",
-                "--clipboard --input --nodetach",
-            ],
-        );
-        assert!(
-            xsel_arguments
-                .lines()
-                .any(|arguments| arguments == "--primary --output")
-        );
-        assert!(
-            xsel_arguments
-                .lines()
-                .any(|arguments| arguments == "--clipboard --output")
-        );
-        assert!(xsel_arguments.lines().all(|arguments| {
-            matches!(
-                arguments,
-                "--primary --input --nodetach"
-                    | "--clipboard --input --nodetach"
-                    | "--primary --output"
-                    | "--clipboard --output"
-            )
-        }));
         assert_eq!(
             injected_key_events(&mut reader, 4),
             vec![

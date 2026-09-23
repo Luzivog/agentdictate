@@ -4,29 +4,6 @@ pub enum ClipboardProtocol {
     X11,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClipboardReadinessEvidence {
-    ReadbackMatches,
-    OwnerTransfer {
-        previous_owner_exited: bool,
-        new_owner_alive: bool,
-    },
-    Unobserved,
-}
-
-impl ClipboardReadinessEvidence {
-    pub const fn confirms_ready(self) -> bool {
-        match self {
-            Self::ReadbackMatches => true,
-            Self::OwnerTransfer {
-                previous_owner_exited,
-                new_owner_alive,
-            } => previous_owner_exited && new_owner_alive,
-            Self::Unobserved => false,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FocusTarget {
     protocol: ClipboardProtocol,
@@ -128,6 +105,9 @@ pub enum DeliveryFailure {
 pub struct DeliveryResult {
     pub copied: bool,
     pub paste_triggered: bool,
+    /// The target requested the published text after the paste key press:
+    /// the only acknowledgement that the paste reached an application.
+    pub consumed: bool,
     pub failure: Option<DeliveryFailure>,
 }
 
@@ -147,7 +127,14 @@ pub enum DeliveryObservation {
     Focus(FocusTarget),
     ClipboardReady(ClipboardProtocol),
     ClipboardUnavailable,
-    InjectionFinished(bool),
+    /// The paste chord was sent; `consumed` records whether the target then
+    /// requested the text.
+    PasteSent {
+        consumed: bool,
+    },
+    /// Sending the chord failed partway, so whether it reached the target is
+    /// unknown.
+    InjectionFailed,
     DeadlineReached,
 }
 
@@ -192,16 +179,28 @@ impl PasteDelivery {
                     self.action = DeliveryAction::Finished(DeliveryResult {
                         copied: false,
                         paste_triggered: false,
+                        consumed: false,
                         failure: Some(DeliveryFailure::ClipboardUnavailable),
                     });
                 }
             }
-            DeliveryObservation::InjectionFinished(sent) => {
+            DeliveryObservation::PasteSent { consumed } => {
                 if matches!(self.action, DeliveryAction::InjectPaste { .. }) {
                     self.action = DeliveryAction::Finished(DeliveryResult {
                         copied: self.clipboard_ready,
-                        paste_triggered: sent,
-                        failure: (!sent).then_some(DeliveryFailure::InjectionAmbiguous),
+                        paste_triggered: true,
+                        consumed,
+                        failure: None,
+                    });
+                }
+            }
+            DeliveryObservation::InjectionFailed => {
+                if matches!(self.action, DeliveryAction::InjectPaste { .. }) {
+                    self.action = DeliveryAction::Finished(DeliveryResult {
+                        copied: self.clipboard_ready,
+                        paste_triggered: false,
+                        consumed: false,
+                        failure: Some(DeliveryFailure::InjectionAmbiguous),
                     });
                 }
             }
@@ -216,6 +215,7 @@ impl PasteDelivery {
                 self.action = DeliveryAction::Finished(DeliveryResult {
                     copied: self.clipboard_ready,
                     paste_triggered: false,
+                    consumed: false,
                     failure: Some(failure),
                 });
             }

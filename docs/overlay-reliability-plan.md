@@ -167,7 +167,7 @@ The supervisor retains bounded startup, restart, and teardown behavior. It reads
 
 ### Repeatable compositor check
 
-`packaging/test-overlay-desktop.py` runs the production helper with synthetic audio and workflow updates on a private GNOME desktop. It requires GNOME Shell 46+, XWayland, GTK 3, Python GI/Pillow, Tesseract, xrandr, xprop, xwininfo, and xsel. It uses a private session bus and temporary XDG directories. No active-desktop input or microphone capture is involved.
+`packaging/test-overlay-desktop.py` runs the production helper with synthetic audio and workflow updates on a private GNOME desktop. It requires GNOME Shell 46+, XWayland, GTK 3, Python GI/Pillow, Tesseract, xrandr, xprop, xwininfo, and the production clipboard owner's `selection_probe` example (`cargo build -p agentdictate-linux --example selection_probe`). It uses a private session bus and temporary XDG directories. No active-desktop input or microphone capture is involved.
 
 ```bash
 /usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --target x11
@@ -175,9 +175,9 @@ The supervisor retains bounded startup, restart, and teardown behavior. It reads
 /usr/bin/python3 packaging/test-overlay-desktop.py target/debug/agentdictate --monitor 1920x1080 --scale 1.25 --target x11
 ```
 
-The harness checks real composited waveform pixels and recognizes the Transcribing and Cleaning labels. It compares the window corners outside the rounded card with the desktop behind them, so an opaque overlay fails, and reports the renderer's selected GPU adapter and each helper status's time since launch. It verifies primary-monitor placement, monitor changes through Mutter's own configuration API, work-area changes, unmanaged window policy, unchanged focus on a real GTK target, no additional managed application entry, and dismissal through both a hidden update and stdin EOF. It also preserves both X11 clipboard selections and verifies standard clipboard retrieval by native Wayland and X11 targets.
+The harness checks real composited waveform pixels and recognizes the Transcribing and Cleaning labels. It compares the window corners outside the rounded card with the desktop behind them, so an opaque overlay fails, and reports the renderer's selected GPU adapter and each helper status's time since launch. It verifies primary-monitor placement, monitor changes through Mutter's own configuration API, work-area changes, unmanaged window policy, unchanged focus on a real GTK target, no additional managed application entry, and dismissal through both a hidden update and stdin EOF. It also publishes both selections through the production clipboard owner, pastes into the target through the private compositor's virtual keyboard, checks that the paste request acknowledges it while Mutter's eager clipboard save does not, and verifies CLIPBOARD and PRIMARY retrieval by native Wayland and X11 targets.
 
-The isolated Mutter session exposes the X11 PRIMARY selection to X11 clients but returns no PRIMARY text to the Wayland target. Standard CLIPBOARD retrieval succeeds on both targets. The harness reports this distinction; it does not claim native Wayland middle-click acceptance. It also does not install or certify the user's dash-to-panel extension. The previous xsel integration is unchanged, and its no-toplevel behavior is checked through the managed-window list.
+With the in-process owner, the isolated Mutter session also bridges PRIMARY to the Wayland target (the earlier xsel owners returned none there). It does not install or certify the user's dash-to-panel extension, and the owner's no-toplevel behavior is checked through the managed-window list.
 
 Focused verification covers Linux placement (including negative coordinates and constrained areas), UI overlay contracts and rendered fades, health notification and rendering, helper startup/crash/recovery/dismissal, and daemon recording durability and exit-before-delivery. The final comprehensive gate also exercises the existing cancellation, session ownership, live processing-stage, clipboard, and delivery protections.
 

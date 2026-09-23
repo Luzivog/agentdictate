@@ -1,6 +1,6 @@
 use agentdictate_linux::paste::{
-    ClipboardProtocol, ClipboardReadinessEvidence, DeliveryAction, DeliveryFailure,
-    DeliveryObservation, DeliveryResult, FocusTarget, PasteDelivery, PasteShortcut, ShortcutMode,
+    ClipboardProtocol, DeliveryAction, DeliveryFailure, DeliveryObservation, DeliveryResult,
+    FocusTarget, PasteDelivery, PasteShortcut, ShortcutMode,
 };
 
 #[test]
@@ -80,26 +80,6 @@ fn auto_mode_uses_universal_paste_for_unclassified_wayland_targets() {
 }
 
 #[test]
-fn clipboard_readiness_requires_observed_content_or_live_owner_transfer() {
-    assert!(ClipboardReadinessEvidence::ReadbackMatches.confirms_ready());
-    assert!(
-        ClipboardReadinessEvidence::OwnerTransfer {
-            previous_owner_exited: true,
-            new_owner_alive: true,
-        }
-        .confirms_ready()
-    );
-    assert!(
-        !ClipboardReadinessEvidence::OwnerTransfer {
-            previous_owner_exited: true,
-            new_owner_alive: false,
-        }
-        .confirms_ready()
-    );
-    assert!(!ClipboardReadinessEvidence::Unobserved.confirms_ready());
-}
-
-#[test]
 fn ambiguous_injection_failure_is_final_and_never_retried() {
     let target = FocusTarget::x11(42, "chatgpt Chatgpt");
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
@@ -110,10 +90,11 @@ fn ambiguous_injection_failure_is_final_and_never_retried() {
     let finished = DeliveryAction::Finished(DeliveryResult {
         copied: true,
         paste_triggered: false,
+        consumed: false,
         failure: Some(DeliveryFailure::InjectionAmbiguous),
     });
     assert_eq!(
-        delivery.advance(DeliveryObservation::InjectionFinished(false)),
+        delivery.advance(DeliveryObservation::InjectionFailed),
         finished
     );
     assert_eq!(
@@ -137,6 +118,7 @@ fn deadline_after_injection_begins_is_ambiguous_not_safe_to_retry() {
         DeliveryAction::Finished(DeliveryResult {
             copied: true,
             paste_triggered: false,
+            consumed: false,
             failure: Some(DeliveryFailure::InjectionAmbiguous),
         })
     );
@@ -160,6 +142,7 @@ fn deadline_with_changing_focus_keeps_the_copy_but_skips_paste() {
         DeliveryAction::Finished(DeliveryResult {
             copied: true,
             paste_triggered: false,
+            consumed: false,
             failure: Some(DeliveryFailure::FocusUnstable),
         })
     );
@@ -175,6 +158,7 @@ fn clipboard_readiness_deadline_reports_that_nothing_was_copied() {
         DeliveryAction::Finished(DeliveryResult {
             copied: false,
             paste_triggered: false,
+            consumed: false,
             failure: Some(DeliveryFailure::ClipboardUnavailable),
         })
     );
@@ -190,6 +174,7 @@ fn clipboard_failure_never_attempts_paste() {
         DeliveryAction::Finished(DeliveryResult {
             copied: false,
             paste_triggered: false,
+            consumed: false,
             failure: Some(DeliveryFailure::ClipboardUnavailable),
         })
     );
@@ -237,7 +222,7 @@ fn protocol_change_republishes_before_pasting_to_current_focus() {
 }
 
 #[test]
-fn successful_injection_command_completes_as_copied_and_triggered() {
+fn sent_paste_completes_as_copied_triggered_and_acknowledged_by_the_target() {
     let target = FocusTarget::wayland();
     let mut delivery = PasteDelivery::new(ShortcutMode::Standard);
     delivery.advance(DeliveryObservation::Focus(target.clone()));
@@ -247,10 +232,11 @@ fn successful_injection_command_completes_as_copied_and_triggered() {
     delivery.advance(DeliveryObservation::Focus(target));
 
     assert_eq!(
-        delivery.advance(DeliveryObservation::InjectionFinished(true)),
+        delivery.advance(DeliveryObservation::PasteSent { consumed: true }),
         DeliveryAction::Finished(DeliveryResult {
             copied: true,
             paste_triggered: true,
+            consumed: true,
             failure: None,
         })
     );

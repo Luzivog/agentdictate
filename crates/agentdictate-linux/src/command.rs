@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fmt, fs,
-    io::{self, Read, Write},
+    io::{self, Read},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::fs::PermissionsExt,
     os::unix::process::CommandExt,
@@ -12,7 +12,6 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PlatformTool {
-    Xsel,
     Pactl,
     Ffmpeg,
     Systemctl,
@@ -21,7 +20,6 @@ pub enum PlatformTool {
 impl PlatformTool {
     pub const fn executable_name(self) -> &'static str {
         match self {
-            Self::Xsel => "xsel",
             Self::Pactl => "pactl",
             Self::Ffmpeg => "ffmpeg",
             Self::Systemctl => "systemctl",
@@ -33,14 +31,13 @@ impl PlatformTool {
         match self {
             // Volume lines are parsed, so they must not be localized.
             Self::Pactl => &[("LC_ALL", "C")],
-            Self::Xsel | Self::Ffmpeg | Self::Systemctl => &[],
+            Self::Ffmpeg | Self::Systemctl => &[],
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlatformCapability {
-    Clipboard,
     AudioDucking,
     AudioCompression,
     ServiceManagement,
@@ -64,10 +61,6 @@ impl PlatformExecutable {
             tool,
             path: Some(path.into()),
         }
-    }
-
-    pub const fn missing(tool: PlatformTool) -> Self {
-        Self { tool, path: None }
     }
 
     pub fn discover(tool: PlatformTool) -> Self {
@@ -157,73 +150,12 @@ impl std::error::Error for PlatformCommandError {
     }
 }
 
-pub fn require_tools(
-    capability: PlatformCapability,
-    tools: &[&PlatformExecutable],
-) -> Result<(), PlatformCommandError> {
-    let mut missing_tools = Vec::new();
-    for tool in tools.iter().filter(|tool| tool.path().is_none()) {
-        if !missing_tools.contains(&tool.tool()) {
-            missing_tools.push(tool.tool());
-        }
-    }
-    if missing_tools.is_empty() {
-        Ok(())
-    } else {
-        Err(PlatformCommandError::Unavailable(AvailabilityDiagnostic {
-            capability,
-            missing_tools,
-        }))
-    }
-}
-
 /// Runs Linux platform tools without involving a shell.
 ///
 /// Process groups let long-running adapters stop the complete tool tree rather
 /// than leaving a helper process behind.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemCommandRunner;
-
-#[derive(Debug)]
-pub struct PlatformProcess {
-    tool: PlatformTool,
-    child: Child,
-}
-
-impl PlatformProcess {
-    pub fn is_alive(&mut self) -> Result<bool, PlatformCommandError> {
-        self.child
-            .try_wait()
-            .map(|status| status.is_none())
-            .map_err(|source| PlatformCommandError::Communicate {
-                tool: self.tool,
-                source,
-            })
-    }
-
-    pub fn tool(&self) -> PlatformTool {
-        self.tool
-    }
-}
-
-impl Drop for PlatformProcess {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let process_id = self.child.id();
-            if let Ok(process_group) = i32::try_from(process_id) {
-                // SAFETY: `kill` does not dereference pointers. This child was
-                // started in its own process group below.
-                unsafe {
-                    libc::kill(-process_group, libc::SIGTERM);
-                }
-            }
-            if matches!(self.child.try_wait(), Ok(None)) {
-                kill_group(&mut self.child);
-            }
-        }
-        let _ = self.child.wait();
-    }
-}
 
 impl SystemCommandRunner {
     pub fn spawn_group(
@@ -349,52 +281,6 @@ impl SystemCommandRunner {
                 stderr: String::from_utf8_lossy(&stderr).into_owned(),
             })
         }
-    }
-
-    pub fn spawn_owner(
-        &self,
-        capability: PlatformCapability,
-        executable: &PlatformExecutable,
-        arguments: &[OsString],
-        input: &[u8],
-    ) -> Result<PlatformProcess, PlatformCommandError> {
-        let Some(program) = executable.path() else {
-            return Err(PlatformCommandError::Unavailable(AvailabilityDiagnostic {
-                capability,
-                missing_tools: vec![executable.tool()],
-            }));
-        };
-        let mut child = Command::new(program)
-            .args(arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|source| PlatformCommandError::Start {
-                tool: executable.tool(),
-                source,
-            })?;
-        let Some(mut stdin) = child.stdin.take() else {
-            kill_group(&mut child);
-            return Err(PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source: io::Error::new(io::ErrorKind::BrokenPipe, "child stdin is unavailable"),
-            });
-        };
-        if let Err(source) = stdin.write_all(input) {
-            drop(stdin);
-            kill_group(&mut child);
-            return Err(PlatformCommandError::Communicate {
-                tool: executable.tool(),
-                source,
-            });
-        }
-        drop(stdin);
-        Ok(PlatformProcess {
-            tool: executable.tool(),
-            child,
-        })
     }
 }
 
