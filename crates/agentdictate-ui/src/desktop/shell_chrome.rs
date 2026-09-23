@@ -10,9 +10,11 @@ use crate::{Color, NavigationItemViewModel, Route, ThemeTokens};
 
 use super::{SIDEBAR_WIDTH, SettingsShell, gpui_color};
 
+const WINDOW_CONTROLS_WIDTH: f32 = 112.;
+
+/// The fixed-width navigation column on the left of the settings window.
 pub(super) fn sidebar_view(
     navigation: [NavigationItemViewModel; 4],
-    overlay: bool,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -74,7 +76,7 @@ pub(super) fn sidebar_view(
                 )
                 .child(item.label)
                 .on_click(cx.listener(move |shell, _, _, cx| {
-                    shell.select_route(route, overlay, cx);
+                    shell.select_route(route, cx);
                 }))
         }))
 }
@@ -84,38 +86,16 @@ fn route_accent(route: Route, theme: ThemeTokens) -> Color {
         Route::Overview => theme.accent,
         Route::History => theme.info,
         Route::Replacements => theme.success,
-        Route::Settings => Color::rgb(167, 139, 250),
+        Route::Settings => theme.highlight,
     }
 }
 
-pub(super) fn shell_title_bar(
-    route: Route,
-    sidebar_open: bool,
-    window: &Window,
-    theme: ThemeTokens,
-    cx: &mut Context<SettingsShell>,
-) -> gpui::Div {
+pub(super) fn shell_title_bar(route: Route, window: &Window, theme: ThemeTokens) -> gpui::Div {
     h_flex()
         .h(px(48.))
         .flex_shrink_0()
-        .child(
-            h_flex().h_full().w(px(112.)).flex_shrink_0().pl_3().child(
-                action_button("toggle-sidebar")
-                    .debug_selector(|| "toggle-sidebar".to_owned())
-                    .ghost()
-                    .small()
-                    .tooltip(if sidebar_open {
-                        "Hide sidebar"
-                    } else {
-                        "Show sidebar"
-                    })
-                    .child(panel_icon(sidebar_open, theme))
-                    .on_click(cx.listener(|shell, _, _, cx| {
-                        shell.layout.sidebar_open = !shell.layout.sidebar_open;
-                        cx.notify();
-                    })),
-            ),
-        )
+        // Balances the window controls so the page title stays centered.
+        .child(gpui::div().w(px(WINDOW_CONTROLS_WIDTH)).flex_shrink_0())
         .child(
             h_flex()
                 .id("window-drag-region")
@@ -153,38 +133,10 @@ pub(super) fn shell_title_bar(
         .child(window_controls(window, theme))
 }
 
-fn panel_icon(sidebar_open: bool, theme: ThemeTokens) -> gpui::Div {
-    gpui::div()
-        .relative()
-        .w(px(17.))
-        .h(px(15.))
-        .rounded(px(2.))
-        .border_1()
-        .border_color(gpui_color(theme.text))
-        .child(
-            gpui::div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(5.))
-                .w(px(1.))
-                .bg(gpui_color(theme.text)),
-        )
-        .child(
-            gpui::div()
-                .absolute()
-                .top(px(6.))
-                .left(if sidebar_open { px(9.) } else { px(10.) })
-                .w(px(4.))
-                .h(px(1.))
-                .bg(gpui_color(theme.text)),
-        )
-}
-
 fn window_controls(window: &Window, theme: ThemeTokens) -> gpui::Div {
     h_flex()
         .justify_end()
-        .w(px(112.))
+        .w(px(WINDOW_CONTROLS_WIDTH))
         .flex_shrink_0()
         .gap_2()
         .pr_3()

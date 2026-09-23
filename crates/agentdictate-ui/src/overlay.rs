@@ -133,7 +133,7 @@ fn waveform_bins(samples: &[i16]) -> [f32; WAVEFORM_SOURCE_BIN_COUNT] {
 
 /// Max-pools an arbitrary source waveform into a fixed display width. This is
 /// intentionally identical to the prior 44-to-20 fitting behavior.
-pub fn fit_waveform(values: &[f32], count: usize) -> Vec<f32> {
+fn fit_waveform(values: &[f32], count: usize) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
     }
@@ -172,10 +172,6 @@ impl Default for WaveformFrame {
 }
 
 impl WaveformFrame {
-    pub const fn from_levels(levels: [f32; WAVEFORM_BAR_COUNT]) -> Self {
-        Self { levels }
-    }
-
     pub const fn levels(&self) -> &[f32; WAVEFORM_BAR_COUNT] {
         &self.levels
     }
@@ -295,30 +291,6 @@ pub fn format_elapsed(seconds: f64) -> String {
     }
 }
 
-/// Window-manager contract for the transient recording presentation.
-///
-/// The overlay reports status only. Keeping these invariants in the
-/// toolkit-independent model prevents a desktop adapter from accidentally
-/// stealing the focused paste target while showing or updating the window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OverlayWindowPolicy {
-    pub focusable: bool,
-    pub accepts_input: bool,
-    pub requests_activation: bool,
-    pub show_in_taskbar: bool,
-}
-
-impl OverlayWindowPolicy {
-    pub const fn focus_neutral() -> Self {
-        Self {
-            focusable: false,
-            accepts_input: false,
-            requests_activation: false,
-            show_in_taskbar: false,
-        }
-    }
-}
-
 /// Card opacity for the time since the window was shown and, once dismissal
 /// began, the time since dismissal. The fade-in level is frozen at the
 /// dismissal instant and then multiplied by the fade-out ramp, so a dismissal
@@ -388,10 +360,6 @@ impl OverlayState {
         matches!(self, Self::Starting | Self::Recording)
     }
 
-    pub const fn window_policy(&self) -> OverlayWindowPolicy {
-        OverlayWindowPolicy::focus_neutral()
-    }
-
     /// Stable presentation identity for rendered-interaction diagnostics.
     pub const fn stable_id(&self) -> &'static str {
         match self {
@@ -407,10 +375,6 @@ impl OverlayState {
         }
     }
 
-    pub fn accessibility_label(&self) -> String {
-        format!("Agent Dictate: {}", self.label())
-    }
-
     pub fn label(&self) -> &str {
         match self {
             Self::Hidden => "",
@@ -422,13 +386,6 @@ impl OverlayState {
             Self::ReadyToDeliver => "Ready to paste",
             Self::Delivering => "Pasting…",
             Self::RecoverableFailure { message, .. } => message,
-        }
-    }
-
-    pub fn action_label(&self) -> Option<&str> {
-        match self {
-            Self::RecoverableFailure { action, .. } => Some(action),
-            _ => None,
         }
     }
 

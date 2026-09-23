@@ -12,9 +12,6 @@ mod overlay;
 mod replacements;
 mod route;
 mod settings;
-mod shell_layout;
-#[cfg(feature = "desktop")]
-mod sidebar_motion;
 mod theme;
 mod usage;
 mod view_model;
@@ -27,7 +24,7 @@ mod workspace;
 pub use assets::AgentDictateAssets;
 #[cfg(feature = "desktop")]
 pub use desktop::{
-    APPLICATION_ID, RecordingOverlay, SettingsShell, run_recording_overlay,
+    APPLICATION_ID, CommandSink, RecordingOverlay, SettingsShell, run_recording_overlay,
     run_settings_shell_with_workspace_actions,
     run_settings_shell_with_workspace_actions_and_updates,
 };
@@ -41,18 +38,14 @@ pub use model_catalog::{
 pub use overlay::{
     ActiveRecordingPresentation, OVERLAY_BOTTOM_GAP, OVERLAY_FADE_HOLD, OVERLAY_FADE_IN,
     OVERLAY_FADE_OUT, OVERLAY_HEIGHT, OVERLAY_WIDTH, OverlayPresentation, OverlayState,
-    OverlayWindowPolicy, RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT,
-    WaveformArea, WaveformBar, WaveformFrame, elapsed_seconds, fit_waveform, format_elapsed,
-    overlay_fade_active, overlay_opacity, recording_overlay_layout, sample_recent_wav,
-    waveform_bars,
+    RecordingOverlayLayout, WAVEFORM_BAR_COUNT, WAVEFORM_SOURCE_BIN_COUNT, WaveformArea,
+    WaveformBar, WaveformFrame, elapsed_seconds, format_elapsed, overlay_fade_active,
+    overlay_opacity, recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 pub use replacements::{ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel};
-pub use route::{Route, RouteParseError};
+pub use route::Route;
 pub use settings::{SettingsDraft, SettingsDraftError};
-pub use shell_layout::{
-    SIDEBAR_OVERLAY_BREAKPOINT, ShellLayout, SidebarMode, sidebar_open_for_layout,
-};
-pub use theme::{Color, RadiusTokens, SpacingTokens, ThemeTokens, TypographyTokens};
+pub use theme::{Color, ThemeTokens};
 pub use usage::{UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel};
 pub use view_model::{
     HotkeyViewModel, NavigationItemViewModel, ShellViewModel, StatusTone, StatusViewModel,

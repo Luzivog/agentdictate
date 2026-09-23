@@ -25,7 +25,7 @@ const TRANSCRIPT_ROW_HEIGHT: f32 = 50.0;
 /// to Recovery, rather than below a long transcript list.
 pub(super) fn surface(
     history: HistoryViewModel,
-    search_input: Option<Entity<InputState>>,
+    search_input: Entity<InputState>,
     feedback: Option<String>,
     pending_destructive_action: Option<WorkspaceAction>,
     theme: ThemeTokens,
@@ -51,21 +51,19 @@ pub(super) fn surface(
         .w_full()
         .min_w_0()
         .gap_5()
-        .when_some(search_input, |page, input| {
-            page.child(
-                h_flex()
-                    .debug_selector(|| "history-search-row".to_owned())
-                    .w_full()
-                    .min_w_0()
-                    .child(
-                        gpui::div()
-                            .debug_selector(|| "history-search-input".to_owned())
-                            .w_full()
-                            .min_w_0()
-                            .child(Input::new(&input).small().w_full()),
-                    ),
-            )
-        })
+        .child(
+            h_flex()
+                .debug_selector(|| "history-search-row".to_owned())
+                .w_full()
+                .min_w_0()
+                .child(
+                    gpui::div()
+                        .debug_selector(|| "history-search-input".to_owned())
+                        .w_full()
+                        .min_w_0()
+                        .child(Input::new(&search_input).small().w_full()),
+                ),
+        )
         .when_some(feedback, |page, feedback| {
             page.child(workspace_feedback(feedback, theme))
         })

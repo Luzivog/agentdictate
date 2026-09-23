@@ -2,8 +2,7 @@ use gpui::{Context, Hsla, IntoElement, Render, Window, prelude::*, px};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
-    OverlayPresentation, OverlayState, ThemeTokens, WaveformFrame, overlay_fade_active,
-    overlay_opacity,
+    OverlayPresentation, OverlayState, WaveformFrame, overlay_fade_active, overlay_opacity,
 };
 
 /// Per-dot opacities for the processing ellipsis: a soft sequential pulse
@@ -32,18 +31,6 @@ pub struct RecordingOverlay {
 }
 
 impl RecordingOverlay {
-    pub fn new(state: OverlayState) -> Self {
-        Self {
-            state,
-            active_recording: None,
-            waveform: WaveformFrame::default(),
-            last_sample_at: None,
-            shown_at: None,
-            dismissed_at: None,
-            on_frame_submitted: None,
-        }
-    }
-
     pub fn from_presentation(presentation: OverlayPresentation) -> Self {
         Self {
             state: presentation.state(),
@@ -59,23 +46,6 @@ impl RecordingOverlay {
     pub fn on_frame_submitted(mut self, callback: impl FnOnce() + 'static) -> Self {
         self.on_frame_submitted = Some(Box::new(callback));
         self
-    }
-
-    pub fn with_theme(state: OverlayState, _theme: ThemeTokens) -> Self {
-        Self::new(state)
-    }
-
-    pub const fn state(&self) -> &OverlayState {
-        &self.state
-    }
-
-    pub fn set_state(&mut self, state: OverlayState) {
-        if self.state != state {
-            self.waveform.reset();
-            self.last_sample_at = None;
-        }
-        self.state = state;
-        self.active_recording = None;
     }
 
     /// Starts the fade-out while keeping the last visible content untouched.

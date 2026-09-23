@@ -34,13 +34,9 @@ impl SettingsShell {
             self.set_route_feedback("Another action is still running");
             return;
         }
-        let Some(sink) = &self.workspace_actions.sink else {
-            self.set_route_feedback("This action is not connected yet");
-            return;
-        };
         let feedback_route = self.model.active_route;
         let success_feedback = action.success_feedback();
-        let sink = Arc::clone(sink);
+        let sink = Arc::clone(&self.workspace_actions.sink);
         let closes_editor = matches!(
             action,
             WorkspaceAction::CreateReplacement { .. } | WorkspaceAction::UpdateReplacement { .. }
@@ -93,11 +89,7 @@ impl SettingsShell {
         if !self.workspace_actions.history_lane.schedule(&action) {
             return;
         }
-        let Some(sink) = &self.workspace_actions.sink else {
-            self.set_route_feedback_for(Route::History, "History search is not connected yet");
-            return;
-        };
-        let sink = Arc::clone(sink);
+        let sink = Arc::clone(&self.workspace_actions.sink);
         self.clear_route_feedback_for(Route::History);
         let task = cx.background_spawn(async move { sink(action) });
         cx.spawn(async move |shell, cx| {

@@ -377,7 +377,7 @@ fn recovery_notice(
                 .small()
                 .label("Open History")
                 .on_click(cx.listener(|shell, _, _, cx| {
-                    shell.select_route(Route::History, false, cx);
+                    shell.select_route(Route::History, cx);
                 })),
         )
 }
@@ -430,7 +430,7 @@ fn recent_history(
                         .small()
                         .label("View all")
                         .on_click(cx.listener(|shell, _, _, cx| {
-                            shell.select_route(Route::History, false, cx);
+                            shell.select_route(Route::History, cx);
                         })),
                 ),
         )

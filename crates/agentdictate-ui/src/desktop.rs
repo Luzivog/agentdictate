@@ -1,7 +1,7 @@
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, Application, Bounds, Hsla, Subscription, WindowBackgroundAppearance, WindowBounds,
-    WindowDecorations, WindowKind, WindowOptions, point, prelude::*, px, rgb, size,
+    App, Application, Bounds, Subscription, WindowBackgroundAppearance, WindowBounds,
+    WindowDecorations, WindowKind, WindowOptions, point, prelude::*, px, size,
 };
 use gpui_component::{Root, TitleBar};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -11,8 +11,9 @@ use std::{
     sync::{Arc, mpsc::Receiver},
 };
 
+use crate::theme::gpui_color;
 use crate::{
-    Color, OverlayPresentation, ShellViewModel, ThemeTokens, UiActionError, WorkspaceActionSink,
+    OverlayPresentation, ShellViewModel, ThemeTokens, UiActionError, WorkspaceActionSink,
     WorkspaceViewModel,
 };
 
@@ -30,17 +31,15 @@ mod shell_render;
 pub(crate) mod single_line;
 mod workspace_actions;
 
-use settings_shell::{
-    RouteUiState, SettingsCommandState, SettingsEditState, ShellLayoutState, WorkspaceActionState,
-};
+use settings_shell::{RouteUiState, SettingsCommandState, SettingsEditState, WorkspaceActionState};
 
 pub use overlay_view::RecordingOverlay;
 
-const SIDEBAR_WIDTH: f32 = 250.0;
+const SIDEBAR_WIDTH: f32 = 200.0;
 const ROUTE_SCROLLBAR_WIDTH: f32 = 16.0;
 pub const APPLICATION_ID: &str = "local.agentdictate.AgentDictate";
 
-/// Starts the native GPUI settings window from a daemon snapshot.
+/// Sends one daemon command on behalf of the settings window.
 pub type CommandSink =
     Arc<dyn Fn(agentdictate_core::ClientCommand) -> Result<(), UiActionError> + Send + Sync>;
 
@@ -57,7 +56,7 @@ pub fn run_settings_shell_with_workspace_actions(
         settings,
         has_api_key,
         command_sink,
-        Some(action_sink),
+        action_sink,
         None,
     );
 }
@@ -78,7 +77,7 @@ pub fn run_settings_shell_with_workspace_actions_and_updates(
         settings,
         has_api_key,
         command_sink,
-        Some(action_sink),
+        action_sink,
         Some(updates),
     );
 }
@@ -88,7 +87,7 @@ fn run_settings_shell_internal(
     settings: agentdictate_core::Settings,
     has_api_key: bool,
     command_sink: CommandSink,
-    action_sink: Option<WorkspaceActionSink>,
+    action_sink: WorkspaceActionSink,
     workspace_updates: Option<Receiver<WorkspaceViewModel>>,
 ) {
     Application::new()
@@ -110,7 +109,7 @@ fn run_settings_shell_internal(
                 },
                 move |window, cx| {
                     let view = cx.new(|cx| {
-                        SettingsShell::connected_internal(
+                        SettingsShell::new(
                             model,
                             settings,
                             has_api_key,
@@ -274,14 +273,9 @@ pub struct SettingsShell {
     settings_commands: SettingsCommandState,
     workspace_actions: WorkspaceActionState,
     routes: RouteUiState,
-    layout: ShellLayoutState,
     _subscriptions: Vec<Subscription>,
 }
 
 const fn enabled_label(enabled: bool) -> &'static str {
     if enabled { "On" } else { "Off" }
-}
-
-fn gpui_color(color: Color) -> Hsla {
-    rgb((u32::from(color.red) << 16) | (u32::from(color.green) << 8) | u32::from(color.blue)).into()
 }

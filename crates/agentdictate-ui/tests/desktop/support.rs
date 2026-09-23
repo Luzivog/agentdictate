@@ -16,10 +16,6 @@ pub(crate) trait DesktopHarness {
         self.visual_context().debug_bounds(selector).is_some()
     }
 
-    fn click(&mut self, selector: &'static str) {
-        click(self.visual_context(), selector);
-    }
-
     /// Find the control in the current layout instead of assuming a fixed page height.
     fn scroll_to(&mut self, selector: &'static str) {
         let viewport = self.bounds("route-content");

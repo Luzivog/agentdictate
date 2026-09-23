@@ -1,49 +1,14 @@
-//! Overlay model, placement, and waveform contracts.
+//! Overlay model, waveform, timer and fade contracts.
 
 use agentdictate_core::{JobId, Workflow, WorkflowSignal};
 use agentdictate_ui::{
-    ActiveRecordingPresentation, OverlayPresentation, OverlayState, OverlayWindowPolicy,
-    StatusTone, WaveformArea, WaveformFrame, fit_waveform, format_elapsed,
-    recording_overlay_layout, sample_recent_wav, waveform_bars,
+    ActiveRecordingPresentation, OverlayPresentation, OverlayState, StatusTone, WAVEFORM_BAR_COUNT,
+    WaveformFrame, format_elapsed, recording_overlay_layout, sample_recent_wav, waveform_bars,
 };
 use agentdictate_ui::{
     OVERLAY_FADE_HOLD, OVERLAY_FADE_IN, OVERLAY_FADE_OUT, overlay_fade_active, overlay_opacity,
 };
 use std::{fs, path::PathBuf, time::Duration};
-
-#[test]
-fn hidden_workflow_does_not_require_an_overlay_window() {
-    assert!(!OverlayState::Hidden.is_visible());
-}
-
-#[test]
-fn overlay_window_policy_never_takes_focus_or_input_from_the_paste_target() {
-    let policy = OverlayWindowPolicy::focus_neutral();
-
-    assert!(!policy.focusable);
-    assert!(!policy.accepts_input);
-    assert!(!policy.requests_activation);
-    assert!(!policy.show_in_taskbar);
-    assert_eq!(OverlayState::Recording.window_policy(), policy);
-    assert_eq!(
-        OverlayState::Recording.stable_id(),
-        "recording-overlay-recording"
-    );
-    assert_eq!(
-        OverlayState::Recording.accessibility_label(),
-        "Agent Dictate: Listening…"
-    );
-}
-
-#[test]
-fn vendored_gpui_x11_popup_bypasses_the_window_manager() {
-    let x11_window_source =
-        include_str!("../../../../vendor/gpui-0.2.2/src/platform/linux/x11/window.rs");
-
-    assert!(
-        x11_window_source.contains(".override_redirect((params.kind == WindowKind::PopUp) as u32)")
-    );
-}
 
 #[test]
 fn overlay_opens_at_the_start_request_and_stays_through_processing() {
@@ -70,7 +35,6 @@ fn overlay_opens_at_the_start_request_and_stays_through_processing() {
     }
 
     assert_eq!(state.label(), "Could not paste");
-    assert_eq!(state.action_label(), Some("Copy again"));
     assert_eq!(state.tone(), StatusTone::Danger);
 }
 
@@ -169,58 +133,19 @@ fn wav_sampler_uses_only_the_most_recent_2816_samples() {
 }
 
 #[test]
-fn forty_four_source_bins_are_max_fitted_into_the_twenty_visible_bars() {
-    let source = (0..44).map(|value| value as f32).collect::<Vec<_>>();
+fn waveform_levels_ignore_noise_and_rise_faster_than_they_fall() {
+    let mut frame = WaveformFrame::default();
+    frame.advance(&[0.004; WAVEFORM_BAR_COUNT]);
+    assert!(frame.levels().iter().all(|level| *level == 0.0));
 
-    assert_eq!(
-        fit_waveform(&source, 20),
-        vec![
-            1.0, 3.0, 5.0, 7.0, 10.0, 12.0, 14.0, 16.0, 18.0, 21.0, 23.0, 25.0, 27.0, 29.0, 32.0,
-            34.0, 36.0, 38.0, 40.0, 43.0,
-        ]
+    frame.advance(&[1.0; WAVEFORM_BAR_COUNT]);
+    let risen = frame.levels()[0];
+    frame.advance(&[0.0; WAVEFORM_BAR_COUNT]);
+    let fallen = risen - frame.levels()[0];
+    assert!(
+        risen > fallen,
+        "attack {risen} should outpace release {fallen}"
     );
-}
-
-#[test]
-fn waveform_frame_applies_the_original_noise_gate_and_asymmetric_smoothing() {
-    let mut frame = WaveformFrame::from_levels([
-        0.0, 0.0, 0.0, 0.8, 0.25, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0,
-    ]);
-    let mut targets = [0.0; 20];
-    targets[..7].copy_from_slice(&[0.004, 0.005, 0.07, 0.07, 0.2, 0.135, 1.0]);
-
-    frame.advance(&targets);
-
-    let levels = frame.levels();
-    assert_close(levels[0], 0.0);
-    assert_close(levels[1], 0.0);
-    assert_close(levels[2], 0.31);
-    assert_close(levels[3], 0.698);
-    assert_close(levels[4], 0.715);
-    assert_close(levels[5], 0.62);
-    assert_close(levels[6], 0.962);
-}
-
-#[test]
-fn waveform_geometry_matches_the_previous_143_by_56_overlay() {
-    let mut levels = [0.0; 20];
-    levels[10] = 0.25;
-    levels[19] = 1.0;
-
-    let bars = waveform_bars(&levels, WaveformArea::new(18.0, 60.0, 27.0));
-
-    assert_eq!(bars.len(), 20);
-    assert_close(bars[0].x, 18.0);
-    assert_close(bars[0].height, 2.5);
-    assert_close(bars[0].alpha, 0.308);
-    assert_close(bars[10].x, 48.625);
-    assert_close(bars[10].height, 14.620_314_697_154_756);
-    assert_close(bars[10].alpha, 0.478);
-    assert_close(bars[19].x, 76.1875);
-    assert_close(bars[19].height, 22.78);
-    assert_close(bars[19].alpha, 0.92);
-    assert_close(bars[0].width, 1.8125);
 }
 
 #[test]

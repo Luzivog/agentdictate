@@ -24,10 +24,10 @@ pub(super) struct SettingsPageModel {
     pub(super) model_catalog: ModelCatalogViewModel,
     pub(super) settings_dirty: bool,
     pub(super) has_api_key: bool,
-    pub(super) api_key_input: Option<Entity<InputState>>,
+    pub(super) api_key_input: Entity<InputState>,
     pub(super) api_key_feedback: Option<String>,
     pub(super) feedback: Option<String>,
-    pub(super) settings_form: Option<SettingsFormState>,
+    pub(super) settings_form: SettingsFormState,
     pub(super) shortcut_capture_active: bool,
     pub(super) shortcut_capture_error: Option<String>,
 }
@@ -83,16 +83,11 @@ pub(super) fn surface(
         shortcut_capture_error,
         ..
     } = model;
-    let transcription_provider =
-        settings_form
-            .as_ref()
-            .map_or(settings.transcription_provider, |editor| {
-                selected_transcription_provider(
-                    &editor.transcription_provider,
-                    settings.transcription_provider,
-                    cx,
-                )
-            });
+    let transcription_provider = selected_transcription_provider(
+        &settings_form.transcription_provider,
+        settings.transcription_provider,
+        cx,
+    );
     let uses_chatgpt_subscription =
         transcription_provider == TranscriptionProvider::ChatGptSubscription;
     h_flex().w_full().justify_center().child(
@@ -130,14 +125,14 @@ pub(super) fn surface(
             .child(dictation_section(
                 &settings,
                 &model_catalog,
-                settings_form.as_ref(),
+                &settings_form,
                 theme,
                 cx,
             ))
-            .child(output_section(&settings, settings_form.as_ref(), theme, cx))
+            .child(output_section(&settings, &settings_form, theme, cx))
             .child(recording_audio_section(
                 &settings,
-                settings_form.as_ref(),
+                &settings_form,
                 shortcut_capture_active,
                 shortcut_capture_error,
                 theme,
@@ -145,7 +140,7 @@ pub(super) fn surface(
             ))
             .child(delivery_storage_section(
                 &settings,
-                settings_form.as_ref(),
+                &settings_form,
                 theme,
                 cx,
             )),
@@ -236,7 +231,7 @@ fn save_bar(theme: ThemeTokens, cx: &mut Context<SettingsShell>) -> gpui::Div {
 
 fn account_section(
     has_api_key: bool,
-    api_key_input: Option<Entity<InputState>>,
+    api_key_input: Entity<InputState>,
     api_key_feedback: Option<String>,
     uses_chatgpt_subscription: bool,
 
@@ -277,25 +272,23 @@ fn account_section(
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .when_some(api_key_input, |row, input| {
-                        row.child(
-                            gpui::div()
-                                .debug_selector(|| "settings-api-key-input".to_owned())
-                                .min_w_0()
-                                .flex_1()
-                                .child(Input::new(&input).small()),
-                        )
-                        .child(
-                            action_button("save-api-key")
-                                .debug_selector(|| "save-api-key".to_owned())
-                                .small()
-                                .label("Save key")
-                                .on_click(cx.listener(|shell, _, window, cx| {
-                                    shell.save_api_key(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                    })
+                    .child(
+                        gpui::div()
+                            .debug_selector(|| "settings-api-key-input".to_owned())
+                            .min_w_0()
+                            .flex_1()
+                            .child(Input::new(&api_key_input).small()),
+                    )
+                    .child(
+                        action_button("save-api-key")
+                            .debug_selector(|| "save-api-key".to_owned())
+                            .small()
+                            .label("Save key")
+                            .on_click(cx.listener(|shell, _, window, cx| {
+                                shell.save_api_key(window, cx);
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         gpui::div()
                             .flex_none()
@@ -334,17 +327,15 @@ fn account_section(
 fn dictation_section(
     settings: &SettingsDraft,
     model_catalog: &ModelCatalogViewModel,
-    editor: Option<&SettingsFormState>,
+    editor: &SettingsFormState,
     theme: ThemeTokens,
     cx: &Context<SettingsShell>,
 ) -> gpui::Div {
-    let transcription_provider = editor.map_or(settings.transcription_provider, |editor| {
-        selected_transcription_provider(
-            &editor.transcription_provider,
-            settings.transcription_provider,
-            cx,
-        )
-    });
+    let transcription_provider = selected_transcription_provider(
+        &editor.transcription_provider,
+        settings.transcription_provider,
+        cx,
+    );
     let uses_chatgpt_subscription =
         transcription_provider == TranscriptionProvider::ChatGptSubscription;
     settings_section(
@@ -361,9 +352,8 @@ fn dictation_section(
         } else {
             "How speech is transcribed"
         },
-        transcription_provider_label(transcription_provider),
         "settings-input-transcription-provider",
-        editor.map(|editor| editor.transcription_provider.clone()),
+        editor.transcription_provider.clone(),
         false,
         theme,
     ))
@@ -382,27 +372,23 @@ fn dictation_section(
             .child(select_row(
                 "Speech model",
                 "OpenAI transcription model",
-                active_transcription_model(settings),
                 "settings-input-transcription-model",
-                editor.map(|editor| editor.transcription_model.clone()),
+                editor.transcription_model.clone(),
                 false,
                 theme,
             ))
             .when(
-                editor.is_some_and(|editor| {
-                    selected_setting(
-                        &editor.transcription_model,
-                        &settings.transcription_model,
-                        cx,
-                    ) == "Custom"
-                }),
+                selected_setting(
+                    &editor.transcription_model,
+                    &settings.transcription_model,
+                    cx,
+                ) == "Custom",
                 |section| {
                     section.child(input_row(
                         "Custom speech model",
                         "Exact OpenAI model identifier",
-                        &settings.custom_transcription_model,
                         "settings-input-custom-transcription-model",
-                        editor.map(|editor| editor.custom_transcription_model.clone()),
+                        editor.custom_transcription_model.clone(),
                         false,
                         theme,
                     ))
@@ -412,13 +398,8 @@ fn dictation_section(
     .child(select_row(
         "Language",
         "One language or automatic detection. English & French requires gpt-transcribe.",
-        if settings.language.is_empty() {
-            "Automatic"
-        } else {
-            &settings.language
-        },
         "settings-input-language",
-        editor.map(|editor| editor.language.clone()),
+        editor.language.clone(),
         false,
         theme,
     ))
@@ -426,32 +407,12 @@ fn dictation_section(
         section.child(prompt_row(
             "Context prompt",
             "Describe what you are talking about; spellings belong in Vocabulary",
-            if settings.transcription_prompt.is_empty() {
-                "None"
-            } else {
-                &settings.transcription_prompt
-            },
             "settings-input-transcription-prompt",
-            editor.map(|editor| editor.transcription_prompt.clone()),
+            editor.transcription_prompt.clone(),
             false,
             theme,
         ))
     })
-}
-
-const fn transcription_provider_label(provider: TranscriptionProvider) -> &'static str {
-    match provider {
-        TranscriptionProvider::OpenAiApi => "OpenAI API",
-        TranscriptionProvider::ChatGptSubscription => "ChatGPT subscription",
-    }
-}
-
-fn active_transcription_model(settings: &SettingsDraft) -> &str {
-    if settings.transcription_model == "Custom" {
-        settings.custom_transcription_model.trim()
-    } else {
-        &settings.transcription_model
-    }
 }
 
 fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeTokens) -> gpui::Div {
@@ -491,7 +452,7 @@ fn model_catalog_status(model_catalog: &ModelCatalogViewModel, theme: ThemeToken
 
 fn output_section(
     settings: &SettingsDraft,
-    editor: Option<&SettingsFormState>,
+    editor: &SettingsFormState,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -505,27 +466,24 @@ fn output_section(
     .child(select_row(
         "Output mode",
         "Literal skips context hints and automatic spelling corrections",
-        &settings.dictation_mode,
         "settings-input-dictation-mode",
-        editor.map(|editor| editor.dictation_mode.clone()),
+        editor.dictation_mode.clone(),
         false,
         theme,
     ))
     .child(prompt_row(
         "Vocabulary",
         "One spelling per line. Add = spoken alias only for automatic corrections.",
-        &settings.vocabulary,
         "settings-input-vocabulary",
-        editor.map(|editor| editor.vocabulary.clone()),
+        editor.vocabulary.clone(),
         false,
         theme,
     ))
     .child(prompt_row(
         "Current work context",
         "Optional context you supply; clear it when changing projects",
-        &settings.project_context,
         "settings-input-project-context",
-        editor.map(|editor| editor.project_context.clone()),
+        editor.project_context.clone(),
         false,
         theme,
     ))
@@ -542,7 +500,7 @@ fn output_section(
 
 fn recording_audio_section(
     settings: &SettingsDraft,
-    editor: Option<&SettingsFormState>,
+    editor: &SettingsFormState,
     shortcut_capture_active: bool,
     shortcut_capture_error: Option<String>,
     theme: ThemeTokens,
@@ -565,18 +523,16 @@ fn recording_audio_section(
     .child(select_row(
         "Recording mode",
         "Use toggle or hold",
-        &settings.recording_mode,
         "settings-input-recording-mode",
-        editor.map(|editor| editor.recording_mode.clone()),
+        editor.recording_mode.clone(),
         false,
         theme,
     ))
     .child(number_row(
         "Maximum recording",
         "Use 0 to disable the automatic stop",
-        &format!("{} seconds", settings.max_recording_seconds),
         "settings-input-max-recording",
-        editor.map(|editor| editor.max_recording_seconds.clone()),
+        editor.max_recording_seconds.clone(),
         "seconds",
         false,
         theme,
@@ -593,9 +549,8 @@ fn recording_audio_section(
     .child(number_row(
         "Ducked volume",
         "Percentage of the original playback volume",
-        &format!("{}%", settings.audio_ducking_volume_percent),
         "settings-input-ducked-volume",
-        editor.map(|editor| editor.audio_ducking_volume_percent.clone()),
+        editor.audio_ducking_volume_percent.clone(),
         "%",
         !settings.audio_ducking_enabled,
         theme,
@@ -603,9 +558,8 @@ fn recording_audio_section(
     .child(number_row(
         "Fade out (ms)",
         "Time to lower playback volume",
-        &format!("{} ms", settings.audio_ducking_fade_out_ms),
         "settings-input-ducking-fade-out",
-        editor.map(|editor| editor.audio_ducking_fade_out_ms.clone()),
+        editor.audio_ducking_fade_out_ms.clone(),
         "ms",
         !settings.audio_ducking_enabled,
         theme,
@@ -613,9 +567,8 @@ fn recording_audio_section(
     .child(number_row(
         "Fade in (ms)",
         "Time to restore playback volume",
-        &format!("{} ms", settings.audio_ducking_fade_in_ms),
         "settings-input-ducking-fade-in",
-        editor.map(|editor| editor.audio_ducking_fade_in_ms.clone()),
+        editor.audio_ducking_fade_in_ms.clone(),
         "ms",
         !settings.audio_ducking_enabled,
         theme,
@@ -624,7 +577,7 @@ fn recording_audio_section(
 
 fn delivery_storage_section(
     settings: &SettingsDraft,
-    editor: Option<&SettingsFormState>,
+    editor: &SettingsFormState,
     theme: ThemeTokens,
     cx: &mut Context<SettingsShell>,
 ) -> gpui::Div {
@@ -638,9 +591,8 @@ fn delivery_storage_section(
     .child(select_row(
         "Paste shortcut",
         "Automatic detects X11/XWayland apps; native Wayland uses Shift+Insert",
-        &settings.paste_shortcut,
         "settings-input-paste-shortcut",
-        editor.map(|editor| editor.paste_shortcut.clone()),
+        editor.paste_shortcut.clone(),
         false,
         theme,
     ))
@@ -708,13 +660,11 @@ fn settings_section(
 fn select_row(
     label: &'static str,
     detail: &'static str,
-    fallback: &str,
     selector: &'static str,
-    select: Option<Entity<SettingSelectState>>,
+    select: Entity<SettingSelectState>,
     disabled: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
-    let has_select = select.is_some();
     h_flex()
         .debug_selector(move || selector.to_owned())
         .min_h(px(54.))
@@ -729,17 +679,7 @@ fn select_row(
         .child(
             control_slot(selector, SettingsControlKind::Choice)
                 .cursor_pointer()
-                .when_some(select, |control, select| {
-                    control.child(Select::new(&select).small().w_full().disabled(disabled))
-                })
-                .when(!has_select, |control| {
-                    control.child(
-                        gpui::div()
-                            .text_sm()
-                            .text_color(gpui_color(theme.text_muted))
-                            .child(fallback.to_owned()),
-                    )
-                }),
+                .child(Select::new(&select).small().w_full().disabled(disabled)),
         )
         .when(disabled, |row| row.opacity(0.48))
 }
@@ -776,14 +716,12 @@ fn value_row(
 fn number_row(
     label: &'static str,
     detail: &'static str,
-    fallback: &str,
     selector: &'static str,
-    input: Option<Entity<InputState>>,
+    input: Entity<InputState>,
     suffix: &'static str,
     disabled: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
-    let has_input = input.is_some();
     h_flex()
         .debug_selector(move || selector.to_owned())
         .min_h(px(54.))
@@ -798,29 +736,19 @@ fn number_row(
         .child(
             control_slot(selector, SettingsControlKind::Number)
                 .cursor_pointer()
-                .when_some(input, |control, input| {
-                    control.child(
-                        NumberInput::new(&input)
-                            .small()
-                            .w_full()
-                            .suffix(
-                                gpui::div()
-                                    .pr_2()
-                                    .text_xs()
-                                    .text_color(gpui_color(theme.text_muted))
-                                    .child(suffix),
-                            )
-                            .disabled(disabled),
-                    )
-                })
-                .when(!has_input, |control| {
-                    control.child(
-                        gpui::div()
-                            .text_sm()
-                            .text_color(gpui_color(theme.text_muted))
-                            .child(fallback.to_owned()),
-                    )
-                }),
+                .child(
+                    NumberInput::new(&input)
+                        .small()
+                        .w_full()
+                        .suffix(
+                            gpui::div()
+                                .pr_2()
+                                .text_xs()
+                                .text_color(gpui_color(theme.text_muted))
+                                .child(suffix),
+                        )
+                        .disabled(disabled),
+                ),
         )
         .when(disabled, |row| row.opacity(0.48))
 }
@@ -925,13 +853,11 @@ fn shortcut_row(
 fn input_row(
     label: &'static str,
     detail: &'static str,
-    fallback: &str,
     selector: &'static str,
-    input: Option<Entity<InputState>>,
+    input: Entity<InputState>,
     disabled: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
-    let has_input = input.is_some();
     h_flex()
         .debug_selector(move || selector.to_owned())
         .min_h(px(54.))
@@ -945,17 +871,7 @@ fn input_row(
         .child(stacked_setting_label(label, detail, theme))
         .child(
             control_slot(selector, SettingsControlKind::Choice)
-                .when_some(input, |control, input| {
-                    control.child(Input::new(&input).small().w_full().disabled(disabled))
-                })
-                .when(!has_input, |control| {
-                    control.child(
-                        gpui::div()
-                            .text_sm()
-                            .text_color(gpui_color(theme.text_muted))
-                            .child(fallback.to_owned()),
-                    )
-                }),
+                .child(Input::new(&input).small().w_full().disabled(disabled)),
         )
         .when(disabled, |row| row.opacity(0.48))
 }
@@ -964,13 +880,11 @@ fn input_row(
 fn prompt_row(
     label: &'static str,
     detail: &'static str,
-    fallback: &str,
     selector: &'static str,
-    input: Option<Entity<InputState>>,
+    input: Entity<InputState>,
     disabled: bool,
     theme: ThemeTokens,
 ) -> gpui::Div {
-    let has_input = input.is_some();
     v_flex()
         .w_full()
         .debug_selector(move || selector.to_owned())
@@ -979,22 +893,10 @@ fn prompt_row(
         .border_color(gpui_color(theme.border))
         .py_3()
         .child(setting_label(label, detail, theme))
-        .when_some(input, |row, input| {
-            row.child(
-                prompt_control_slot(selector)
-                    .child(Input::new(&input).small().w_full().disabled(disabled)),
-            )
-        })
-        .when(!has_input, |row| {
-            row.child(
-                prompt_control_slot(selector).child(
-                    gpui::div()
-                        .text_sm()
-                        .text_color(gpui_color(theme.text_muted))
-                        .child(fallback.to_owned()),
-                ),
-            )
-        })
+        .child(
+            prompt_control_slot(selector)
+                .child(Input::new(&input).small().w_full().disabled(disabled)),
+        )
         .when(disabled, |row| row.opacity(0.48))
 }
 

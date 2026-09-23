@@ -12,32 +12,10 @@ impl Color {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SpacingTokens {
-    pub compact: u16,
-    pub control: u16,
-    pub section: u16,
-    pub page: u16,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RadiusTokens {
-    pub control: u16,
-    pub surface: u16,
-    pub pill: u16,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TypographyTokens {
-    pub caption: u16,
-    pub body: u16,
-    pub title: u16,
-}
-
 /// Semantic colors for AgentDictate's compact dark interface.
 ///
-/// Components consume these roles rather than depending on palette literals,
-/// which keeps interaction and status meaning consistent across every window.
+/// This is the single palette: GPUI components, the gpui-component theme and
+/// the window frame all read these roles instead of their own literals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThemeTokens {
     pub canvas: Color,
@@ -52,9 +30,8 @@ pub struct ThemeTokens {
     pub info: Color,
     pub success: Color,
     pub danger: Color,
-    pub spacing: SpacingTokens,
-    pub radii: RadiusTokens,
-    pub typography: TypographyTokens,
+    /// Secondary accent that marks the Settings route.
+    pub highlight: Color,
 }
 
 impl ThemeTokens {
@@ -72,22 +49,7 @@ impl ThemeTokens {
             info: Color::rgb(113, 197, 234),
             success: Color::rgb(121, 201, 142),
             danger: Color::rgb(227, 104, 104),
-            spacing: SpacingTokens {
-                compact: 4,
-                control: 8,
-                section: 16,
-                page: 20,
-            },
-            radii: RadiusTokens {
-                control: 8,
-                surface: 12,
-                pill: 999,
-            },
-            typography: TypographyTokens {
-                caption: 11,
-                body: 13,
-                title: 16,
-            },
+            highlight: Color::rgb(167, 139, 250),
         }
     }
 }
@@ -99,30 +61,36 @@ impl Default for ThemeTokens {
 }
 
 #[cfg(feature = "desktop")]
+pub(crate) fn gpui_color(color: Color) -> gpui::Hsla {
+    gpui::rgb((u32::from(color.red) << 16) | (u32::from(color.green) << 8) | u32::from(color.blue))
+        .into()
+}
+
+/// Installs gpui-component and maps its dark theme onto `ThemeTokens`.
+#[cfg(feature = "desktop")]
 pub(crate) fn initialize_gpui_theme(cx: &mut gpui::App) {
-    use gpui::rgb;
     use gpui_component::{Theme, ThemeMode};
 
     gpui_component::init(cx);
     Theme::change(ThemeMode::Dark, None, cx);
+    let tokens = ThemeTokens::default();
     let theme = Theme::global_mut(cx);
-    theme.background = rgb(0x0a0a0a).into();
-    theme.foreground = rgb(0xededed).into();
-    theme.muted_foreground = rgb(0x858585).into();
-    theme.sidebar = rgb(0x0d0d0d).into();
-    theme.sidebar_foreground = rgb(0xededed).into();
-    theme.sidebar_border = rgb(0x1e1e1e).into();
-    theme.sidebar_accent = rgb(0x1a1a1a).into();
-    theme.sidebar_accent_foreground = rgb(0xededed).into();
-    theme.skeleton = rgb(0x2a2a2a).into();
-    theme.secondary = rgb(0x121212).into();
-    theme.secondary_foreground = rgb(0xededed).into();
-    theme.secondary_hover = rgb(0x1a1a1a).into();
-    theme.secondary_active = rgb(0x212121).into();
-    theme.popover = rgb(0x121212).into();
-    theme.popover_foreground = rgb(0xededed).into();
-    theme.border = rgb(0x212121).into();
-    theme.window_border = rgb(0x212121).into();
-    theme.title_bar = rgb(0x0a0a0a).into();
-    theme.title_bar_border = rgb(0x0a0a0a).into();
+    theme.background = gpui_color(tokens.canvas);
+    theme.foreground = gpui_color(tokens.text);
+    theme.muted_foreground = gpui_color(tokens.text_muted);
+    theme.sidebar = gpui_color(tokens.sidebar);
+    theme.sidebar_foreground = gpui_color(tokens.text);
+    theme.sidebar_border = gpui_color(tokens.sidebar_border);
+    theme.sidebar_accent = gpui_color(tokens.surface_hovered);
+    theme.sidebar_accent_foreground = gpui_color(tokens.text);
+    theme.secondary = gpui_color(tokens.surface);
+    theme.secondary_foreground = gpui_color(tokens.text);
+    theme.secondary_hover = gpui_color(tokens.surface_hovered);
+    theme.secondary_active = gpui_color(tokens.border);
+    theme.popover = gpui_color(tokens.surface);
+    theme.popover_foreground = gpui_color(tokens.text);
+    theme.border = gpui_color(tokens.border);
+    theme.window_border = gpui_color(tokens.border);
+    theme.title_bar = gpui_color(tokens.canvas);
+    theme.title_bar_border = gpui_color(tokens.canvas);
 }

@@ -24,7 +24,13 @@ fn history_projects_recoverable_recordings_and_transcripts_without_losing_action
         "18s",
     );
 
-    let history = HistoryViewModel::from_records(vec![recovery.clone()], vec![transcript]);
+    let history = HistoryViewModel::from_page(
+        vec![recovery.clone()],
+        vec![transcript],
+        1,
+        String::new(),
+        false,
+    );
 
     assert_eq!(history.recovery.item_count, 1);
     assert_eq!(history.recovery.items, vec![recovery]);

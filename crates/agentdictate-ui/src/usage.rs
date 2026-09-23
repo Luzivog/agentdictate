@@ -128,24 +128,6 @@ impl UsageViewModel {
             .max()
             .unwrap_or(0)
     }
-
-    /// Keeps short ranges fully labeled while limiting longer charts to six
-    /// stable ticks, including both endpoints.
-    pub fn axis_label_visible(&self, index: usize) -> bool {
-        let count = self.activity.len();
-        if index >= count {
-            return false;
-        }
-        if count <= 7 {
-            return true;
-        }
-        if index == count - 1 {
-            return true;
-        }
-        let intervals = 5;
-        let step = (count - 1).div_ceil(intervals);
-        index.is_multiple_of(step)
-    }
 }
 
 pub(crate) fn format_currency_amount(currency: &str, value: f64) -> String {

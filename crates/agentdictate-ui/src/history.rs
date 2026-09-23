@@ -147,20 +147,6 @@ impl HistoryViewModel {
         }
     }
 
-    pub fn from_records(
-        recovery_items: Vec<RecoveryItemViewModel>,
-        transcripts: Vec<TranscriptViewModel>,
-    ) -> Self {
-        let transcript_count = transcripts.len() as u64;
-        Self::from_page(
-            recovery_items,
-            transcripts,
-            transcript_count,
-            String::new(),
-            false,
-        )
-    }
-
     pub fn from_page(
         recovery_items: Vec<RecoveryItemViewModel>,
         transcripts: Vec<TranscriptViewModel>,

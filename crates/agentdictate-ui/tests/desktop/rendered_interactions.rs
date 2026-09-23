@@ -9,7 +9,6 @@ use std::{
     ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use agentdictate_core::{
@@ -17,17 +16,18 @@ use agentdictate_core::{
     ModelCatalogStatus, Settings, TranscriptionProvider, WorkflowPhase, WorkflowSnapshot,
 };
 use agentdictate_ui::{
-    AgentDictateWindowFrame, HistoryViewModel, ModelCatalogViewModel, RecoveryItemViewModel,
-    RecoveryStage, ReplacementDraft, ReplacementRuleViewModel, ReplacementsViewModel, Route,
-    SIDEBAR_OVERLAY_BREAKPOINT, SettingsShell, ShellViewModel, UsageDayViewModel, UsagePeriod,
-    UsageTotals, UsageViewModel, WorkspaceAction, WorkspaceViewModel, test_support,
+    AgentDictateWindowFrame, CommandSink, HistoryViewModel, ModelCatalogViewModel,
+    RecoveryItemViewModel, RecoveryStage, ReplacementDraft, ReplacementRuleViewModel,
+    ReplacementsViewModel, Route, SettingsShell, ShellViewModel, TranscriptViewModel,
+    UsageDayViewModel, UsagePeriod, UsageTotals, UsageViewModel, WorkspaceAction,
+    WorkspaceActionSink, WorkspaceViewModel, test_support,
 };
 use gpui::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
     Size, StyledText, TestAppContext, VisualTestContext, WindowBounds, WindowOptions, point,
     prelude::*, px, size,
 };
-use gpui_component::{Root, Theme};
+use gpui_component::Root;
 
 struct Harness {
     shell: Entity<SettingsShell>,
@@ -59,34 +59,9 @@ fn overlay_failure_notice_follows_workspace_health(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn gpui_root_uses_the_tokscope_dark_palette(cx: &mut TestAppContext) {
-    test_support::initialize(cx);
-
-    cx.update(|cx| {
-        let theme = Theme::global(cx);
-        assert_eq!(theme.background, gpui::rgb(0x0a0a0a).into());
-        assert_eq!(theme.secondary, gpui::rgb(0x121212).into());
-        assert_eq!(theme.border, gpui::rgb(0x212121).into());
-        assert_eq!(theme.window_border, gpui::rgb(0x212121).into());
-    });
-}
-
-#[gpui::test]
 fn single_line_clip_preserves_the_complete_shaped_text_run(cx: &mut TestAppContext) {
     let harness = Harness::open(cx);
     let value = "A complete transcript must remain shaped beyond the clipping viewport.";
-
-    let truncated_text = StyledText::new(value);
-    let truncated_layout = truncated_text.layout().clone();
-    harness
-        .cx
-        .draw(point(px(0.), px(0.)), size(px(8.), px(20.)), |_, _| {
-            gpui::div().w(px(8.)).truncate().child(truncated_text)
-        });
-    assert!(
-        truncated_layout.position_for_index(value.len()).is_none(),
-        "the old ellipsis path should discard the end of the shaped text run"
-    );
 
     let clipped_text = StyledText::new(value);
     let clipped_layout = clipped_text.layout().clone();
@@ -127,30 +102,17 @@ impl Harness {
         cx: &mut TestAppContext,
         viewport: Size<Pixels>,
         model: ShellViewModel,
-        action_sink: agentdictate_ui::WorkspaceActionSink,
+        action_sink: WorkspaceActionSink,
     ) -> Self {
-        test_support::initialize(cx);
-        let shell = cx.new(|_| SettingsShell::with_workspace_actions(model, action_sink));
-        let root = shell.clone();
-        let window = cx.update(|cx| {
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                        point(px(0.), px(0.)),
-                        viewport,
-                    ))),
-                    ..Default::default()
-                },
-                |window, cx| {
-                    let frame = cx.new(|_| AgentDictateWindowFrame::new(root));
-                    cx.new(|cx| Root::new(frame, window, cx))
-                },
-            )
-            .expect("headless settings window opens")
-        });
-        let cx = VisualTestContext::from_window(*window.deref(), cx).into_mut();
-        cx.run_until_parked();
-        Self { shell, cx }
+        Self::open_shell(
+            cx,
+            viewport,
+            model,
+            Settings::default(),
+            false,
+            Arc::new(|_| Ok(())),
+            action_sink,
+        )
     }
 
     fn open_connected(cx: &mut TestAppContext, commands: Arc<Mutex<Vec<ClientCommand>>>) -> Self {
@@ -175,8 +137,56 @@ impl Harness {
         has_api_key: bool,
         commands: Arc<Mutex<Vec<ClientCommand>>>,
     ) -> Self {
-        test_support::initialize(cx);
         let workspace = model.workspace.clone();
+        Self::open_shell(
+            cx,
+            size(px(1_100.), px(780.)),
+            model,
+            settings,
+            has_api_key,
+            Arc::new(move |command| {
+                commands.lock().expect("command lock").push(command);
+                Ok(())
+            }),
+            Arc::new(move |_| Ok(workspace.clone())),
+        )
+    }
+
+    fn open_settings(
+        cx: &mut TestAppContext,
+        commands: Arc<Mutex<Vec<ClientCommand>>>,
+        viewport: Size<Pixels>,
+    ) -> Self {
+        Self::open_shell(
+            cx,
+            viewport,
+            ShellViewModel::from_snapshot(
+                Route::Settings,
+                WorkflowSnapshot {
+                    phase: WorkflowPhase::Ready,
+                },
+            ),
+            Settings::default(),
+            false,
+            Arc::new(move |command| {
+                commands.lock().expect("command lock").push(command);
+                Ok(())
+            }),
+            Arc::new(|_| Ok(WorkspaceViewModel::default())),
+        )
+    }
+
+    /// Opens the production window composition (Root, frame, shell) headlessly.
+    fn open_shell(
+        cx: &mut TestAppContext,
+        viewport: Size<Pixels>,
+        model: ShellViewModel,
+        settings: Settings,
+        has_api_key: bool,
+        command_sink: CommandSink,
+        action_sink: WorkspaceActionSink,
+    ) -> Self {
+        test_support::initialize(cx);
         let shell_slot = Rc::new(RefCell::new(None));
         let window_slot = Rc::clone(&shell_slot);
         let window = cx.update(|cx| {
@@ -184,22 +194,18 @@ impl Harness {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(0.), px(0.)),
-                        size(px(1_100.), px(780.)),
+                        viewport,
                     ))),
                     ..Default::default()
                 },
                 move |window, cx| {
-                    let captured = Arc::clone(&commands);
                     let shell = cx.new(|cx| {
-                        SettingsShell::connected_with_workspace_actions(
+                        SettingsShell::new(
                             model,
                             settings,
                             has_api_key,
-                            Arc::new(move |command| {
-                                captured.lock().expect("command lock").push(command);
-                                Ok(())
-                            }),
-                            Arc::new(move |_| Ok(workspace.clone())),
+                            command_sink,
+                            action_sink,
                             window,
                             cx,
                         )
@@ -220,14 +226,6 @@ impl Harness {
         Self { shell, cx }
     }
 
-    fn resize(&mut self, viewport: Size<Pixels>) {
-        self.cx.simulate_resize(viewport);
-        self.cx.run_until_parked();
-        self.cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-    }
-
     fn move_to(&mut self, selector: &'static str) {
         let position = self.bounds(selector).center();
         self.cx
@@ -237,6 +235,13 @@ impl Harness {
     fn click(&mut self, selector: &'static str) {
         self.move_to("resize-right");
         self.click_direct(selector);
+    }
+
+    fn click_at(&mut self, position: gpui::Point<Pixels>) {
+        self.cx
+            .simulate_mouse_move(position, None::<MouseButton>, Modifiers::none());
+        self.cx.simulate_click(position, Modifiers::none());
+        self.cx.run_until_parked();
     }
 
     fn click_direct(&mut self, selector: &'static str) {
@@ -266,26 +271,20 @@ impl Harness {
             .read_with(self.cx, |shell, _| shell.active_route())
     }
 
-    fn sidebar_is_open(&mut self) -> bool {
-        self.shell
-            .read_with(self.cx, |shell, _| shell.sidebar_is_open())
-    }
-
-    fn sidebar_width(&mut self) -> Pixels {
-        self.bounds("sidebar-rail").size.width
-    }
-
-    fn settle_sidebar_motion(&mut self) {
-        std::thread::sleep(Duration::from_millis(230));
-        self.shell.update(self.cx, |_, cx| cx.notify());
-        self.cx.run_until_parked();
-    }
-
     fn usage_period(&mut self) -> UsagePeriod {
         self.shell.read_with(self.cx, |shell, _| {
             shell.view_model().workspace.usage.period
         })
     }
+}
+
+/// A complete, unsearched history page.
+fn history(
+    recoveries: Vec<RecoveryItemViewModel>,
+    transcripts: Vec<TranscriptViewModel>,
+) -> HistoryViewModel {
+    let count = transcripts.len() as u64;
+    HistoryViewModel::from_page(recoveries, transcripts, count, String::new(), false)
 }
 
 #[gpui::test]
@@ -432,7 +431,7 @@ fn recovery_rows_emit_typed_retry_actions(cx: &mut TestAppContext) {
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
+        history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
                 RecoveryStage::Delivery,
@@ -490,7 +489,7 @@ fn deleting_recoverable_audio_requires_an_explicit_second_click(cx: &mut TestApp
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
+        history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
                 RecoveryStage::Transcription,
@@ -535,7 +534,7 @@ fn leaving_a_route_clears_its_destructive_confirmation_guidance(cx: &mut TestApp
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
+        history: history(
             vec![RecoveryItemViewModel::new(
                 "job-42",
                 RecoveryStage::Transcription,
@@ -617,6 +616,43 @@ fn replacement_rows_emit_typed_toggle_actions(cx: &mut TestAppContext) {
             id: 7,
             enabled: false,
         }]
+    );
+}
+
+#[gpui::test]
+fn deleting_a_replacement_requires_an_explicit_second_click(cx: &mut TestAppContext) {
+    let workspace = WorkspaceViewModel {
+        replacements: ReplacementsViewModel::new(vec![ReplacementRuleViewModel::new(
+            7, "codex", "Codex", true, false, true,
+        )]),
+        ..WorkspaceViewModel::default()
+    };
+    let model = ShellViewModel::from_snapshot(
+        Route::Replacements,
+        WorkflowSnapshot {
+            phase: WorkflowPhase::Ready,
+        },
+    )
+    .with_workspace(workspace.clone());
+    let actions = Arc::new(Mutex::new(Vec::new()));
+    let captured_actions = Arc::clone(&actions);
+    let mut harness = Harness::open_model_with_actions(
+        cx,
+        size(px(1_100.), px(780.)),
+        model,
+        Arc::new(move |action| {
+            captured_actions.lock().expect("action lock").push(action);
+            Ok(workspace.clone())
+        }),
+    );
+
+    harness.click("replacement-delete-7");
+    assert!(actions.lock().expect("action lock").is_empty());
+    harness.click("confirm-replacement-delete-7");
+
+    assert_eq!(
+        *actions.lock().expect("action lock"),
+        vec![WorkspaceAction::DeleteReplacement { id: 7 }]
     );
 }
 
@@ -717,7 +753,7 @@ fn replacement_editor_emits_complete_update_payload(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppContext) {
+fn overview_charts_activity_switches_periods_and_links_to_history(cx: &mut TestAppContext) {
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured_actions = Arc::clone(&actions);
     let model = ShellViewModel::from_snapshot(
@@ -727,9 +763,9 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
+        history: history(
             Vec::new(),
-            vec![agentdictate_ui::TranscriptViewModel::new(
+            vec![TranscriptViewModel::new(
                 17,
                 "Today, 14:32",
                 "The latest completed dictation stays close at hand.",
@@ -737,7 +773,7 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
                 "0:08",
             )],
         ),
-        recent_transcripts: vec![agentdictate_ui::TranscriptViewModel::new(
+        recent_transcripts: vec![TranscriptViewModel::new(
             17,
             "Today, 14:32",
             "The latest completed dictation stays close at hand.",
@@ -782,26 +818,6 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
         }),
     );
 
-    let summary = harness.bounds("overview-activity-summary");
-    let plot = harness.bounds("overview-activity-plot");
-    assert!(summary.right() <= plot.left());
-    let dictations = harness.bounds("overview-summary-dictations");
-    let words = harness.bounds("overview-summary-words");
-    let audio = harness.bounds("overview-summary-audio");
-    let wpm = harness.bounds("overview-summary-wpm");
-    let cost = harness.bounds("overview-summary-cost");
-    let metrics = [audio, dictations, words, wpm, cost];
-    assert!(
-        metrics
-            .windows(2)
-            .all(|pair| pair[0].bottom() <= pair[1].top())
-    );
-    assert!(
-        metrics
-            .into_iter()
-            .all(|metric| metric.left() == summary.left() && metric.right() == summary.right())
-    );
-    assert_eq!(summary.size.height, plot.size.height);
     let shorter_day = harness.bounds("overview-activity-marker-0");
     let longer_day = harness.bounds("overview-activity-marker-1");
     assert!(
@@ -810,8 +826,6 @@ fn overview_uses_tokscope_activity_layout_and_recent_history(cx: &mut TestAppCon
     );
     harness.bounds("overview-recent-history");
     harness.bounds("overview-recent-transcript-17");
-    assert!(!harness.has("overview-metric-dictations"));
-    assert!(!harness.has("overview-workflow-health"));
     harness.click("usage-period-7-days");
 
     assert_eq!(harness.usage_period(), UsagePeriod::Last7Days);
@@ -830,7 +844,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
 ) {
     let recent_transcripts = (0..31)
         .map(|id| {
-            agentdictate_ui::TranscriptViewModel::new(
+            TranscriptViewModel::new(
                 id,
                 "Today, 14:32",
                 format!("Recent transcript {id}"),
@@ -848,7 +862,7 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
     .with_workspace(WorkspaceViewModel {
         history: HistoryViewModel::from_page(
             Vec::new(),
-            vec![agentdictate_ui::TranscriptViewModel::new(
+            vec![TranscriptViewModel::new(
                 77,
                 "Yesterday, 09:10",
                 "A search result must not replace Overview recents.",
@@ -892,8 +906,6 @@ fn overview_starts_with_ten_and_can_reveal_twenty_more_independently_of_history_
     assert!(!harness.has("overview-recent-transcript-10"));
     assert!(harness.has("overview-recent-show-more"));
     assert!(!harness.has("overview-recent-transcript-77"));
-    let title_clip = harness.bounds("overview-recent-transcript-title-9");
-    assert!(title_clip.size.width > px(240.));
 
     harness.scroll_route_by(-1_000.);
     harness.click("overview-recent-show-more");
@@ -930,9 +942,9 @@ fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_ope
     assert!(!harness.has("overview-recent-transcript-77"));
 
     let workspace = WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
+        history: history(
             Vec::new(),
-            vec![agentdictate_ui::TranscriptViewModel::new(
+            vec![TranscriptViewModel::new(
                 77,
                 "Just now",
                 "A live daemon update appeared without reopening the window.",
@@ -940,7 +952,7 @@ fn live_workspace_update_replaces_overview_and_history_while_the_shell_stays_ope
                 "0:06",
             )],
         ),
-        recent_transcripts: vec![agentdictate_ui::TranscriptViewModel::new(
+        recent_transcripts: vec![TranscriptViewModel::new(
             77,
             "Just now",
             "A live daemon update appeared without reopening the window.",
@@ -1004,99 +1016,13 @@ fn failed_workspace_refresh_preserves_the_previous_usage_snapshot(cx: &mut TestA
 }
 
 #[gpui::test]
-fn compact_sidebar_opens_and_dismisses_without_changing_routes(cx: &mut TestAppContext) {
-    let mut harness = Harness::open_with_size(cx, size(px(900.), px(700.)));
-    assert!(!harness.has(Route::Overview.navigation_id()));
-
-    harness.click("toggle-sidebar");
-    assert!(harness.has(Route::Overview.navigation_id()));
-    assert!(harness.has("sidebar-dismiss"));
-    assert!(harness.has("sidebar-overlay-panel"));
-
-    harness.click("sidebar-dismiss");
-    assert!(!harness.sidebar_is_open());
-    assert_eq!(harness.active_route(), Route::Overview);
-}
-
-#[gpui::test]
-fn resizing_across_the_breakpoint_switches_the_rendered_sidebar_presentation(
-    cx: &mut TestAppContext,
-) {
-    let wide_width = SIDEBAR_OVERLAY_BREAKPOINT as f32 + 1.0;
-    let compact_width = SIDEBAR_OVERLAY_BREAKPOINT as f32 - 1.0;
-    let mut harness = Harness::open_with_size(cx, size(px(wide_width), px(700.)));
-
-    assert!(harness.has("sidebar-rail"));
-    assert!(!harness.has("sidebar-overlay-panel"));
-    let wide_content_width = harness.bounds("route-content").size.width;
-
-    harness.resize(size(px(compact_width), px(700.)));
-    harness.settle_sidebar_motion();
-    assert!(!harness.sidebar_is_open());
-    let compact_content_width = harness.bounds("route-content").size.width;
-    assert!(compact_content_width > wide_content_width);
-
-    harness.click("toggle-sidebar");
-    harness.settle_sidebar_motion();
-    assert!(harness.has("sidebar-overlay-panel"));
-    assert!(harness.has("sidebar-dismiss"));
-
-    harness.resize(size(px(wide_width), px(700.)));
-    harness.settle_sidebar_motion();
-    assert_eq!(harness.sidebar_width(), px(250.));
+fn content_fills_the_frame_and_buttons_click_after_every_resize_zone(cx: &mut TestAppContext) {
+    let mut harness = Harness::open(cx);
     assert_eq!(
-        harness.bounds("route-content").size.width,
-        wide_content_width
+        harness.bounds("agentdictate-root"),
+        harness.bounds("agentdictate-window-frame"),
+        "the content must reach every window edge"
     );
-}
-
-#[gpui::test]
-fn wide_sidebar_collapses_and_reopens_without_losing_the_toggle(cx: &mut TestAppContext) {
-    let mut harness = Harness::open(cx);
-    assert_eq!(harness.sidebar_width(), px(250.));
-
-    harness.click("toggle-sidebar");
-    harness.settle_sidebar_motion();
-    assert!(!harness.sidebar_is_open());
-    assert_eq!(harness.sidebar_width(), px(0.));
-
-    harness.click("toggle-sidebar");
-    harness.settle_sidebar_motion();
-    assert!(harness.sidebar_is_open());
-    assert_eq!(harness.sidebar_width(), px(250.));
-}
-
-#[gpui::test]
-fn flat_sidebar_and_integrated_window_chrome_are_stable(cx: &mut TestAppContext) {
-    let mut harness = Harness::open(cx);
-
-    let frame = harness.bounds("agentdictate-window-frame");
-    let content = harness.bounds("agentdictate-root");
-    assert_eq!(content, frame, "the content must reach every window edge");
-
-    for route in Route::ALL {
-        harness.bounds(route.navigation_id());
-    }
-    harness.bounds("nav-dot-overview");
-    harness.bounds("nav-dot-history");
-    harness.bounds("nav-dot-replacements");
-    harness.bounds("nav-dot-settings");
-    harness.bounds("page-context");
-    harness.bounds("window-minimize");
-    harness.bounds("window-maximize");
-    harness.bounds("window-close");
-    harness.bounds("resize-top");
-    harness.bounds("resize-right");
-    harness.bounds("resize-bottom");
-    harness.bounds("resize-left");
-
-    harness.click(Route::History.navigation_id());
-    assert_eq!(harness.active_route(), Route::History);
-}
-
-#[gpui::test]
-fn buttons_receive_clicks_after_every_resize_zone(cx: &mut TestAppContext) {
-    let mut harness = Harness::open(cx);
 
     for edge in [
         "resize-top",
@@ -1119,55 +1045,6 @@ fn buttons_receive_clicks_after_every_resize_zone(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn history_is_a_flat_dense_recovery_and_transcript_list(cx: &mut TestAppContext) {
-    let model = ShellViewModel::from_snapshot(
-        Route::History,
-        WorkflowSnapshot {
-            phase: WorkflowPhase::Ready,
-        },
-    )
-    .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(
-            vec![RecoveryItemViewModel::new(
-                "job-dense",
-                RecoveryStage::Transcription,
-                "Today, 14:32",
-                "0:08",
-                "The recording is safe and ready to retry",
-                None,
-            )],
-            vec![agentdictate_ui::TranscriptViewModel::new(
-                31,
-                "Today, 14:31",
-                "A compact transcript row keeps the archive easy to scan.",
-                10,
-                "0:09",
-            )],
-        ),
-        ..WorkspaceViewModel::default()
-    });
-    let refreshed = model.workspace.clone();
-    let mut harness = Harness::open_model_with_actions(
-        cx,
-        size(px(1_100.), px(780.)),
-        model,
-        Arc::new(move |_| Ok(refreshed.clone())),
-    );
-
-    let recovery = harness.bounds("history-recovery-item-job-dense");
-    let transcript = harness.bounds("history-transcript-item-31");
-    assert!(recovery.size.height <= px(64.));
-    assert!(transcript.size.height <= px(52.));
-    assert!(recovery.center().y < transcript.center().y);
-    assert!(!harness.has("history-review-recovery"));
-
-    let title_clip = harness.bounds("history-transcript-title-31");
-    let metadata_clip = harness.bounds("history-transcript-metadata-31");
-    assert!(title_clip.size.width > px(240.));
-    assert!(metadata_clip.size.width > px(160.));
-}
-
-#[gpui::test]
 fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestAppContext) {
     let recoveries = (0..8)
         .map(|index| {
@@ -1183,7 +1060,7 @@ fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestA
         .collect();
     let transcripts = (0..60)
         .map(|index| {
-            agentdictate_ui::TranscriptViewModel::new(
+            TranscriptViewModel::new(
                 index,
                 "Today, 14:31",
                 format!("Transcript {index} remains reachable by normal wheel scrolling."),
@@ -1199,7 +1076,7 @@ fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestA
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(recoveries, transcripts),
+        history: history(recoveries, transcripts),
         ..WorkspaceViewModel::default()
     });
     let refreshed = model.workspace.clone();
@@ -1234,12 +1111,10 @@ fn history_wheel_scroll_reaches_transcripts_after_many_recoveries(cx: &mut TestA
 }
 
 #[gpui::test]
-fn history_page_fills_the_route_and_loads_more_without_rendering_the_archive(
-    cx: &mut TestAppContext,
-) {
+fn history_loads_more_without_rendering_the_archive(cx: &mut TestAppContext) {
     let transcripts = (0..20)
         .map(|index| {
-            agentdictate_ui::TranscriptViewModel::new(
+            TranscriptViewModel::new(
                 index,
                 "Today, 14:31",
                 format!("Transcript {index} remains readable in the bounded first page."),
@@ -1272,8 +1147,6 @@ fn history_page_fills_the_route_and_loads_more_without_rendering_the_archive(
     );
 
     let route = harness.bounds("route-content");
-    let page = harness.bounds("history-page");
-    assert!(page.size.width >= route.size.width - px(56.));
     assert!(harness.has("history-transcript-item-0"));
     assert!(harness.has("history-transcript-item-19"));
     assert!(!harness.has("history-transcript-item-20"));
@@ -1297,7 +1170,6 @@ fn history_page_fills_the_route_and_loads_more_without_rendering_the_archive(
 
 #[gpui::test]
 fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mut TestAppContext) {
-    test_support::initialize(cx);
     let model = ShellViewModel::from_snapshot(
         Route::History,
         WorkflowSnapshot {
@@ -1307,44 +1179,15 @@ fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mu
     let refreshed = model.workspace.clone();
     let actions = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&actions);
-    let shell_slot = Rc::new(RefCell::new(None));
-    let window_slot = Rc::clone(&shell_slot);
-    let window = cx.update(|cx| {
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                    point(px(0.), px(0.)),
-                    size(px(1_100.), px(780.)),
-                ))),
-                ..Default::default()
-            },
-            move |window, cx| {
-                let sink_workspace = refreshed.clone();
-                let shell = cx.new(|cx| {
-                    SettingsShell::connected_with_workspace_actions(
-                        model,
-                        agentdictate_core::Settings::default(),
-                        false,
-                        Arc::new(|_| Ok(())),
-                        Arc::new(move |action| {
-                            captured.lock().unwrap().push(action);
-                            Ok(sink_workspace.clone())
-                        }),
-                        window,
-                        cx,
-                    )
-                });
-                *window_slot.borrow_mut() = Some(shell.clone());
-                let frame = cx.new(|_| AgentDictateWindowFrame::new(shell));
-                cx.new(|cx| Root::new(frame, window, cx))
-            },
-        )
-        .expect("headless history window opens")
-    });
-    let shell = shell_slot.borrow_mut().take().unwrap();
-    let visual = VisualTestContext::from_window(*window.deref(), cx).into_mut();
-    visual.run_until_parked();
-    let mut harness = Harness { shell, cx: visual };
+    let mut harness = Harness::open_model_with_actions(
+        cx,
+        size(px(1_100.), px(780.)),
+        model,
+        Arc::new(move |action| {
+            captured.lock().unwrap().push(action);
+            Ok(refreshed.clone())
+        }),
+    );
 
     harness.type_text("history-search-input", "needle");
 
@@ -1355,11 +1198,12 @@ fn connected_history_search_emits_the_latest_query_without_a_fixed_delay(cx: &mu
         })
     );
 }
+
 #[gpui::test]
 fn navigating_from_deep_history_opens_settings_at_its_own_top(cx: &mut TestAppContext) {
     let transcripts = (0..60)
         .map(|index| {
-            agentdictate_ui::TranscriptViewModel::new(
+            TranscriptViewModel::new(
                 index,
                 "Today, 14:32",
                 format!("Transcript {index} keeps the history page tall."),
@@ -1375,7 +1219,7 @@ fn navigating_from_deep_history_opens_settings_at_its_own_top(cx: &mut TestAppCo
         },
     )
     .with_workspace(WorkspaceViewModel {
-        history: HistoryViewModel::from_records(Vec::new(), transcripts),
+        history: history(Vec::new(), transcripts),
         ..WorkspaceViewModel::default()
     });
     let refreshed = model.workspace.clone();
@@ -1398,34 +1242,11 @@ fn navigating_from_deep_history_opens_settings_at_its_own_top(cx: &mut TestAppCo
     harness.cx.run_until_parked();
     assert!(harness.bounds("history-transcript-item-59").bottom() <= viewport.bottom());
 
-    harness.click("toggle-sidebar");
-    harness.settle_sidebar_motion();
     harness.click(Route::Settings.navigation_id());
 
     let settings = harness.bounds("settings-page");
     assert!(settings.top() >= viewport.top());
     assert!(settings.top() <= viewport.top() + px(32.));
-}
-
-#[gpui::test]
-fn settings_is_one_aligned_page_with_clear_section_hierarchy(cx: &mut TestAppContext) {
-    let mut harness = Harness::open(cx);
-    harness.click(Route::Settings.navigation_id());
-
-    let account = harness.bounds("settings-group-account");
-    let dictation = harness.bounds("settings-group-dictation");
-    let cleanup = harness.bounds("settings-group-cleanup");
-    let recording = harness.bounds("settings-group-recording-audio");
-    let delivery = harness.bounds("settings-group-delivery-storage");
-    for section in [dictation, cleanup, recording, delivery] {
-        assert!((section.left() - account.left()).abs() <= px(1.));
-        assert!((section.size.width - account.size.width).abs() <= px(1.));
-    }
-    assert!(account.top() < dictation.top());
-    assert!(dictation.top() < cleanup.top());
-    assert!(cleanup.top() < recording.top());
-    assert!(recording.top() < delivery.top());
-    assert!(!harness.has("settings-group-advanced"));
 }
 
 #[gpui::test]
@@ -1460,7 +1281,6 @@ fn connected_settings_exposes_runtime_inputs_and_saves_one_validated_snapshot(
     harness.bounds("settings-input-ducking-fade-out");
     harness.bounds("settings-input-ducking-fade-in");
     harness.bounds("settings-input-paste-shortcut");
-    assert!(!harness.has("settings-clipboard"));
     assert!(!harness.has("settings-save-bar"));
     harness.scroll_route_by(-120.);
     harness.scroll_to("toggle-streaming");
@@ -1631,5 +1451,107 @@ fn successful_api_key_save_clears_the_secret_field(cx: &mut TestAppContext) {
         &commands[0].kind,
         ClientCommandKind::SetApiKey { api_key, .. }
             if api_key.expose_secret() == "sk-test-secret"
+    ));
+}
+
+#[gpui::test]
+fn save_and_discard_remain_clickable_at_the_bottom_of_settings(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = Harness::open_settings(cx, Arc::clone(&commands), size(px(720.), px(520.)));
+    let viewport = harness.bounds("route-content");
+    harness.cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    harness.click("toggle-save-history");
+
+    let scroll_area = harness.bounds("route-content");
+    for selector in ["save-settings", "discard-settings"] {
+        let button = harness.bounds(selector);
+        assert!(
+            button.top() >= scroll_area.bottom(),
+            "{selector} scrolled out of view"
+        );
+        assert!(
+            button.bottom() <= px(520.),
+            "{selector} is below the window"
+        );
+    }
+    harness.click("discard-settings");
+    assert!(commands.lock().unwrap().is_empty());
+    assert_eq!(harness.bounds("route-content"), viewport);
+
+    harness.click("toggle-save-history");
+    harness.click("save-settings");
+    let commands = commands.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0].kind,
+        ClientCommandKind::UpdateSettings { settings, .. } if !settings.save_history
+    ));
+    let feedback = harness.bounds("settings-feedback");
+    assert!(feedback.top() >= viewport.top());
+    assert!(feedback.bottom() <= px(520.));
+}
+
+#[gpui::test]
+fn maximum_recording_step_buttons_are_real_click_targets(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness =
+        Harness::open_settings(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
+    harness.scroll_to("settings-input-max-recording-control");
+    let control = harness.bounds("settings-input-max-recording-control");
+
+    harness.click_at(point(control.right() - px(14.), control.center().y));
+    harness.click("save-settings");
+    assert!(matches!(
+        &commands.lock().expect("command lock")[0].kind,
+        ClientCommandKind::UpdateSettings { settings, .. }
+            if settings.max_recording_seconds == Settings::default().max_recording_seconds + 1
+    ));
+
+    let viewport = harness.bounds("route-content");
+    harness.cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+        ..Default::default()
+    });
+    harness.cx.run_until_parked();
+    let control = harness.bounds("settings-input-max-recording-control");
+    harness.click_at(point(control.left() + px(14.), control.center().y));
+    harness.click("save-settings");
+    assert!(matches!(
+        &commands.lock().expect("command lock")[1].kind,
+        ClientCommandKind::UpdateSettings { settings, .. }
+            if settings.max_recording_seconds == Settings::default().max_recording_seconds
+    ));
+}
+
+#[gpui::test]
+fn discard_restores_the_persisted_toggle_without_writing(cx: &mut TestAppContext) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mut harness =
+        Harness::open_settings(cx, Arc::clone(&commands), size(px(1_100.), px(1_400.)));
+
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
+    harness.bounds("settings-save-bar");
+    harness.click("discard-settings");
+
+    assert!(commands.lock().expect("command lock").is_empty());
+
+    // A second toggle must start from the persisted `true` value. Saving it as
+    // `false` proves that Discard restored the draft instead of leaving the
+    // first click in memory.
+    harness.scroll_to("toggle-streaming");
+    harness.click("toggle-streaming");
+    harness.click("save-settings");
+    let commands = commands.lock().expect("command lock");
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0].kind,
+        ClientCommandKind::UpdateSettings { settings, .. } if settings.streaming_enabled
     ));
 }

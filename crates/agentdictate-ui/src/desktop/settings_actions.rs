@@ -65,9 +65,7 @@ impl SettingsShell {
         if catalog == self.settings.applied_model_catalog {
             return;
         }
-        if let Some(form) = self.settings.form.clone() {
-            form.sync_model_catalog(&catalog, window, cx);
-        }
+        self.settings.form.sync_model_catalog(&catalog, window, cx);
         self.settings.applied_model_catalog = catalog;
     }
 
@@ -79,12 +77,12 @@ impl SettingsShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(form) = self.settings.form.clone() else {
-            return;
-        };
-        form.transcription_provider.update(cx, |state, cx| {
-            state.set_selected_value(&provider.as_str().to_owned(), window, cx);
-        });
+        self.settings
+            .form
+            .transcription_provider
+            .update(cx, |state, cx| {
+                state.set_selected_value(&provider.as_str().to_owned(), window, cx);
+            });
         self.recompute_settings_dirty(cx);
         self.clear_route_feedback();
         cx.notify();
@@ -93,24 +91,18 @@ impl SettingsShell {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn settings_draft_for_test(&self, cx: &gpui::App) -> SettingsDraft {
-        self.settings.form.as_ref().map_or_else(
-            || SettingsDraft::from(&self.settings.current),
-            |form| form.snapshot(cx),
-        )
+        self.settings.form.snapshot(cx)
     }
 
     pub(super) fn request_model_catalog_refresh(&mut self) {
         if !self.settings_commands.has_api_key {
             return;
         }
-        let Some(sink) = &self.settings_commands.command_sink else {
-            return;
-        };
         let request_id = self.settings_commands.next_request_id;
         self.settings_commands.next_request_id += 1;
-        if let Err(error) = sink(agentdictate_core::ClientCommand::refresh_model_catalog(
-            request_id,
-        )) {
+        if let Err(error) = (self.settings_commands.command_sink)(
+            agentdictate_core::ClientCommand::refresh_model_catalog(request_id),
+        ) {
             self.set_route_feedback_for(
                 Route::Settings,
                 format!("Could not refresh models: {error}"),
@@ -119,22 +111,14 @@ impl SettingsShell {
     }
 
     pub(super) fn save_settings_editor(&mut self, cx: &mut Context<Self>) {
-        let Some(form) = self.settings.form.as_ref() else {
-            return;
-        };
-        let draft = form.snapshot(cx);
+        let draft = self.settings.form.snapshot(cx);
         match draft.apply_to(&self.settings.baseline) {
             Ok(settings) => {
-                let Some(sink) = &self.settings_commands.command_sink else {
-                    self.accept_saved_settings(settings);
-                    self.set_route_feedback("Saved");
-                    return;
-                };
                 let request_id = self.settings_commands.next_request_id;
                 self.settings_commands.next_request_id += 1;
-                match sink(agentdictate_core::ClientCommand::update_settings(
-                    request_id, &settings,
-                )) {
+                match (self.settings_commands.command_sink)(
+                    agentdictate_core::ClientCommand::update_settings(request_id, &settings),
+                ) {
                     Ok(()) => {
                         self.accept_saved_settings(settings);
                         self.set_route_feedback("Saved");
@@ -149,9 +133,7 @@ impl SettingsShell {
     }
 
     fn accept_saved_settings(&mut self, settings: agentdictate_core::Settings) {
-        if let Some(form) = self.settings.form.as_mut() {
-            form.draft = SettingsDraft::from(&settings);
-        }
+        self.settings.form.draft = SettingsDraft::from(&settings);
         self.settings.current = settings.clone();
         self.settings.baseline = settings;
         self.settings.dirty = false;
@@ -161,8 +143,8 @@ impl SettingsShell {
         self.settings.dirty = self
             .settings
             .form
-            .as_ref()
-            .is_some_and(|form| form.snapshot(cx).is_dirty_against(&self.settings.baseline));
+            .snapshot(cx)
+            .is_dirty_against(&self.settings.baseline);
     }
 
     pub(super) fn update_settings_draft(
@@ -170,10 +152,7 @@ impl SettingsShell {
         cx: &mut Context<Self>,
         update: impl FnOnce(&mut SettingsDraft),
     ) {
-        let Some(form) = self.settings.form.as_mut() else {
-            return;
-        };
-        update(&mut form.draft);
+        update(&mut self.settings.form.draft);
         self.recompute_settings_dirty(cx);
         self.clear_route_feedback();
         cx.notify();
@@ -183,9 +162,7 @@ impl SettingsShell {
         let baseline = self.settings.baseline.clone();
         let catalog = self.model.workspace.model_catalog.clone();
         self.settings.current = baseline.clone();
-        if let Some(form) = self.settings.form.as_mut() {
-            form.reset(&baseline, &catalog, window, cx);
-        }
+        self.settings.form.reset(&baseline, &catalog, window, cx);
         self.settings.dirty = false;
         self.settings.shortcut_capture_active = false;
         self.settings.shortcut_capture_error = None;
@@ -214,9 +191,7 @@ impl SettingsShell {
         }
         match captured_shortcut(keystroke) {
             Ok(shortcut) => {
-                if let Some(form) = self.settings.form.as_mut() {
-                    form.draft.hotkey = shortcut;
-                }
+                self.settings.form.draft.hotkey = shortcut;
                 self.settings.shortcut_capture_active = false;
                 self.settings.shortcut_capture_error = None;
                 self.recompute_settings_dirty(cx);
@@ -227,25 +202,18 @@ impl SettingsShell {
     }
 
     pub(super) fn save_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(input) = self.settings_commands.api_key_input.clone() else {
-            return;
-        };
+        let input = self.settings_commands.api_key_input.clone();
         let api_key = input.read(cx).value().trim().to_owned();
         if api_key.is_empty() {
             self.settings_commands.api_key_feedback = Some("Paste an API key first".to_owned());
             return;
         }
-        let Some(sink) = &self.settings_commands.command_sink else {
-            self.settings_commands.api_key_feedback =
-                Some("API key saving is not connected".to_owned());
-            return;
-        };
         let request_id = self.settings_commands.next_request_id;
         self.settings_commands.next_request_id += 1;
         self.settings_commands.api_key_feedback = Some(
-            match sink(agentdictate_core::ClientCommand::set_api_key(
-                request_id, api_key,
-            )) {
+            match (self.settings_commands.command_sink)(
+                agentdictate_core::ClientCommand::set_api_key(request_id, api_key),
+            ) {
                 Ok(()) => {
                     self.settings_commands.has_api_key = true;
                     input.update(cx, |input, cx| {

@@ -1,32 +1,21 @@
-use std::time::Instant;
-
 use gpui::{Context, Entity, IntoElement, Render, ScrollHandle, Window, prelude::*, px};
 use gpui_component::{input::InputState, scroll::Scrollbar, v_flex};
 
-use crate::sidebar_motion::SidebarFrame;
 use crate::{
-    HistoryViewModel, NavigationItemViewModel, ReplacementsViewModel, Route,
-    SIDEBAR_OVERLAY_BREAKPOINT, SettingsDraft, ThemeTokens, TranscriptViewModel, UsageViewModel,
-    WorkspaceAction, sidebar_open_for_layout,
+    HistoryViewModel, NavigationItemViewModel, ReplacementsViewModel, Route, ThemeTokens,
+    TranscriptViewModel, UsageViewModel, WorkspaceAction,
 };
 
 use super::{
-    ROUTE_SCROLLBAR_WIDTH, SIDEBAR_WIDTH, SettingsShell, gpui_color, history_page, overview,
-    replacements_page,
+    ROUTE_SCROLLBAR_WIDTH, SettingsShell, gpui_color, history_page, overview, replacements_page,
     settings_page::{self, SettingsPageModel},
     settings_shell::{ReplacementEditorState, route_index},
     shell_chrome::{shell_title_bar, sidebar_view},
 };
 
-struct PreparedLayout {
-    compact: bool,
-    frame: SidebarFrame,
-}
-
 #[derive(Clone, Copy)]
 struct ShellChromeModel {
     navigation: [NavigationItemViewModel; 4],
-    sidebar_open: bool,
     theme: ThemeTokens,
 }
 
@@ -46,7 +35,7 @@ enum RoutePageModel {
     },
     History {
         history: HistoryViewModel,
-        search_input: Option<Entity<InputState>>,
+        search_input: Entity<InputState>,
         feedback: Option<String>,
         pending_destructive_action: Option<WorkspaceAction>,
     },
@@ -82,10 +71,7 @@ impl RoutePageModel {
                 pending_destructive_action: shell.routes.pending_destructive_action.clone(),
             },
             Route::Settings => Self::Settings(Box::new(SettingsPageModel {
-                draft: shell.settings.form.as_ref().map_or_else(
-                    || SettingsDraft::from(&shell.settings.current),
-                    |form| form.snapshot(cx),
-                ),
+                draft: shell.settings.form.snapshot(cx),
                 model_catalog: workspace.model_catalog.clone(),
                 settings_dirty: shell.settings.dirty,
                 has_api_key: shell.settings_commands.has_api_key,
@@ -162,37 +148,12 @@ impl RoutePageModel {
     }
 }
 
-impl SettingsShell {
-    fn prepare_layout(&mut self, viewport_width: f32, now: Instant) -> PreparedLayout {
-        let compact = viewport_width < SIDEBAR_OVERLAY_BREAKPOINT as f32;
-        let first_layout = self.layout.compact_layout.is_none();
-        if self.layout.compact_layout != Some(compact) {
-            self.layout.sidebar_open = sidebar_open_for_layout(
-                self.layout.sidebar_open,
-                self.layout.compact_layout,
-                compact,
-            );
-            self.layout.compact_layout = Some(compact);
-        }
-        let frame =
-            self.layout
-                .sidebar_motion
-                .update(self.layout.sidebar_open, compact, first_layout, now);
-        PreparedLayout { compact, frame }
-    }
-}
-
 impl Render for SettingsShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_model_catalog_editor(window, cx);
-        let layout = self.prepare_layout(f32::from(window.viewport_size().width), Instant::now());
-        if layout.frame.active {
-            window.request_animation_frame();
-        }
         let route = self.model.active_route;
         let chrome = ShellChromeModel {
             navigation: self.model.navigation,
-            sidebar_open: self.layout.sidebar_open,
             theme: self.theme,
         };
         let viewport = RouteViewportModel {
@@ -203,13 +164,8 @@ impl Render for SettingsShell {
         };
 
         shell_root(chrome.theme)
-            .when(!layout.compact, |root| {
-                root.child(wide_sidebar_rail(chrome, layout.frame, cx))
-            })
+            .child(sidebar_view(chrome.navigation, chrome.theme, cx))
             .child(main_panel(viewport, chrome, window, cx))
-            .when(compact_sidebar_is_visible(chrome, &layout), |root| {
-                root.children(compact_sidebar_layers(chrome, layout.frame, cx))
-            })
     }
 }
 
@@ -223,29 +179,6 @@ fn shell_root(theme: ThemeTokens) -> gpui::Div {
         .min_h(px(480.))
         .bg(gpui_color(theme.canvas))
         .text_color(gpui_color(theme.text))
-}
-
-fn wide_sidebar_rail(
-    chrome: ShellChromeModel,
-    frame: SidebarFrame,
-    cx: &mut Context<SettingsShell>,
-) -> gpui::Div {
-    gpui::div()
-        .debug_selector(|| "sidebar-rail".to_owned())
-        .h_full()
-        .w(px(SIDEBAR_WIDTH * frame.panel))
-        .flex_shrink_0()
-        .overflow_hidden()
-        .when(frame.panel > 0.0, |rail| {
-            rail.child(
-                gpui::div()
-                    .relative()
-                    .left(px(-SIDEBAR_WIDTH * (1.0 - frame.panel)))
-                    .w(px(SIDEBAR_WIDTH))
-                    .h_full()
-                    .child(sidebar_view(chrome.navigation, false, chrome.theme, cx)),
-            )
-        })
 }
 
 fn main_panel(
@@ -263,13 +196,7 @@ fn main_panel(
         .h_full()
         .min_w_0()
         .flex_1()
-        .child(shell_title_bar(
-            route,
-            chrome.sidebar_open,
-            window,
-            chrome.theme,
-            cx,
-        ))
+        .child(shell_title_bar(route, window, chrome.theme))
         .child(route_viewport(viewport, chrome.theme, cx))
         .when_some(footer, |panel, footer| panel.child(footer))
 }
@@ -329,45 +256,6 @@ fn route_viewport(
                 .w(px(ROUTE_SCROLLBAR_WIDTH))
                 .child(Scrollbar::vertical(&scroll).id(("route-scrollbar", route_scroll_id))),
         )
-}
-
-fn compact_sidebar_is_visible(chrome: ShellChromeModel, layout: &PreparedLayout) -> bool {
-    layout.compact && (chrome.sidebar_open || layout.frame.panel > 0.0 || layout.frame.scrim > 0.0)
-}
-
-fn compact_sidebar_layers(
-    chrome: ShellChromeModel,
-    frame: SidebarFrame,
-    cx: &mut Context<SettingsShell>,
-) -> [gpui::AnyElement; 2] {
-    let dismiss = gpui::div()
-        .id("sidebar-dismiss")
-        .debug_selector(|| "sidebar-dismiss".to_owned())
-        .absolute()
-        .top_0()
-        .right_0()
-        .bottom_0()
-        .left_0()
-        .cursor_pointer()
-        .occlude()
-        .bg(gpui::hsla(0.0, 0.0, 0.0, 0.45 * frame.scrim))
-        .when(chrome.sidebar_open, |dismiss| {
-            dismiss.on_click(cx.listener(|shell, _, _, cx| {
-                shell.layout.sidebar_open = false;
-                cx.notify();
-            }))
-        });
-    let panel = gpui::div()
-        .debug_selector(|| "sidebar-overlay-panel".to_owned())
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(px(-SIDEBAR_WIDTH * (1.0 - frame.panel)))
-        .w(px(SIDEBAR_WIDTH))
-        .occlude()
-        .shadow_xl()
-        .child(sidebar_view(chrome.navigation, true, chrome.theme, cx));
-    [dismiss.into_any_element(), panel.into_any_element()]
 }
 
 /// The notice that reports a workspace action's outcome on its route.

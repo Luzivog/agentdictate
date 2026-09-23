@@ -1,6 +1,4 @@
-use std::{error::Error, fmt, str::FromStr};
-
-/// A settings-window destination with stable ordering and deep-link identity.
+/// A settings-window destination with a stable navigation order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Route {
     #[default]
@@ -52,31 +50,5 @@ impl Route {
             Self::Replacements => "Open Replacements",
             Self::Settings => "Open Settings",
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RouteParseError {
-    slug: String,
-}
-
-impl fmt::Display for RouteParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "unknown AgentDictate route: {}", self.slug)
-    }
-}
-
-impl Error for RouteParseError {}
-
-impl FromStr for Route {
-    type Err = RouteParseError;
-
-    fn from_str(slug: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|route| route.slug() == slug)
-            .ok_or_else(|| RouteParseError {
-                slug: slug.to_owned(),
-            })
     }
 }

@@ -5,6 +5,8 @@ use gpui::{
     Render, RenderOnce, ResizeEdge, Window, div, prelude::*, px,
 };
 
+use crate::{ThemeTokens, theme::gpui_color};
+
 const CLIENT_INSET: gpui::Pixels = px(0.0);
 const RESIZE_HIT_SIZE: gpui::Pixels = px(6.0);
 
@@ -21,14 +23,15 @@ impl AgentDictateWindowFrame {
 
 impl Render for AgentDictateWindowFrame {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = ThemeTokens::default();
         ClientFrame::new().child(
             div()
                 .id("agentdictate-root")
                 .debug_selector(|| "agentdictate-root".to_owned())
                 .relative()
                 .size_full()
-                .bg(gpui::rgb(0x0a0a0a))
-                .text_color(gpui::rgb(0xededed))
+                .bg(gpui_color(theme.canvas))
+                .text_color(gpui_color(theme.text))
                 .capture_any_mouse_down(|event, window, _| {
                     if event.button == MouseButton::Left {
                         window.blur();
@@ -92,7 +95,7 @@ impl RenderOnce for ClientFrame {
             .debug_selector(|| "agentdictate-window-frame".to_owned())
             .relative()
             .size_full()
-            .bg(gpui::rgb(0x0a0a0a))
+            .bg(gpui_color(ThemeTokens::default().canvas))
             .child(content)
             .when_some(edges, |frame, edges| frame.children(resize_zones(edges)))
     }
