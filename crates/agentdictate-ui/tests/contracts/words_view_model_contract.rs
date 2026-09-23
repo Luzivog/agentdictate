@@ -11,7 +11,10 @@ fn word(spelling: &str, aliases: &[&str]) -> VocabularyEntry {
 }
 
 fn vocabulary() -> Vec<VocabularyEntry> {
-    vec![word("Leadlord", &["lead lord"]), word("Claude Code", &[])]
+    vec![
+        word("Brightlane", &["bright lane"]),
+        word("Claude Code", &[]),
+    ]
 }
 
 #[test]
@@ -34,8 +37,8 @@ fn adding_a_word_trims_it_and_splits_sounds_like_on_commas() {
 fn updating_a_word_replaces_its_spelling_and_sounds_like_in_place() {
     let updated = WordsEdit::Update {
         index: 0,
-        spelling: "Leadlord".to_owned(),
-        sounds_like: "lead lord, lead load".to_owned(),
+        spelling: "Brightlane".to_owned(),
+        sounds_like: "bright lane, bright lain".to_owned(),
     }
     .apply(&vocabulary())
     .unwrap();
@@ -43,7 +46,7 @@ fn updating_a_word_replaces_its_spelling_and_sounds_like_in_place() {
     assert_eq!(
         updated,
         vec![
-            word("Leadlord", &["lead lord", "lead load"]),
+            word("Brightlane", &["bright lane", "bright lain"]),
             word("Claude Code", &[])
         ]
     );
@@ -67,13 +70,13 @@ fn edits_are_refused_for_blank_or_duplicate_spellings_and_self_aliases() {
     };
 
     assert_eq!(
-        add("  ", "lead"),
+        add("  ", "bright"),
         Err(WordsError::Invalid(VocabularyError::BlankSpelling))
     );
     assert_eq!(
-        add("leadlord", ""),
+        add("brightlane", ""),
         Err(WordsError::Invalid(VocabularyError::DuplicateSpelling(
-            "leadlord".to_owned()
+            "brightlane".to_owned()
         )))
     );
     assert_eq!(
@@ -81,15 +84,15 @@ fn edits_are_refused_for_blank_or_duplicate_spellings_and_self_aliases() {
         Err(WordsError::Invalid(VocabularyError::AliasIsSpelling))
     );
     assert_eq!(
-        add("Leadlords", "lead lord").map_err(|error| error.to_string()),
-        Err("“lead lord” is already listed under Sounds like".to_owned())
+        add("Brightlanes", "bright lane").map_err(|error| error.to_string()),
+        Err("“bright lane” is already listed under Sounds like".to_owned())
     );
     // Renaming a word to its own spelling in another case is not a duplicate.
     assert!(
         WordsEdit::Update {
             index: 0,
-            spelling: "LeadLord".to_owned(),
-            sounds_like: "lead lord".to_owned(),
+            spelling: "BrightLane".to_owned(),
+            sounds_like: "bright lane".to_owned(),
         }
         .apply(&vocabulary())
         .is_ok()
@@ -108,20 +111,20 @@ fn fixing_a_word_adds_the_heard_phrase_to_an_existing_spelling_or_a_new_word() {
 
     // An existing spelling, matched ignoring case, keeps its own casing.
     assert_eq!(
-        fix(" lead load ", "leadlord").unwrap()[0],
-        word("Leadlord", &["lead lord", "lead load"])
+        fix(" bright lain ", "brightlane").unwrap()[0],
+        word("Brightlane", &["bright lane", "bright lain"])
     );
     // A phrase it already sounds like is not added twice.
-    assert_eq!(fix("Lead Lord", "Leadlord").unwrap(), vocabulary());
+    assert_eq!(fix("Bright Lane", "Brightlane").unwrap(), vocabulary());
     assert_eq!(
         fix("codecs", "Codex").unwrap().last(),
         Some(&word("Codex", &["codecs"]))
     );
     assert_eq!(fix("  ", "Codex"), Err(WordsError::BlankHeard));
     assert_eq!(
-        fix("lead lord", "Codex"),
+        fix("bright lane", "Codex"),
         Err(WordsError::Invalid(VocabularyError::DuplicateAlias(
-            "lead lord".to_owned()
+            "bright lane".to_owned()
         )))
     );
 }
@@ -137,14 +140,14 @@ fn the_filter_matches_spellings_and_sounds_like_ignoring_case() {
 
     assert_eq!(rows(""), [0, 1]);
     assert_eq!(rows("CLAUDE"), [1]);
-    assert_eq!(rows(" lord "), [0]);
+    assert_eq!(rows(" lane "), [0]);
     assert!(rows("codex").is_empty());
     assert_eq!(
-        word_rows(&vocabulary(), "lead")[0],
+        word_rows(&vocabulary(), "bright")[0],
         WordRowViewModel {
             index: 0,
-            spelling: "Leadlord".to_owned(),
-            sounds_like: "lead lord".to_owned(),
+            spelling: "Brightlane".to_owned(),
+            sounds_like: "bright lane".to_owned(),
         }
     );
 }

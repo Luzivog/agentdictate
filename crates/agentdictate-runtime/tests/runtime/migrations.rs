@@ -319,7 +319,7 @@ INSERT INTO pricing_settings VALUES ('gpt-transcribe', 'transcription');
 INSERT INTO history_search_state VALUES (1, 3, 1);
 INSERT INTO replacement_mappings (
     source_phrase, replacement_phrase, created_at, updated_at
-) VALUES ('lead lord', 'Leadlord', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z');
+) VALUES ('bright lane', 'Brightlane', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z');
 "#;
 
 /// Jobs an unversioned database stores with spellings of older releases.
@@ -760,7 +760,7 @@ fn replacements_rules_outlive_the_migration_until_they_move_into_vocabulary() {
     assert_eq!(retired.len(), 1);
     assert_eq!(
         settings.vocabulary,
-        agentdictate_core::parse_vocabulary("Leadlord = lead lord").unwrap()
+        agentdictate_core::parse_vocabulary("Brightlane = bright lane").unwrap()
     );
     assert!(
         runtime

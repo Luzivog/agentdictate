@@ -8,9 +8,9 @@ commit the task's changes, push to `origin/main`, and run `./install.sh` so the
 changed behavior is live. The installer restarts a running
 `agentdictated.service` itself (`systemctl --user try-restart`); only if the
 service was stopped, start it with `systemctl --user start agentdictated.service`.
-On this host `./install.sh` exits 3: installed and working, but another app's udev
-rule (`/etc/udev/rules.d/99-vibetyper-uinput.rules`) makes input devices
-world-accessible. Exit 2 means native input access is missing. Follow the resource
+`./install.sh` exits 3 when AgentDictate is installed and working but another app's
+udev rule makes input devices world-accessible, and 2 when native input access is
+missing. Follow the resource
 checks below before rebuilding. Preserve unrelated staged or working changes.
 
 For documentation or instruction-only maintenance, verify the edited documents,

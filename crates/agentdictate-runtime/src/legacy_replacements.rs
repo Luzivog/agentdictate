@@ -164,12 +164,12 @@ mod tests {
         let config_file = directory.path().join("config.json");
         let runtime = Runtime::open(directory.path().join("agentdictate.sqlite")).unwrap();
         insert_rule(&runtime, "versel", "Vercel", true, true);
-        insert_rule(&runtime, "lead load", "Leadlord", true, true);
+        insert_rule(&runtime, "bright lain", "Brightlane", true, true);
         insert_rule(&runtime, "kube", "kubectl", true, false);
         insert_rule(&runtime, "a, b", "Commas", true, true);
         insert_rule(&runtime, "postgress", "Postgres", false, true);
         let mut settings = Settings {
-            vocabulary: parse_vocabulary("Leadlord = lead lord").unwrap(),
+            vocabulary: parse_vocabulary("Brightlane = bright lane").unwrap(),
             ..Settings::default()
         };
 
@@ -185,13 +185,13 @@ mod tests {
             outcomes,
             [
                 ("versel", RetiredReplacementOutcome::BecameAlias),
-                ("lead load", RetiredReplacementOutcome::BecameAlias),
+                ("bright lain", RetiredReplacementOutcome::BecameAlias),
                 ("kube", RetiredReplacementOutcome::NotWholeWord),
                 ("a, b", RetiredReplacementOutcome::NotValidVocabulary),
             ]
         );
         let expected =
-            parse_vocabulary("Leadlord = lead lord, lead load\nVercel = versel").unwrap();
+            parse_vocabulary("Brightlane = bright lane, bright lain\nVercel = versel").unwrap();
         assert_eq!(settings.vocabulary, expected);
         assert_eq!(load_settings(&config_file).unwrap().vocabulary, expected);
         assert!(

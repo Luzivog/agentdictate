@@ -139,7 +139,7 @@ mod tests {
             "KERNEL==\"uinput\", MODE=\"0660\", TAG+=\"uaccess\"\n",
         )
         .unwrap();
-        let other_app = rules.join("99-vibetyper-uinput.rules");
+        let other_app = rules.join("99-open-input.rules");
         fs::write(
             &other_app,
             "# MODE=\"0666\" in a comment grants nothing\nKERNEL==\"event*\", SUBSYSTEM==\"input\", MODE=\"0666\"\n",

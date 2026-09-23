@@ -89,7 +89,7 @@ fn capture_records_the_physical_key_pressed_with_its_modifiers() {
 
     assert_eq!(session.capture_input(10, press(KEY_LEFT_CTRL)), None);
     assert_eq!(session.capture_input(10, press(KEY_RIGHT_ALT)), None);
-    // Physical Q: "A" on Thomas's AZERTY. Capture keeps the keycode.
+    // Physical Q: "A" on an AZERTY keyboard. Capture keeps the keycode.
     assert_eq!(
         session.capture_input(10, press(KEY_Q)),
         Some(CaptureStep::Chord {

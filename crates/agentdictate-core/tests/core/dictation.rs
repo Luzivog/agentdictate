@@ -20,7 +20,7 @@ fn vocabulary_uses_longest_original_spans_and_preserves_literals() {
 
 #[test]
 fn vocabulary_rejects_conflicting_aliases_and_round_trips_hints() {
-    let terms = parse_vocabulary("Claude Code\nLeadlord = lead lord, lead load").unwrap();
+    let terms = parse_vocabulary("Claude Code\nBrightlane = bright lane, bright lain").unwrap();
     assert_eq!(parse_vocabulary(&vocabulary_text(&terms)).unwrap(), terms);
     assert!(parse_vocabulary("A = common\nB = COMMON").is_err());
     assert!(parse_vocabulary("<bad>").is_err());
@@ -42,16 +42,16 @@ fn vocabulary_rejects_blank_spellings_self_aliases_and_aliases_the_text_form_can
         Err(VocabularyError::BlankSpelling)
     );
     assert_eq!(
-        validate_vocabulary(&[entry("Leadlord", &["Leadlord"])]),
+        validate_vocabulary(&[entry("Brightlane", &["Brightlane"])]),
         Err(VocabularyError::AliasIsSpelling)
     );
     assert_eq!(
-        validate_vocabulary(&[entry("Leadlord", &["lead, lord"])]),
-        Err(VocabularyError::InvalidAlias("lead, lord".to_owned()))
+        validate_vocabulary(&[entry("Brightlane", &["bright, lane"])]),
+        Err(VocabularyError::InvalidAlias("bright, lane".to_owned()))
     );
     assert_eq!(
-        validate_vocabulary(&[entry("Leadlord", &[]), entry("leadlord", &[])]),
-        Err(VocabularyError::DuplicateSpelling("leadlord".to_owned()))
+        validate_vocabulary(&[entry("Brightlane", &[]), entry("brightlane", &[])]),
+        Err(VocabularyError::DuplicateSpelling("brightlane".to_owned()))
     );
     // A different casing is a deliberate case fix.
     assert_eq!(

@@ -26,7 +26,7 @@ fn named_shortcuts_from_older_configs_keep_their_us_qwerty_keys_and_text() {
 
 #[test]
 fn captured_shortcuts_round_trip_through_config_with_their_keycode_and_label() {
-    // Thomas's AZERTY "A" is the physical Q key.
+    // On an AZERTY keyboard, "A" is the physical Q key.
     let captured = Hotkey::captured(BTreeSet::from([HotkeyModifier::Ctrl]), 16, "A");
     let settings = Settings {
         hotkey: captured.clone(),

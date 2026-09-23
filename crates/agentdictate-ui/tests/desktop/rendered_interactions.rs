@@ -1797,7 +1797,7 @@ fn granting_access_asks_first_and_says_to_log_out_only_while_access_is_missing(
     // Another app's rule stays a warning that granting can't fix.
     harness.update_workspace(|workspace| {
         workspace.readiness.desktop.exposed_input = Some(ExposedInput {
-            rule: Some("/etc/udev/rules.d/99-vibetyper-uinput.rules".into()),
+            rule: Some("/etc/udev/rules.d/99-open-input.rules".into()),
         });
     });
     assert!(harness.has("setup-exposed-input"));
