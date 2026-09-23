@@ -143,7 +143,7 @@ pub(super) fn surface(
                     list.child(empty_line(
                         "words-empty",
                         "Add names and terms AgentDictate should always spell your way — \
-                         for example Leadlord or Claude Code.",
+                         for example Siobhan or Kubernetes.",
                         theme,
                     ))
                 })

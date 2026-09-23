@@ -53,10 +53,10 @@ impl WordsUiState {
         cx: &mut Context<SettingsShell>,
     ) -> (Self, Vec<Subscription>) {
         let filter = text_input(String::new(), "Filter words", window, cx);
-        let new_spelling = text_input(String::new(), "New word, e.g. Leadlord", window, cx);
+        let new_spelling = text_input(String::new(), "New word, e.g. Siobhan", window, cx);
         let new_sounds_like = text_input(
             String::new(),
-            "Sounds like (optional), e.g. lead lord",
+            "Sounds like (optional), e.g. shiv on",
             window,
             cx,
         );
@@ -229,8 +229,8 @@ impl SettingsShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let heard = text_input(String::new(), "e.g. lead lord", window, cx);
-        let spelling = text_input(String::new(), "e.g. Leadlord", window, cx);
+        let heard = text_input(String::new(), "e.g. shiv on", window, cx);
+        let spelling = text_input(String::new(), "e.g. Siobhan", window, cx);
         heard.update(cx, |input, cx| input.focus(window, cx));
         self.routes.fix_word = Some(FixWordEditor {
             _submit_on_enter: [
