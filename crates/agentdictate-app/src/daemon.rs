@@ -50,7 +50,7 @@ pub enum RecorderEvent {
     Exited { job_id: JobId },
     /// The microphone stopped delivering audio.
     Stalled { job_id: JobId },
-    /// The recording reached the "Maximum recording length" setting.
+    /// The recording reached the "Stop recording after" setting.
     MaxDurationReached { job_id: JobId },
 }
 

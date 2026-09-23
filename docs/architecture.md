@@ -54,10 +54,10 @@ the overlay cannot render.
 **Tray.** The tray runs inside the daemon as a StatusNotifier item when
 `show_tray_icon` is on. That is a `config.json` setting and it defaults to on. The
 menu has **Open AgentDictate**, **Toggle dictation**, **Start literal dictation**,
-and **Quit AgentDictate**. Opening settings launches the sibling `agentdictate`.
-Only one settings window runs at a time: it holds `window.lock` in the runtime
-directory, and a later launch writes `window.raise`, which that window watches to
-come to the front, and exits.
+**Cancel dictation**, and **Quit AgentDictate**. Opening settings launches the
+sibling `agentdictate`. Only one settings window runs at a time: it holds
+`window.lock` in the runtime directory, and a later launch writes `window.raise`,
+which that window watches to come to the front, and exits.
 
 **Development instance.** With `AGENTDICTATE_HOME` set, as `./run.sh` does, every
 data root moves under that directory and the daemon is unsupervised: nothing calls
@@ -97,8 +97,9 @@ app depends on runtime, linux, and ui; each of those depends only on core.
 - **agentdictate-runtime**: durable state. The SQLite schema and its numbered
   migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
   the `dictations` table behind History search and usage, startup cleanup, settings
-  load and save, the IPC server and client, and the port traits (`Transcriber`,
-  `Deliverer`, `DeliveryGate`, `Recorder`) that the app implements.
+  load and save, the IPC server and client, and the port traits (`Deliverer`,
+  `DeliveryGate`, `Recorder`) that the app implements. It writes checkpoints and
+  never calls the network.
 - **agentdictate-linux**: desktop integration. `pw-record` capture, the evdev hotkey
   listener, which watches `/dev/input` for new keyboards, the uinput paste keyboard,
   the in-process X11 selection owner, X11 focus reading, the paste delivery state
@@ -106,10 +107,11 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   deadlines.
 - **agentdictate-ui**: toolkit-free view models, plus the GPUI settings window and
   overlay view behind the `desktop` feature.
-- **agentdictate-app**: composition. The daemon, the OpenAI speech transport,
-  optional live streaming, the overlay supervisor and helper, the tray, the service
-  unit and login startup, `setup-access`, the hotkey dispatch gate, logging, and the
-  three binaries.
+- **agentdictate-app**: composition. The daemon and the `DaemonHandle` that shares
+  it between threads, the `Transcriber` and its per-job processing tickets, the
+  OpenAI speech transport, optional live streaming, the overlay supervisor and
+  helper, the tray, the service unit and login startup, `setup-access`, the hotkey
+  dispatch gate, logging, and the three binaries.
 
 ## Dictation pipeline
 
@@ -125,11 +127,19 @@ checkpoint in the `dictation_jobs` table before the next step starts.
 2. **Stream (optional).** With `streaming_enabled` on, a Realtime session tails the
    WAV, resamples it to 24 kHz, and sends it to `gpt-live-transcribe` while you
    speak.
-3. **Stop.** A second press, a hold release, the maximum duration, the tray, or
-   `agentdictate stop` finalizes the WAV and records the `captured` checkpoint. Esc
-   discards the recording instead, and deletes its audio unless **Keep audio
-   recordings** is on.
-4. **Transcribe.** A successful live result is used as is. Otherwise ffmpeg encodes
+3. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
+   finalizes the WAV and records the `captured` checkpoint, then `transcribing`. The
+   recorder owner thread ends a recording at **Stop recording after**,
+   whatever started it. Esc discards the recording instead, and deletes its audio
+   unless **Keep audio recordings** is on. If the recorder exits by itself, or the
+   microphone delivers no audio for 3 s, the recording is kept in Recovery and not
+   transcribed.
+4. **Transcribe.** Transcription runs on its own thread, outside the daemon lock, so
+   settings, the tray, and the settings window stay responsive meanwhile. Presses
+   while a dictation transcribes are ignored. **Cancel dictation** in the tray or
+   `agentdictate cancel` stops waiting: a new dictation can start at once, and the
+   late result waits in Recovery as "Cancelled before paste". Esc does not cancel a
+   transcription. A successful live result is used as is. Otherwise ffmpeg encodes
    the WAV to WebM/Opus at 32 kbps in speech mode, and the app posts it to
    `/v1/audio/transcriptions` with the model, `languages[]`, `keywords[]` (the
    vocabulary spellings), and `prompt` (the context). Without ffmpeg, the WAV is
@@ -142,7 +152,9 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    paid transcription. Vocabulary aliases then replace spoken forms with their
    spellings. The job is now
    `ready_to_deliver`.
-7. **Gate.** The overlay is dismissed. If its helper confirmed an override-redirect
+7. **Gate.** A result that arrives more than 8 s after the stop is copied to the
+   clipboard instead of pasted, because by then you may be in another window. For a
+   paste, the overlay is dismissed. If its helper confirmed an override-redirect
    window, the paste goes ahead while it fades. Otherwise the paste waits up to
    `OVERLAY_TEARDOWN_TIMEOUT` (2 s) for the helper to exit. A helper still running
    then is killed, nothing is pasted, and the text stays in Recovery.
@@ -158,7 +170,9 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    Then text older than **Keep transcripts** allows and Recovery items unchanged for 7
    days are deleted. The WAV is then deleted unless **Keep audio recordings** is on.
 
-At startup the daemon reconciles what a crash left behind. Jobs that were starting,
+At startup the daemon reconciles what a crash left behind. A database SQLite cannot
+read is renamed to `agentdictate.sqlite.corrupt-<unix time>` and a fresh one
+started; the settings window shows where the old file went. Jobs that were starting,
 recording, or transcribing become `interrupted` and stay in Recovery with their audio.
 A job whose paste had started becomes `ambiguous` and is never pasted again
 automatically. Unless **Keep audio recordings** is on, startup cleanup then deletes
@@ -194,18 +208,47 @@ as soon as it is published. A missing acknowledgement means unconfirmed, not fai
 a toolkit can answer a repeated paste of the same clipboard from its own cache. The
 acknowledgement is only logged for now.
 
+## Concurrency
+
+One mutex guards the daemon. `DaemonHandle` shares it between the IPC sessions, the
+hotkey action worker, the tray worker, the signal handler, and the recorder-event
+thread. Its rules, also in `crates/agentdictate-app/src/handle.rs`:
+
+- Work under the lock is bounded: starting and finalizing the recorder (10 s
+  deadlines), checkpoints, delivery (5 s), and settings changes. Network requests
+  never run under it. A stopped recording hands a processing ticket, with the job
+  and a clone of the transcriber, to a thread that transcribes and then takes the
+  lock once to store and deliver the result. Settings saved meanwhile never change a
+  job in flight.
+- Only the job the daemon is processing is delivered, and deliveries run under the
+  lock, one at a time. A cancelled job's late result is only stored.
+- The hotkey dispatch loop and the recorder owner thread never wait for the lock,
+  because the lock holder waits for them when it reconfigures the hotkey or stops a
+  recording. They read a lock-free `DaemonStatus` and report through channels.
+- A hotkey or tray action reads the workflow phase and acts on it under one lock,
+  through one table (`lifecycle_action`).
+- Quit preserves a recording for Recovery and gives a transcription in progress 3 s
+  to be delivered. A job still transcribing is recovered at the next start.
+- A panic while holding the lock ends the daemon with status 70, so systemd restarts
+  it.
+
 ## IPC
 
 The desktop app and the CLI talk to the daemon over a Unix socket at
 `$XDG_RUNTIME_DIR/agentdictate/agentdictate.sock` with mode 0600. A lock file next to
 it guarantees one daemon. Messages are newline-delimited JSON, and every message
 carries `protocol_version`, which must equal `PROTOCOL_VERSION` on both sides. Bump it
-whenever the wire format changes. On connect the daemon sends a full snapshot first,
-so a reconnect never depends on replayed events. The settings window uses short-lived
-connections and watches the SQLite database and `overlay-health` with inotify, so
-daemon writes appear without polling. Settings changes are per setting: each control
-sends one `change_setting` command, and the daemon applies it to the settings it
-holds, so two clients never overwrite each other's changes.
+whenever the wire format changes. Each reply answers the command just sent on the
+same connection. Every session runs on its own thread and ends after 60 s without a
+command. On connect the daemon sends a full snapshot first, so a reconnect never
+depends on replayed events. The settings window uses short-lived connections and
+watches the SQLite database and `overlay-health` with inotify, so daemon writes
+appear without polling. Settings changes are per setting: each control sends one
+`change_setting` command, and the daemon applies it to the settings it holds, so two
+clients never overwrite each other's changes. `agentdictate stop` returns once the
+recording is stopped; the paste follows. A Recovery retry's reply waits for the
+copied text, and a shortcut capture's reply for the key press, both without holding
+the daemon lock.
 
 ## Data locations
 

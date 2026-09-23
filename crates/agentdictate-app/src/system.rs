@@ -38,7 +38,7 @@ const STALL_AFTER: Duration = Duration::from_secs(3);
 /// What the recorder owner watches for while a recording runs.
 #[derive(Clone, Copy, Debug)]
 struct RecorderLimits {
-    /// From the "Maximum recording length" setting; `None` when it is off.
+    /// From the "Stop recording after" setting; `None` when it is off.
     max_duration: Option<Duration>,
     stall_after: Duration,
     tick: Duration,
