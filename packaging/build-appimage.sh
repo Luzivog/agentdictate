@@ -35,13 +35,21 @@ install -m 0644 "${PROJECT_DIR}/packaging/NATIVE_ACCESS.md" \
 install -m 0644 "${PROJECT_DIR}/packaging/70-agentdictate-input.rules" \
   "${APPDIR}/usr/share/doc/agentdictate/native-access/70-agentdictate-input.rules"
 
-# Keep glibc and graphics drivers host-provided, but bundle the ordinary ELF
-# libraries that the Rust binaries link directly or transitively.
+# Bundle the ordinary ELF libraries the binaries link, directly or
+# transitively, but leave the ones every desktop host provides to the host:
+# the glibc family and the X11/graphics stack must match the running system.
+# This is the relevant subset of the AppImage excludelist:
+# https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist
 mkdir -p "${APPDIR}/usr/lib"
 for BINARY in agentdictate agentdictated; do
   while IFS= read -r LIBRARY; do
     case "$(basename "${LIBRARY}")" in
-      ld-linux*.so*|libc.so.*|libdl.so.*|libgcc_s.so.*|libm.so.*|libpthread.so.*|librt.so.*)
+      ld-linux*.so*|libc.so.*|libdl.so.*|libm.so.*|libmvec.so.*|libpthread.so.*|\
+      librt.so.*|libresolv.so.*|libutil.so.*|libanl.so.*|libnss_*.so.*|\
+      libgcc_s.so.*|libstdc++.so.*|\
+      libxcb.so.1|libX11.so.6|libX11-xcb.so.1|libwayland-client.so.0|\
+      libGL.so.1|libEGL.so.1|libGLX.so.0|libGLdispatch.so.0|libdrm.so.2|libgbm.so.1|\
+      libfontconfig.so.1|libfreetype.so.6|libharfbuzz.so.0|libexpat.so.1|libz.so.1)
         continue
         ;;
     esac
@@ -77,8 +85,14 @@ if [[ -z "${APPIMAGETOOL_PATH}" && -x "${PROJECT_DIR}/dist/tools/appimagetool-${
 fi
 
 if [[ -n "${APPIMAGETOOL_PATH}" ]]; then
+  # appimagetool downloads its newest runtime unless given one; the release
+  # workflow passes a pinned, checksummed runtime in APPIMAGE_RUNTIME.
+  RUNTIME_ARGUMENTS=()
+  if [[ -n "${APPIMAGE_RUNTIME:-}" ]]; then
+    RUNTIME_ARGUMENTS=(--runtime-file "$(realpath -- "${APPIMAGE_RUNTIME}")")
+  fi
   ARCH="${APPIMAGE_ARCH}" APPIMAGE_EXTRACT_AND_RUN="${APPIMAGE_EXTRACT_AND_RUN:-1}" \
-    "${APPIMAGETOOL_PATH}" "${APPDIR}" \
+    "${APPIMAGETOOL_PATH}" "${RUNTIME_ARGUMENTS[@]}" "${APPDIR}" \
     "${PROJECT_DIR}/dist/AgentDictate-${VERSION}-${APPIMAGE_ARCH}.AppImage"
 else
   echo "AppDir created at ${APPDIR}"
