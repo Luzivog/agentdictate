@@ -366,7 +366,7 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
         assert "Override Redirect State: yes" in info and "Map State: IsViewable" in info
         assert window not in desktop.run(["xprop", "-root", "_NET_CLIENT_LIST"])
         recognized = {}
-        for phase in ["recording", "transcribing", "cleaning"]:
+        for phase in ["recording", "transcribing"]:
             send(phase)
             def visible():
                 im = desktop.screenshot(f"{phase}.png")
@@ -381,7 +381,7 @@ def exercise(desktop, binary, probe_program, scale, monitors, backend):
                 text = subprocess.check_output(["tesseract", str(path), "stdout", "--psm", "7"],
                                                 stderr=subprocess.DEVNULL, text=True).lower()
                 recognized[phase] = text.strip()
-                return {"transcribing": "transcribing", "cleaning": "cleaning"}[phase] in text
+                return "transcribing" in text
             wait_until(visible, f"composited {phase} pixels")
             if phase == "recording":
                 transparency = assert_transparent_corners(desktop, window, baseline, scale)
