@@ -1,17 +1,33 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    process::ExitCode,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use agentdictate_app::{
-    AgentProcess, AppPaths, DaemonHandle, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
-    connect_or_start_daemon, follow_notification_actions, init_file_logging,
-    settings_executable_for_current_process, signal_status_changes, start_hotkey_listener,
-    start_overlay_presenter, start_session_notifier, start_system_tray,
+    AgentProcess, AppPaths, DaemonHandle, NEWER_DATABASE_EXIT_STATUS, SERVICE_ARGUMENT,
+    START_SERVICE_ARGUMENT, connect_or_start_daemon, daemon_exit_status,
+    follow_notification_actions, init_file_logging, settings_executable_for_current_process,
+    signal_status_changes, start_hotkey_listener, start_overlay_presenter, start_session_notifier,
+    start_system_tray,
 };
 use agentdictate_runtime::{IpcClient, IpcServer, load_settings};
 
-fn main() -> anyhow::Result<()> {
+/// Exits with `daemon_exit_status` on failure, so systemd does not restart a
+/// daemon that is older than its database.
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            ExitCode::from(daemon_exit_status(&error))
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let argument = std::env::args().nth(1);
     let paths = AppPaths::from_environment()?;
     let _log_guard = init_file_logging(&paths.logs, "agentdictated.log")?;
@@ -38,7 +54,15 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!("native daemon starting");
     let runtime = paths.runtime.clone();
     let server = IpcServer::bind(&paths.runtime)?;
-    let (mut process, recorder_events) = AgentProcess::open(paths)?;
+    let (mut process, recorder_events) = AgentProcess::open(paths).inspect_err(|error| {
+        if daemon_exit_status(error) == NEWER_DATABASE_EXIT_STATUS {
+            tracing::error!(
+                %error,
+                "this AgentDictate is older than its history database, so it stops and is \
+                 not restarted; update AgentDictate to the latest version"
+            );
+        }
+    })?;
     // The GPUI overlay runs in the sibling desktop binary, so the daemon never
     // links GPUI. Never use `$APPIMAGE` here: it would remount per dictation.
     let overlay_presenter = match std::env::current_exe()

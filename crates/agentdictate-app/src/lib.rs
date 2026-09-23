@@ -53,7 +53,8 @@ pub use process::{AgentProcess, HotkeyControl, ProductionTranscriber};
 pub use processing::{ProcessingTicket, Transcriber, TranscriptionCompletion};
 pub use setup::SetupClient;
 pub use startup::{
-    DAEMON_SERVICE_NAME, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT, connect_or_start_daemon,
+    DAEMON_SERVICE_NAME, NEWER_DATABASE_EXIT_STATUS, SERVICE_ARGUMENT, START_SERVICE_ARGUMENT,
+    connect_or_start_daemon, daemon_exit_status,
 };
 pub use status_signal::{STATUS_FILE, signal_status_changes};
 pub use system::{SystemDeliverer, SystemRecordingController};

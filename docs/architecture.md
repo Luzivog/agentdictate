@@ -16,7 +16,9 @@ pipeline, where data lives, and the decisions that shape them.
 | `agentdictate-evaluate` | A developer | Headless replay of dictation cases; not installed |
 
 **Daemon.** The daemon runs as the `agentdictated.service` systemd user unit, which is
-`PartOf=graphical-session.target` with `Restart=on-failure`. Nothing installs the
+`PartOf=graphical-session.target` with `Restart=on-failure`. A daemon whose database
+is from a newer AgentDictate, as after a downgrade, exits with status 65, which the
+unit's `RestartPreventExitStatus` keeps from restarting. Nothing installs the
 unit. When `agentdictate` finds no daemon on the socket, it writes the unit from the
 running install, starts it, and waits for the socket. If the daemon answers with a
 different protocol version, it is an older build, so the unit is restarted. At

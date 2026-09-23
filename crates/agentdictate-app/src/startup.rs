@@ -17,7 +17,7 @@ use agentdictate_core::ServerMessage;
 use agentdictate_linux::command::{
     PlatformCapability, PlatformExecutable, PlatformTool, SystemCommandRunner,
 };
-use agentdictate_runtime::{IpcClient, IpcError, write_atomic};
+use agentdictate_runtime::{IpcClient, IpcError, RuntimeError, write_atomic};
 
 use crate::{AppPaths, DaemonSupervision};
 
@@ -26,6 +26,10 @@ pub const DAEMON_SERVICE_NAME: &str = "agentdictated.service";
 pub const SERVICE_ARGUMENT: &str = "--service";
 /// Run at login by the XDG autostart entries older versions installed.
 pub const START_SERVICE_ARGUMENT: &str = "--start-service";
+/// The daemon's exit status when its database is from a newer AgentDictate,
+/// as after a downgrade. The unit's `RestartPreventExitStatus` names it:
+/// restarting the same build cannot open that database either.
+pub const NEWER_DATABASE_EXIT_STATUS: u8 = 65;
 const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -51,6 +55,24 @@ impl Systemctl for Path {
             )
             .map_err(io::Error::other)?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
+    }
+}
+
+/// The exit status of a daemon that failed with `error`:
+/// `NEWER_DATABASE_EXIT_STATUS` when its database is from a newer
+/// AgentDictate, otherwise 1, which systemd's `Restart=on-failure` retries.
+#[must_use]
+pub fn daemon_exit_status(error: &anyhow::Error) -> u8 {
+    let newer_database = error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref(),
+            Some(RuntimeError::NewerDatabase { .. })
+        )
+    });
+    if newer_database {
+        NEWER_DATABASE_EXIT_STATUS
+    } else {
+        1
     }
 }
 
@@ -272,7 +294,8 @@ fn write_unit(
 }
 
 /// `PartOf` stops the daemon with the desktop session; `WantedBy` is what
-/// "Start on login" enables.
+/// "Start on login" enables. A daemon too old for its database is not
+/// restarted.
 fn render_unit(executable: &Path) -> String {
     let executable = quote_systemd_exec_value(&executable.to_string_lossy());
     format!(
@@ -287,6 +310,7 @@ UMask=0077\n\
 ExecStart={executable} {SERVICE_ARGUMENT}\n\
 Restart=on-failure\n\
 RestartSec=1s\n\
+RestartPreventExitStatus={NEWER_DATABASE_EXIT_STATUS}\n\
 \n\
 [Install]\n\
 WantedBy=graphical-session.target\n"
@@ -521,6 +545,30 @@ mod tests {
         assert_eq!(systemctl.calls(), ["daemon-reload", "daemon-reload"]);
         let unit = fs::read_to_string(&unit_file).unwrap();
         assert!(unit.contains("\nExecStart=/usr/bin/agentdictated --service\n"));
+    }
+
+    #[test]
+    fn a_daemon_older_than_its_database_exits_with_a_status_its_unit_never_restarts() {
+        let directory = tempdir().unwrap();
+        let paths = AppPaths::isolated(directory.path());
+        paths.ensure_directories().unwrap();
+        drop(agentdictate_runtime::Runtime::open(&paths.database_file).unwrap());
+        rusqlite::Connection::open(&paths.database_file)
+            .unwrap()
+            .pragma_update(None, "user_version", 99)
+            .unwrap();
+
+        let Err(error) = crate::AgentProcess::open(paths) else {
+            panic!("a database from a newer AgentDictate must not open")
+        };
+
+        assert_eq!(daemon_exit_status(&error), NEWER_DATABASE_EXIT_STATUS);
+        assert_eq!(daemon_exit_status(&anyhow::anyhow!("socket in use")), 1);
+        assert!(
+            render_unit(Path::new("/usr/bin/agentdictated")).contains(&format!(
+                "\nRestart=on-failure\nRestartSec=1s\nRestartPreventExitStatus={NEWER_DATABASE_EXIT_STATUS}\n"
+            ))
+        );
     }
 
     #[test]
