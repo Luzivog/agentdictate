@@ -1,4 +1,4 @@
-//! Replays dictation cases through the production vocabulary handling and,
+//! Replays dictation cases through the production text normalization and,
 //! in speech mode, the production transcription transport, and builds case
 //! files from kept recordings. It never captures a microphone or delivers
 //! text to another application.
@@ -15,7 +15,7 @@ use agentdictate_app::{
     AppPaths, ReqwestOpenAiTransport, SpeechTransport, TranscriptionRequest, UploadFormat,
 };
 use agentdictate_core::{
-    DictationOptions, JobId, Settings, TRANSCRIPTION_MODEL, normalize_vocabulary,
+    DictationOptions, JobId, Settings, TRANSCRIPTION_MODEL, normalize_transcript,
 };
 use agentdictate_runtime::{DatabaseObserver, ExternalError};
 use anyhow::{Context, bail, ensure};
@@ -384,7 +384,7 @@ fn create_private(path: &Path) -> anyhow::Result<fs::File> {
 struct Outcome {
     /// What the model heard, or `None` when the request failed.
     raw: Option<String>,
-    /// The text after vocabulary corrections, as it would be pasted.
+    /// The text after normalization, as it would be pasted.
     delivered: Option<String>,
     error: Option<String>,
     /// Word errors of `delivered` and `raw` against `expected`.
@@ -410,7 +410,7 @@ impl Outcome {
         };
         let delivered = raw
             .as_deref()
-            .map(|raw| normalize_vocabulary(raw, &options.vocabulary).text);
+            .map(|raw| normalize_transcript(raw, options).text);
         let against =
             |text: &Option<String>| Some(word_errors(case.expected.as_deref()?, text.as_deref()?));
         let exact = case
@@ -498,7 +498,7 @@ fn percent(errors: WordErrors) -> String {
 }
 
 /// One case's line: pass or fail (passes out of runs when repeated), its
-/// WER after and before vocabulary, and with repeats, the spread of WER
+/// WER after and before normalization, and with repeats, the spread of WER
 /// across runs and how many different transcripts they returned.
 fn case_line(case: &Case, outcomes: &[Outcome]) -> String {
     let passed = outcomes.iter().filter(|outcome| outcome.passed).count();

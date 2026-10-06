@@ -1254,7 +1254,7 @@ fn startup_removes_audio_left_in_quarantine_by_a_committed_delete() {
 }
 
 #[test]
-fn vocabulary_aliases_are_corrected_before_delivery() {
+fn vocabulary_aliases_and_numbers_are_corrected_before_delivery() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let mut runtime = Runtime::open(&database_path).unwrap();
@@ -1277,14 +1277,17 @@ fn vocabulary_aliases_are_corrected_before_delivery() {
     let delivered = transcribe_and_deliver(
         &mut runtime,
         job.id,
-        "Durable final words.",
+        "Durable final words for wave two.",
         &mut HeadlessDeliveryGate,
         &mut deliverer,
     )
     .unwrap();
 
-    assert_eq!(delivered.raw_transcript, "Durable final words.");
-    assert_eq!(delivered.final_text, "AgentDictate.");
+    assert_eq!(
+        delivered.raw_transcript,
+        "Durable final words for wave two."
+    );
+    assert_eq!(delivered.final_text, "AgentDictate for wave 2.");
 }
 
 /// Recovery's "Paste again": the stored transcript, copied once.

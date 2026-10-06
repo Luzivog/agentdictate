@@ -76,8 +76,8 @@ in the tray menu.
   **Sounds like** entry, such as `cube control` for `kubectl`, also fixes that
   spoken form every time. **Fix a word** on an expanded History transcript adds one
   for you. See [dictation output](docs/dictation-output.md).
-- **Exact text.** **Start literal dictation** in the tray skips vocabulary and
-  context for one recording.
+- **Exact text.** **Start literal dictation** in the tray skips vocabulary,
+  number formatting and context for one recording.
 - **Paste it again.** **Paste last dictation** in the tray pastes your last
   dictation into the app you're in. To give it a shortcut, add a custom shortcut in
   your desktop's keyboard settings that runs `agentdictate paste-last`.

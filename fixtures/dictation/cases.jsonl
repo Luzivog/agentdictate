@@ -16,3 +16,6 @@
 {"id": "relative-path", "text": "Only edit src/agent-dictate/config.rs.", "expected": "Only edit src/agent-dictate/config.rs.", "preserve": ["Only edit src/agent-dictate/config.rs."], "reference_verified": false}
 {"id": "ordinary-versal", "text": "Compare AMD Versal with Vercel.", "expected": "Compare AMD Versal with Vercel.", "preserve": ["Compare AMD Versal with Vercel."], "reference_verified": false}
 {"id": "alias", "text": "Open agent dictate and inspect the work trees.", "expected": "Open AgentDictate and inspect the worktrees.", "preserve": ["Open AgentDictate and inspect the worktrees."], "reference_verified": false}
+{"id": "number-labels", "text": "Do step one, then step two. Question three, no.", "expected": "Do step 1, then step 2. Question 3, no.", "preserve": ["step 1", "step 2", "Question 3"], "reference_verified": false}
+{"id": "number-run", "text": "One two three one two three.", "expected": "1 2 3 1 2 3.", "preserve": ["1 2 3 1 2 3."], "reference_verified": false}
+{"id": "number-counts", "text": "No one needs these two for two minutes, one more time.", "expected": "No one needs these two for two minutes, one more time.", "preserve": ["no one", "these two", "two minutes", "one more"], "reference_verified": false}

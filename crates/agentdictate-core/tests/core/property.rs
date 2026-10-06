@@ -1,4 +1,6 @@
-use agentdictate_core::{Settings, VocabularyEntry, normalize_vocabulary};
+use agentdictate_core::{
+    DictationMode, DictationOptions, Settings, VocabularyEntry, normalize_transcript,
+};
 use proptest::prelude::*;
 
 proptest! {
@@ -8,8 +10,13 @@ proptest! {
         alias in any::<String>(),
         spelling in any::<String>(),
     ) {
-        let vocabulary = [VocabularyEntry { spelling, aliases: vec![alias] }];
-        let _ = normalize_vocabulary(&text, &vocabulary);
+        let options = DictationOptions {
+            mode: DictationMode::Dictate,
+            language: String::new(),
+            context: String::new(),
+            vocabulary: vec![VocabularyEntry { spelling, aliases: vec![alias] }],
+        };
+        let _ = normalize_transcript(&text, &options);
     }
 }
 

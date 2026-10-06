@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::Settings;
 
 /// How a dictation is processed. `Literal` skips context hints and automatic
-/// vocabulary corrections.
+/// corrections (see [`normalize_transcript`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictationMode {
@@ -205,10 +205,11 @@ pub fn literal_ranges(text: &str) -> Vec<Range<usize>> {
 }
 
 /// A rewrite that normalization applied, and how many times. `alias` is the
-/// Sounds like entry that matched, or for a casing fix the text as heard
-/// (`agents.md` for `AGENTS.md`). Jobs and History store these as JSON in
-/// `vocabulary_corrections`; rows written before schema version 3 used the
-/// retired Replacements names, which still deserialize.
+/// Sounds like entry that matched, or for a casing fix or a number the text
+/// as heard (`agents.md` for `AGENTS.md`, `Wave one` for `Wave 1`). Jobs
+/// and History store these as JSON in `vocabulary_corrections`; rows written
+/// before schema version 3 used the retired Replacements names, which still
+/// deserialize.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VocabularyCorrection {
     #[serde(alias = "source_phrase")]
@@ -218,11 +219,53 @@ pub struct VocabularyCorrection {
     pub count: usize,
 }
 
-/// A transcript after vocabulary normalization.
+/// A transcript after normalization, with the corrections that produced it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NormalizedText {
     pub text: String,
     pub corrections: Vec<VocabularyCorrection>,
+}
+
+/// Counts one applied rewrite of `alias` to `spelling`.
+fn record_correction(corrections: &mut Vec<VocabularyCorrection>, alias: &str, spelling: &str) {
+    if let Some(hit) = corrections
+        .iter_mut()
+        .find(|hit| hit.alias == alias && hit.spelling == spelling)
+    {
+        hit.count += 1;
+    } else {
+        corrections.push(VocabularyCorrection {
+            alias: alias.to_owned(),
+            spelling: spelling.to_owned(),
+            count: 1,
+        });
+    }
+}
+
+/// The text a dictation delivers for what the model heard. Dictate mode
+/// applies vocabulary corrections ([`normalize_vocabulary`]), then writes
+/// spoken numbers as digits on that output (`normalize_numbers`), outside
+/// protected spans and the spellings the vocabulary pass placed. Literal
+/// mode returns the text as heard.
+pub fn normalize_transcript(text: &str, options: &DictationOptions) -> NormalizedText {
+    match options.mode {
+        DictationMode::Literal => NormalizedText {
+            text: text.to_owned(),
+            corrections: Vec::new(),
+        },
+        DictationMode::Dictate => {
+            let (vocabulary, spellings) = apply_vocabulary(text, &options.vocabulary);
+            let mut protected = literal_ranges(&vocabulary.text);
+            protected.extend(spellings);
+            let numbers = normalize_numbers(&vocabulary.text, &protected);
+            let mut corrections = vocabulary.corrections;
+            corrections.extend(numbers.corrections);
+            NormalizedText {
+                text: numbers.text,
+                corrections,
+            }
+        }
+    }
 }
 
 /// Why a span of the transcript is claimed. On equal spans an alias wins,
@@ -248,10 +291,20 @@ struct Rewrite<'a> {
 /// Rewrites aliases to their spellings and fixes the casing of spellings, in
 /// a single longest-match pass over the original text, so output never
 /// becomes input to another rewrite. Both need whole words outside
-/// [`literal_ranges`]; every spelling found claims its span, even unchanged. Symbol spellings join words instead of standing alone
-/// (see `symbol_rewrite_range`); casing fixes skip ambiguous cases (see
-/// `needs_casing_fix`).
+/// [`literal_ranges`]; every spelling found claims its span, even unchanged.
+/// Symbol spellings join words instead of standing alone (see
+/// `symbol_rewrite_range`); casing fixes skip ambiguous cases (see
+/// `needs_casing_fix`). Dictations run it through [`normalize_transcript`].
 pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> NormalizedText {
+    apply_vocabulary(text, vocabulary).0
+}
+
+/// [`normalize_vocabulary`], plus the spans of the output that hold a
+/// spelling it found, changed or not.
+fn apply_vocabulary(
+    text: &str,
+    vocabulary: &[VocabularyEntry],
+) -> (NormalizedText, Vec<Range<usize>>) {
     let protected = literal_ranges(text);
     let is_free = |range: &Range<usize>| {
         !protected
@@ -301,30 +354,229 @@ pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> Norma
     rewrites.sort_by_key(|r| (r.range.start, std::cmp::Reverse(r.range.len()), r.kind));
     let mut output = String::new();
     let mut cursor = 0;
-    let mut corrections: Vec<VocabularyCorrection> = Vec::new();
+    let mut corrections = Vec::new();
+    let mut spellings = Vec::new();
     for rewrite in rewrites {
         if rewrite.range.start < cursor {
             continue;
         }
         output.push_str(&text[cursor..rewrite.range.start]);
+        let start = output.len();
         output.push_str(rewrite.replacement);
-        let unchanged = text[rewrite.range.clone()] == *rewrite.replacement;
+        spellings.push(start..output.len());
+        if text[rewrite.range.clone()] != *rewrite.replacement {
+            record_correction(&mut corrections, rewrite.source, rewrite.replacement);
+        }
         cursor = rewrite.range.end;
-        if unchanged {
-            continue;
+    }
+    output.push_str(&text[cursor..]);
+    let normalized = NormalizedText {
+        text: output,
+        corrections,
+    };
+    (normalized, spellings)
+}
+
+/// Words that number what follows them, matched without case: "wave one".
+const NUMBER_LABELS: &[&str] = &[
+    "step",
+    "phase",
+    "question",
+    "option",
+    "decision",
+    "issue",
+    "item",
+    "lane",
+    "wave",
+    "tier",
+    "level",
+    "part",
+    "section",
+    "version",
+    "round",
+    "ticket",
+    "task",
+    "chapter",
+    "page",
+    "slide",
+    "lecture",
+    "module",
+    "week",
+    "stage",
+    "milestone",
+    "sprint",
+    "plan",
+    "case",
+    "test",
+    "pr",
+];
+
+/// Number words below twenty, at their value's index.
+const SMALL_NUMBERS: [&str; 20] = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+];
+
+/// Tens from twenty, at index `value / 10 - 2`.
+const TENS: [&str; 8] = [
+    "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+/// Writes spoken numbers as digits in two places the transcription model
+/// leaves them as words. Words are whole and separated by single spaces.
+///
+/// - A word from `NUMBER_LABELS`, optionally followed by "number", then a
+///   number from zero to ninety-nine: "Wave one" is "Wave 1", "question
+///   twenty-one" is "question 21", "issue number four" is "issue number 4".
+/// - A run of three or more number words from zero to twenty, separated by
+///   a space or ", ": "One two three" is "1 2 3", "two, three, four" is
+///   "2, 3, 4". A run never starts on the second word of "forty four".
+///
+/// Everything else stays words: counts ("two minutes", "these two", "one
+/// more"), a pair ("one two", "Test one two"), "issue one by one", a number
+/// joined to a word by `-`, `.` or an apostrophe ("step one-liner"), and
+/// anything overlapping `protected`. Each conversion is recorded with the
+/// text as heard as its alias.
+fn normalize_numbers(text: &str, protected: &[Range<usize>]) -> NormalizedText {
+    static WORD: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\w+").expect("word expression is valid"));
+    let words: Vec<Range<usize>> = WORD.find_iter(text).map(|m| m.range()).collect();
+    let word = |i: usize| &text[words[i].clone()];
+    // The text between word `i` and the next one.
+    let gap = |i: usize| &text[words[i].end..words[i + 1].start];
+    // Whether word `i` exists and follows the previous word after one space.
+    let spaced = |i: usize| i < words.len() && gap(i - 1) == " ";
+    let free = |range: &Range<usize>| {
+        let apostrophe = ['\'', '’'];
+        !protected
+            .iter()
+            .any(|r| range.start < r.end && range.end > r.start)
+            && !joined_to_word(text, range.clone())
+            && !text[..range.start].ends_with(apostrophe)
+            && !text[range.end..].starts_with(apostrophe)
+    };
+    let small = |i: usize| {
+        SMALL_NUMBERS
+            .iter()
+            .position(|number| word(i).eq_ignore_ascii_case(number))
+    };
+    let tens = |i: usize| {
+        TENS.iter()
+            .position(|number| word(i).eq_ignore_ascii_case(number))
+            .map(|index| 20 + 10 * index)
+    };
+    // The value of a run word, zero to twenty.
+    let run_value = |i: usize| small(i).or(tens(i).filter(|&value| value == 20));
+    // The end (exclusive) of the run of number words starting at word `i`,
+    // which is empty on the unit of a compound such as "forty four".
+    let run_end = |i: usize| {
+        if i > 0 && tens(i - 1).is_some() && matches!(gap(i - 1), " " | "-") {
+            return i;
         }
-        if let Some(hit) = corrections
-            .iter_mut()
-            .find(|hit| hit.alias == rewrite.source && hit.spelling == rewrite.replacement)
+        let mut end = i;
+        while end < words.len()
+            && run_value(end).is_some()
+            && free(&words[end])
+            && (end == i || matches!(gap(end - 1), " " | ", "))
         {
-            hit.count += 1;
-        } else {
-            corrections.push(VocabularyCorrection {
-                alias: rewrite.source.to_owned(),
-                spelling: rewrite.replacement.to_owned(),
-                count: 1,
-            });
+            end += 1;
         }
+        end
+    };
+    // The value of the number starting at word `i` and its last word.
+    let number = |i: usize| {
+        if let Some(value) = small(i) {
+            return Some((value, i));
+        }
+        let value = tens(i)?;
+        let unit = (i + 1 < words.len() && matches!(gap(i), " " | "-"))
+            .then(|| small(i + 1))
+            .flatten()
+            .filter(|unit| (1..=9).contains(unit));
+        Some(unit.map_or((value, i), |unit| (value + unit, i + 1)))
+    };
+    // A label at word `i` and its number: the span, its digits, and the
+    // word after it. More numbers after it are a pair or a run, not a label.
+    let labeled = |i: usize| {
+        let is_label = NUMBER_LABELS
+            .iter()
+            .any(|label| word(i).eq_ignore_ascii_case(label));
+        if !is_label {
+            return None;
+        }
+        let mut k = i + 1;
+        if spaced(k) && word(k).eq_ignore_ascii_case("number") {
+            k += 1;
+        }
+        if !spaced(k) {
+            return None;
+        }
+        let (value, last) = number(k)?;
+        let after = last + 1;
+        let continues =
+            after < words.len() && matches!(gap(last), " " | ", ") && run_value(after).is_some();
+        let by_one = spaced(after)
+            && word(after).eq_ignore_ascii_case("by")
+            && spaced(after + 1)
+            && small(after + 1).is_some();
+        if continues || by_one {
+            return None;
+        }
+        let span = words[i].start..words[last].end;
+        free(&span).then(|| {
+            let digits = format!("{}{value}", &text[words[i].start..words[k].start]);
+            (span, digits, last + 1)
+        })
+    };
+
+    let mut conversions = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let end = run_end(i);
+        if end - i >= 3 {
+            let mut digits = String::new();
+            for k in i..end {
+                if k > i {
+                    digits.push_str(gap(k - 1));
+                }
+                digits.push_str(&run_value(k).expect("run words are numbers").to_string());
+            }
+            conversions.push((words[i].start..words[end - 1].end, digits));
+            i = end;
+        } else if let Some((span, digits, next)) = labeled(i) {
+            conversions.push((span, digits));
+            i = next;
+        } else {
+            i += 1;
+        }
+    }
+
+    let mut output = String::new();
+    let mut cursor = 0;
+    let mut corrections = Vec::new();
+    for (span, digits) in conversions {
+        output.push_str(&text[cursor..span.start]);
+        output.push_str(&digits);
+        record_correction(&mut corrections, &text[span.clone()], &digits);
+        cursor = span.end;
     }
     output.push_str(&text[cursor..]);
     NormalizedText {
@@ -690,6 +942,123 @@ mod tests {
         let words = "T3 Code\nAGENTS.md\n/ = slash";
         let text = "\"t3 code\" `agents.md` `and slash or`";
         assert_eq!(normalized(text, words), text);
+    }
+
+    fn options(mode: DictationMode, vocabulary_text: &str) -> DictationOptions {
+        DictationOptions {
+            mode,
+            language: String::new(),
+            context: String::new(),
+            vocabulary: vocabulary(vocabulary_text),
+        }
+    }
+
+    fn dictated(text: &str) -> String {
+        normalize_transcript(text, &options(DictationMode::Dictate, "")).text
+    }
+
+    #[test]
+    fn a_label_keeps_its_words_and_numbers_its_number() {
+        for (heard, expected) in [
+            (
+                "Okay, go to wave two and then wave three.",
+                "Okay, go to wave 2 and then wave 3.",
+            ),
+            (
+                "Do step one, then step two, and skip step five.",
+                "Do step 1, then step 2, and skip step 5.",
+            ),
+            (
+                "Question 2. Yes. Question three, no.",
+                "Question 2. Yes. Question 3, no.",
+            ),
+            ("Wave one", "Wave 1"),
+            ("question twenty-one", "question 21"),
+            ("question twenty one", "question 21"),
+            ("issue number four", "issue number 4"),
+            ("option two is better", "option 2 is better"),
+            ("part one of three", "part 1 of three"),
+            ("PR ninety", "PR 90"),
+        ] {
+            assert_eq!(dictated(heard), expected);
+        }
+    }
+
+    #[test]
+    fn runs_of_three_or_more_become_digits_with_their_separators() {
+        for (heard, expected) in [
+            ("One two three one two three.", "1 2 3 1 2 3."),
+            ("two, three, four", "2, 3, 4"),
+            ("Test one two one two", "Test 1 2 1 2"),
+            ("count to twenty, nineteen, eighteen", "count to 20, 19, 18"),
+            (
+                "It's plus forty four, seven three five.",
+                "It's plus forty four, 7 3 5.",
+            ),
+        ] {
+            assert_eq!(dictated(heard), expected);
+        }
+    }
+
+    #[test]
+    fn counts_pairs_joined_words_and_ordinary_phrases_stay_words() {
+        for text in [
+            "one two",
+            "No one said one of these two takes two minutes, one second.",
+            "The one thing: one more time, at one point, day one.",
+            "someone, anyone, often, a tone",
+            "step one-liner, step one's, multi-step one",
+            "Test one two. Test, one two.",
+            "every single issue one by one",
+            "step 3 and version 3.2",
+            "twenty-one two three",
+        ] {
+            let result = normalize_transcript(text, &options(DictationMode::Dictate, ""));
+            assert_eq!(result.text, text);
+            assert!(result.corrections.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn numbers_skip_protected_spans_and_vocabulary_spellings() {
+        for text in ["`step one`", "\"one two three\"", "see /docs/step one"] {
+            assert_eq!(dictated(text), text);
+        }
+        let vocabulary_options = options(DictationMode::Dictate, "Phase One = face one");
+        assert_eq!(
+            normalize_transcript("Ship face one, then phase two.", &vocabulary_options).text,
+            "Ship Phase One, then phase 2."
+        );
+    }
+
+    #[test]
+    fn literal_mode_delivers_the_text_as_heard() {
+        let text = "wave two, one two three, the codex";
+        let result = normalize_transcript(text, &options(DictationMode::Literal, "Codex = codex"));
+        assert_eq!(result.text, text);
+        assert!(result.corrections.is_empty());
+    }
+
+    #[test]
+    fn number_conversions_are_recorded_as_heard() {
+        let result = normalize_transcript(
+            "the codex: Wave one. Wave one. One two three.",
+            &options(DictationMode::Dictate, "Codex = codex"),
+        );
+        assert_eq!(result.text, "the Codex: Wave 1. Wave 1. 1 2 3.");
+        let correction = |alias: &str, spelling: &str, count| VocabularyCorrection {
+            alias: alias.into(),
+            spelling: spelling.into(),
+            count,
+        };
+        assert_eq!(
+            result.corrections,
+            [
+                correction("codex", "Codex", 1),
+                correction("Wave one", "Wave 1", 2),
+                correction("One two three", "1 2 3", 1),
+            ]
+        );
     }
 
     #[test]

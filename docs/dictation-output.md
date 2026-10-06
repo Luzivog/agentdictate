@@ -14,7 +14,8 @@ Older jobs without a snapshot use the current settings.
 ## Output modes
 
 - **Dictate**, the default, sends the context and vocabulary hints with the audio,
-  then applies vocabulary corrections to the result.
+  then applies vocabulary corrections to the result and writes some spoken
+  [numbers](#numbers) as digits.
 - **Literal** sends only the language hint and applies no corrections.
   Use it for exact strings whose spelling you cannot predict. Speech recognition
   still cannot guarantee exact characters.
@@ -92,6 +93,28 @@ upgrade, each enabled whole-word rule became a Sounds like entry of its replacem
 spelling, and the daemon log lists every rule it moved or could not express as a
 word.
 
+## Numbers
+
+The transcription model already writes measurements as digits ("300 milliseconds",
+"25%", "port 5173"), but it spells out small numbers after a label and when you
+count. After vocabulary corrections, Dictate mode writes these two cases as digits:
+
+- **A label and its number.** One of step, phase, question, option, decision,
+  issue, item, lane, wave, tier, level, part, section, version, round, ticket, task,
+  chapter, page, slide, lecture, module, week, stage, milestone, sprint, plan, case,
+  test or PR, optionally followed by "number", then a number from zero to
+  ninety-nine: "Wave one" becomes `Wave 1`, "question twenty-one" becomes
+  `question 21`, and "issue number four" becomes `issue number 4`.
+- **A run of three or more numbers** from zero to twenty, separated by spaces or
+  commas: "One two three" becomes `1 2 3` and "two, three, four" becomes `2, 3, 4`.
+
+Everything else stays in words: counts such as "two minutes", "one second", "these
+two" or "one more", a pair such as "one two" or "Test one two", "one by one", a
+number joined to another word ("step one-liner"), and digits already written.
+Numbers inside protected spans or inside a spelling from Words ("Phase One") never
+change, and Literal mode leaves every number as heard. History keeps the words as
+heard with the dictation and records each conversion with its other corrections.
+
 ## Context and language
 
 **About your work**, under **Settings**, **Show advanced settings**, describes what
@@ -132,7 +155,7 @@ transcribe anyway?**, for 24 hours.
 
 ## Evaluate a change
 
-`agentdictate-evaluate` replays cases through the production vocabulary handling and,
+`agentdictate-evaluate` replays cases through the production text normalization and,
 on request, the production transcription transport. It never opens the microphone
 or pastes into another app. Build it once:
 
@@ -145,8 +168,8 @@ Each line of the case file is a JSON object:
 | Field | Meaning |
 | --- | --- |
 | `id` | Case name |
-| `text` | The recognized text, before vocabulary, for `offline` mode |
-| `expected` | Optional exact output after vocabulary; `offline` mode fails on a mismatch |
+| `text` | The recognized text, before normalization, for `offline` mode |
+| `expected` | Optional exact output after normalization; `offline` mode fails on a mismatch |
 | `preserve` | Substrings the output must keep, compared without case |
 | `audio` | Absolute path of an audio file, for `speech` mode |
 | `reference_verified` | Set to `true` only after a person has checked `expected` against the audio |
@@ -175,7 +198,7 @@ target/debug/agentdictate-evaluate \
 The tool writes one JSON line per run, with the raw and delivered text, the checks,
 and the options used, to a new file with mode 0600. It refuses to overwrite an
 existing file, so use a new path per run. It prints a line per case, pass or fail
-with its word error rate (WER) after vocabulary and, as `raw`, before it. A summary
+with its word error rate (WER) after normalization and, as `raw`, before it. A summary
 follows: runs passed, exact matches, and the total WER, which is the sum of word
 edits over the sum of reference words. The tool exits with an error if any check or
 request failed, keeping the results. An unknown flag or `--mode` is an error.

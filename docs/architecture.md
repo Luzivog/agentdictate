@@ -127,8 +127,8 @@ app depends on runtime, linux, and ui; each of those depends only on core.
 
 - **agentdictate-core**: platform-independent types. Settings and their validation,
   the IPC protocol (`PROTOCOL_VERSION` in `crates/agentdictate-core/src/protocol.rs`),
-  the workflow state machine and job stages, dictation options, vocabulary parsing and
-  alias normalization, and the per-minute price.
+  the workflow state machine and job stages, dictation options, vocabulary parsing,
+  transcript normalization (aliases, casing, numbers), and the per-minute price.
 - **agentdictate-runtime**: durable state. The SQLite schema and its numbered
   migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
   the `dictations` table behind History search and usage (one row per dictation:
@@ -198,8 +198,10 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    paste not confirmed, or unexpected). The window words the reason; the raw error
    only goes to the log.
 5. **Normalize.** The raw text is saved first, so a later failure never needs a second
-   paid transcription. Vocabulary aliases then replace spoken forms with their
-   spellings, and known spellings get their case fixed. The job is now
+   paid transcription. In Dictate mode, vocabulary aliases then replace spoken forms
+   with their spellings and known spellings get their case fixed; a second pass on
+   that output writes a labeled number ("wave one") or a run of three or more
+   numbers as digits. Literal mode keeps the text as heard. The job is now
    `ready_to_deliver`.
 6. **Gate.** A result is copied to the clipboard instead of pasted when it arrives
    more than 8 s after the stop (plus 30 ms per second of audio), or when the focused

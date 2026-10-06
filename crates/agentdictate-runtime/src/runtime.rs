@@ -367,12 +367,14 @@ impl Runtime {
                 id.to_string()
             ],
         )?;
-        // Jobs from before options were stored have no vocabulary to apply.
-        let vocabulary = transcribing
-            .options
-            .as_ref()
-            .map_or(&[][..], |options| &options.vocabulary[..]);
-        let normalized = agentdictate_core::normalize_vocabulary(&transcript.text, vocabulary);
+        let normalized = match &transcribing.options {
+            Some(options) => agentdictate_core::normalize_transcript(&transcript.text, options),
+            // Jobs from before options were stored deliver the text as heard.
+            None => agentdictate_core::NormalizedText {
+                text: transcript.text.clone(),
+                corrections: Vec::new(),
+            },
+        };
         let corrections = serde_json::to_string(&normalized.corrections)?;
         self.connection.execute(
             r#"
