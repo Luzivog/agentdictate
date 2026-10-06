@@ -76,8 +76,11 @@ in the tray menu.
   **Sounds like** entry, such as `cube control` for `kubectl`, also fixes that
   spoken form every time. **Fix a word** on an expanded History transcript adds one
   for you. See [dictation output](docs/dictation-output.md).
+- **Spoken symbols.** Say "dash dash parallel", "package dot json" or "hello at
+  leadlord dot ai" to get `--parallel`, `package.json` or `hello@leadlord.ai`. See
+  [spoken symbols](docs/dictation-output.md#spoken-symbols).
 - **Exact text.** **Start literal dictation** in the tray skips vocabulary,
-  number formatting and context for one recording.
+  spoken symbols, number formatting and context for one recording.
 - **Paste it again.** **Paste last dictation** in the tray pastes your last
   dictation into the app you're in. To give it a shortcut, add a custom shortcut in
   your desktop's keyboard settings that runs `agentdictate paste-last`.

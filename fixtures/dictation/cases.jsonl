@@ -19,3 +19,8 @@
 {"id": "number-labels", "text": "Do step one, then step two. Question three, no.", "expected": "Do step 1, then step 2. Question 3, no.", "preserve": ["step 1", "step 2", "Question 3"], "reference_verified": false}
 {"id": "number-run", "text": "One two three one two three.", "expected": "1 2 3 1 2 3.", "preserve": ["1 2 3 1 2 3."], "reference_verified": false}
 {"id": "number-counts", "text": "No one needs these two for two minutes, one more time.", "expected": "No one needs these two for two minutes, one more time.", "preserve": ["no one", "these two", "two minutes", "one more"], "reference_verified": false}
+{"id": "spoken-flag", "text": "Run bun test with dash dash parallel.", "expected": "Run bun test with --parallel.", "preserve": ["--parallel"], "reference_verified": false}
+{"id": "spoken-email", "text": "Use hello at leadlord dot ai for the account.", "expected": "Use hello@leadlord.ai for the account.", "preserve": ["hello@leadlord.ai"], "reference_verified": false}
+{"id": "spoken-files", "text": "Update the dot env file and package dot json.", "expected": "Update the .env file and package.json.", "preserve": [".env", "package.json"], "reference_verified": false}
+{"id": "spelled-letters", "text": "Port my usage from T O K S.", "expected": "Port my usage from TOKS.", "preserve": ["TOKS"], "reference_verified": false}
+{"id": "spoken-symbol-words", "text": "Look at leadlord.ai, the yellow dot, a dash, and Plan B I think.", "expected": "Look at leadlord.ai, the yellow dot, a dash, and Plan B I think.", "preserve": ["look at leadlord.ai", "yellow dot", "a dash", "Plan B I think"], "reference_verified": false}

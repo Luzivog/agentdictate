@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Settings;
 
+mod symbols;
+
 /// How a dictation is processed. `Literal` skips context hints and automatic
 /// corrections (see [`normalize_transcript`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,8 +207,9 @@ pub fn literal_ranges(text: &str) -> Vec<Range<usize>> {
 }
 
 /// A rewrite that normalization applied, and how many times. `alias` is the
-/// Sounds like entry that matched, or for a casing fix or a number the text
-/// as heard (`agents.md` for `AGENTS.md`, `Wave one` for `Wave 1`). Jobs
+/// Sounds like entry that matched, or for a spoken symbol, a casing fix or a
+/// number the text as heard (`dash dash parallel` for `--parallel`,
+/// `agents.md` for `AGENTS.md`, `Wave one` for `Wave 1`). Jobs
 /// and History store these as JSON in `vocabulary_corrections`; rows written
 /// before schema version 3 used the retired Replacements names, which still
 /// deserialize.
@@ -242,11 +245,18 @@ fn record_correction(corrections: &mut Vec<VocabularyCorrection>, alias: &str, s
     }
 }
 
-/// The text a dictation delivers for what the model heard. Dictate mode
-/// applies vocabulary corrections ([`normalize_vocabulary`]), then writes
-/// spoken numbers as digits on that output (`normalize_numbers`), outside
-/// protected spans and the spellings the vocabulary pass placed. Literal
-/// mode returns the text as heard.
+/// The text a dictation delivers for what the model heard. Dictate mode runs
+/// three passes, each on the previous one's output and outside
+/// [`literal_ranges`]:
+///
+/// 1. Spoken symbols become the symbols (`symbols::normalize_spoken_symbols`):
+///    "agents dot md" is `agents.md`. It runs first so the result still gets
+///    its casing, and it leaves the matches of Sounds like entries to them.
+/// 2. Vocabulary corrections ([`normalize_vocabulary`]): `AGENTS.md`.
+/// 3. Spoken numbers as digits (`normalize_numbers`), outside the spellings
+///    the vocabulary pass placed.
+///
+/// Literal mode returns the text as heard.
 pub fn normalize_transcript(text: &str, options: &DictationOptions) -> NormalizedText {
     match options.mode {
         DictationMode::Literal => NormalizedText {
@@ -254,11 +264,13 @@ pub fn normalize_transcript(text: &str, options: &DictationOptions) -> Normalize
             corrections: Vec::new(),
         },
         DictationMode::Dictate => {
-            let (vocabulary, spellings) = apply_vocabulary(text, &options.vocabulary);
+            let symbols = symbols::normalize_spoken_symbols(text, &options.vocabulary);
+            let (vocabulary, spellings) = apply_vocabulary(&symbols.text, &options.vocabulary);
             let mut protected = literal_ranges(&vocabulary.text);
             protected.extend(spellings);
             let numbers = normalize_numbers(&vocabulary.text, &protected);
-            let mut corrections = vocabulary.corrections;
+            let mut corrections = symbols.corrections;
+            corrections.extend(vocabulary.corrections);
             corrections.extend(numbers.corrections);
             NormalizedText {
                 text: numbers.text,
@@ -293,7 +305,8 @@ struct Rewrite<'a> {
 /// becomes input to another rewrite. Both need whole words outside
 /// [`literal_ranges`]; every spelling found claims its span, even unchanged.
 /// Symbol spellings join words instead of standing alone (see
-/// `symbol_rewrite_range`); casing fixes skip ambiguous cases (see
+/// `symbol_rewrite_range`), and spoken "slash" is one even without an entry
+/// (see `builtin_slash`); casing fixes skip ambiguous cases (see
 /// `needs_casing_fix`). Dictations run it through [`normalize_transcript`].
 pub fn normalize_vocabulary(text: &str, vocabulary: &[VocabularyEntry]) -> NormalizedText {
     apply_vocabulary(text, vocabulary).0
@@ -312,11 +325,17 @@ fn apply_vocabulary(
             .any(|r| range.start < r.end && range.end > r.start)
     };
     let mut rewrites = Vec::new();
-    for entry in vocabulary {
+    for entry in vocabulary.iter().chain(builtin_slash(vocabulary)) {
         let spelling = entry.spelling.as_str();
         let symbol = is_symbol_spelling(spelling);
         for alias in entry.aliases.iter().filter(|alias| !alias.is_empty()) {
-            for found in whole_word_matches(text, alias).filter(&is_free) {
+            // A case-only alias, such as `codex` for `Codex`, fixes case and
+            // so keeps the casing exemption for longer names: `leadlord.ai`.
+            let case_only = alias.to_lowercase() == spelling.to_lowercase();
+            let matches = whole_word_matches(text, alias)
+                .filter(&is_free)
+                .filter(|found| !(case_only && in_longer_name(text, found.clone(), spelling)));
+            for found in matches {
                 let range = if symbol {
                     match symbol_rewrite_range(text, found, spelling) {
                         Some(range) => range,
@@ -446,6 +465,8 @@ const TENS: [&str; 8] = [
 /// - A word from `NUMBER_LABELS`, optionally followed by "number", then a
 ///   number from zero to ninety-nine: "Wave one" is "Wave 1", "question
 ///   twenty-one" is "question 21", "issue number four" is "issue number 4".
+///   "dot" or "point" and another number make it a decimal: "version two dot
+///   five" is "version 2.5"; before another word the label stays words.
 /// - A run of three or more number words from zero to twenty, separated by
 ///   a space or ", ": "One two three" is "1 2 3", "two, three, four" is
 ///   "2, 3, 4". A run never starts on the second word of "forty four".
@@ -529,7 +550,25 @@ fn normalize_numbers(text: &str, protected: &[Range<usize>]) -> NormalizedText {
         if !spaced(k) {
             return None;
         }
-        let (value, last) = number(k)?;
+        let (value, mut last) = number(k)?;
+        // "version two dot five" is "version 2.5". A spoken point before
+        // anything but a number leaves the label as words, never "version 2
+        // point something".
+        let mut fraction = String::new();
+        let point = spaced(last + 1)
+            && (word(last + 1).eq_ignore_ascii_case("dot")
+                || word(last + 1).eq_ignore_ascii_case("point"));
+        if point && spaced(last + 2) {
+            if let Some((part, part_last)) = number(last + 2) {
+                fraction = format!(".{part}");
+                last = part_last;
+            } else if word(last + 2).chars().all(|c| c.is_ascii_digit()) {
+                fraction = format!(".{}", word(last + 2));
+                last += 2;
+            } else {
+                return None;
+            }
+        }
         let after = last + 1;
         let continues =
             after < words.len() && matches!(gap(last), " " | ", ") && run_value(after).is_some();
@@ -542,7 +581,8 @@ fn normalize_numbers(text: &str, protected: &[Range<usize>]) -> NormalizedText {
         }
         let span = words[i].start..words[last].end;
         free(&span).then(|| {
-            let digits = format!("{}{value}", &text[words[i].start..words[k].start]);
+            let label = &text[words[i].start..words[k].start];
+            let digits = format!("{label}{value}{fraction}");
             (span, digits, last + 1)
         })
     };
@@ -643,6 +683,23 @@ const PATH_LEADERS: &[&str] = &[
     "to", "try", "type", "under", "use", "using", "with", "your",
 ];
 
+/// Spoken "slash" needs no Words entry: unless an entry already uses the word
+/// "slash", the vocabulary pass behaves as if Words held `/ = slash`.
+fn builtin_slash(vocabulary: &[VocabularyEntry]) -> Option<&'static VocabularyEntry> {
+    static SLASH: LazyLock<VocabularyEntry> = LazyLock::new(|| VocabularyEntry {
+        spelling: PATH_ROOT.to_owned(),
+        aliases: vec!["slash".to_owned()],
+    });
+    let claimed = vocabulary.iter().any(|entry| {
+        entry.spelling.eq_ignore_ascii_case("slash")
+            || entry
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case("slash"))
+    });
+    (!claimed).then(|| &*SLASH)
+}
+
 /// Words that a spoken symbol never joins or starts, because the symbol was
 /// more likely a pause or a mistake: "Slash how do we", "in slash since".
 const STOPWORDS: &[&str] = &[
@@ -654,6 +711,22 @@ const STOPWORDS: &[&str] = &[
     "would", "yes", "you",
 ];
 
+/// Determiners, possessives and pronouns. A spoken symbol never joins one to
+/// the next word ("slash our burn rate"), and no mailbox follows one ("the
+/// team at leadlord.ai").
+const DETERMINERS: &[&str] = &[
+    "a", "all", "an", "any", "each", "every", "he", "her", "his", "i", "it", "its", "my", "no",
+    "our", "she", "some", "that", "the", "their", "these", "they", "this", "those", "we", "you",
+    "your",
+];
+
+/// Modal and helper words before a verb that is also a symbol's name: "we can
+/// slash prices", "we must underscore safety".
+const MODALS: &[&str] = &[
+    "also", "can", "could", "just", "may", "might", "must", "really", "shall", "should", "will",
+    "would",
+];
+
 /// Where a symbol spelling's alias match (`alias`) is replaced, swallowing the
 /// spaces that the symbol joins, or `None` to leave the spoken word as it is.
 /// The rule, with `/` spoken as "slash":
@@ -661,10 +734,12 @@ const STOPWORDS: &[&str] = &[
 /// - The next word must follow on the same line after spaces, and must not
 ///   name the symbol ("slash command"). Otherwise the word stays, so a stray
 ///   "slash." never becomes " / ".
-/// - The symbol never joins or starts a next word from `STOPWORDS`, except
-///   that "and" and "or" may be joined ("and slash or" is "and/or").
-/// - After a word from `SYMBOL_NAMERS` ("a slash", "forward slash") or after
-///   punctuation ("PRs? slash do we") the word stays.
+/// - The symbol never joins or starts a next word from `STOPWORDS` or
+///   `DETERMINERS`, except that "and" and "or" may be joined ("and slash or"
+///   is "and/or"), so "to slash our burn rate" stays.
+/// - After a word from `SYMBOL_NAMERS` ("a slash", "forward slash"), `MODALS`
+///   ("we can slash prices"), after "dot" ("dot slash", see the spoken
+///   symbols pass) or after punctuation ("PRs? slash do we") the word stays.
 /// - `/` alone starts a path after a word from `PATH_LEADERS` ("seeing slash
 ///   plans" is "seeing /plans") or at the start of a line ("slash home" is
 ///   "/home"); other symbols keep the word there.
@@ -680,13 +755,17 @@ fn symbol_rewrite_range(text: &str, alias: Range<usize>, spelling: &str) -> Opti
     let end = alias.end + next_start;
     let before = text[..alias.start].trim_end_matches(is_inline_space);
     let previous = trailing_word(before).to_lowercase();
-    let next_is_stopword = STOPWORDS.contains(&next.as_str());
+    let next_is_stopword =
+        STOPWORDS.contains(&next.as_str()) || DETERMINERS.contains(&next.as_str());
     let starts_path = spelling == PATH_ROOT && !next_is_stopword;
     if previous.is_empty() {
         let line_start = before.is_empty() || before.ends_with(['\n', '\r']);
         return (line_start && starts_path).then_some(alias.start..end);
     }
-    if SYMBOL_NAMERS.contains(&previous.as_str()) {
+    if SYMBOL_NAMERS.contains(&previous.as_str())
+        || MODALS.contains(&previous.as_str())
+        || previous == "dot"
+    {
         return None;
     }
     if PATH_LEADERS.contains(&previous.as_str()) {
@@ -699,23 +778,58 @@ fn symbol_rewrite_range(text: &str, alias: Range<usize>, spelling: &str) -> Opti
 /// Whether the whole-word, case-insensitive occurrence of `spelling` at
 /// `found` should be rewritten to it. It stays when:
 ///
-/// - `.` or `-` joins it to another word, as in a file or package name:
-///   `openai.rs`, `agentdictate-core`.
+/// - It is part of a longer name (see [`in_longer_name`]): `openai.rs`,
+///   `agentdictate-core`, `.codex`, `hello@leadlord.ai`.
 /// - It differs only by capital initials on lowercase letters of the
 ///   spelling, as at a sentence start or in a title: "Read-only" and
 ///   "Read-Only Mode" stay for `read-only`.
-/// - The spelling is one word of letters cased like an ordinary word (`Rust`,
-///   `Go`, `IT`, `Codex`) and the occurrence is lowercase or capitalized, so
-///   it may be the common word ("rust", "go", "It's"). A Sounds like entry
-///   such as `codex` opts into that fix.
+/// - The spelling is one word of letters cased like an ordinary word, its
+///   lowercase form is a common English word (`Rust`, `Go`, `IT`; see
+///   [`is_common_english_word`]), and the occurrence is lowercase or
+///   capitalized, so it may be that word ("rust", "go", "It's"). A Sounds
+///   like entry such as `rust` opts into that fix. Other plain words, such as
+///   `Codex`, are fixed: "the codex config" becomes "the Codex config".
 fn needs_casing_fix(text: &str, found: Range<usize>, spelling: &str) -> bool {
     let heard = &text[found.clone()];
-    if heard == spelling || joined_to_word(text, found) || only_capital_initials(heard, spelling) {
+    if heard == spelling
+        || in_longer_name(text, found, spelling)
+        || only_capital_initials(heard, spelling)
+    {
         return false;
     }
-    let plain_word = spelling.chars().all(char::is_alphabetic)
-        && (is_lowercase(spelling) || is_uppercase(spelling) || is_capitalized(spelling));
-    !(plain_word && (is_lowercase(heard) || is_capitalized(heard)))
+    let may_be_common = is_plain_word(spelling) && is_common_english_word(&spelling.to_lowercase());
+    !(may_be_common && (is_lowercase(heard) || is_capitalized(heard)))
+}
+
+/// True for a lowercase word in the bundled list of common English words
+/// (SCOWL size 35; see `data/README.md`).
+fn is_common_english_word(word: &str) -> bool {
+    static WORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| {
+        include_str!("../data/common-english-words.txt")
+            .lines()
+            .collect()
+    });
+    WORDS.contains(word)
+}
+
+/// One word of letters cased like an ordinary word: `Rust`, `IT`, `pnpm`.
+fn is_plain_word(spelling: &str) -> bool {
+    spelling.chars().all(char::is_alphabetic)
+        && (is_lowercase(spelling) || is_uppercase(spelling) || is_capitalized(spelling))
+}
+
+/// True when the occurrence of `spelling` at `range` is part of a longer name
+/// whose case it must keep: it is [`joined_to_word`] (`openai.rs`,
+/// `agentdictate-core`), or `spelling` is a plain word and a `.` starts it
+/// (`.codex`) or an `@` touches it (`hello@leadlord.ai`, `@codex`). Names with
+/// their own punctuation are still fixed there: `@agents.md` is `@AGENTS.md`.
+/// `_` needs no rule: it is a word character, so `agent_name` never holds
+/// `agent` as a whole word.
+fn in_longer_name(text: &str, range: Range<usize>, spelling: &str) -> bool {
+    let before = text[..range.start].chars().next_back();
+    let after = text[range.end..].chars().next();
+    joined_to_word(text, range)
+        || (is_plain_word(spelling) && (matches!(before, Some('.' | '@')) || after == Some('@')))
 }
 
 /// True when a `.` or `-` right before or after `range` is followed by a
@@ -876,6 +990,18 @@ mod tests {
     }
 
     #[test]
+    fn spoken_slash_stays_after_dot_modals_and_before_determiners() {
+        for text in [
+            "We need to slash our burn rate",
+            "we can slash prices",
+            "we should slash every budget",
+            "the yellow dot slash green",
+        ] {
+            assert_eq!(normalized(text, "/ = slash"), text);
+        }
+    }
+
+    #[test]
     fn other_symbols_join_words_but_never_start_one() {
         assert_eq!(normalized("read dash only", "- = dash"), "read-only");
         assert_eq!(normalized("dash only", "- = dash"), "dash only");
@@ -904,15 +1030,53 @@ mod tests {
 
     #[test]
     fn casing_leaves_sentence_starts_common_words_and_longer_words() {
-        let words = "read-only\nkubectl\nRust\nIT\nCodex\nAGENTS.md";
-        let text = "Read-only. Kubectl works. It's rust. The codex. myagents.mdx";
+        let words = "read-only\nkubectl\nRust\nIT\nEffect\nGo\nAGENTS.md";
+        let text = "Read-only. Kubectl works. It's rust, a side effect. Go on. myagents.mdx";
         assert_eq!(normalized(text, words), text);
         assert_eq!(
-            normalized("CODEX and READ-ONLY", words),
-            "Codex and read-only"
+            normalized("RUST and READ-ONLY", words),
+            "Rust and read-only"
         );
-        // An explicit Sounds like entry still fixes a plain word.
-        assert_eq!(normalized("the codex", "Codex = codex"), "the Codex");
+        // A lowercase Sounds like entry opts a common word into the fix.
+        assert_eq!(normalized("use rust", "Rust = rust"), "use Rust");
+    }
+
+    #[test]
+    fn casing_fixes_names_that_are_not_common_words() {
+        let words = "Codex\nLeadlord\nAGENTS.md\nAgentDictate";
+        assert_eq!(
+            normalized(
+                "the codex config, the leadlord vault, leadlord GitHub organization",
+                words
+            ),
+            "the Codex config, the Leadlord vault, Leadlord GitHub organization"
+        );
+        let names = "leadlord.ai hello@leadlord.ai .codex @codex agentdictate-core";
+        assert_eq!(normalized(names, words), names);
+        // Spellings with their own punctuation are still fixed after `.` or `@`.
+        assert_eq!(
+            normalized("import @agents.md and .agents.md", words),
+            "import @AGENTS.md and .AGENTS.md"
+        );
+        let result = normalize_vocabulary("codex and codex", &vocabulary(words));
+        assert_eq!(
+            result.corrections,
+            [VocabularyCorrection {
+                alias: "codex".into(),
+                spelling: "Codex".into(),
+                count: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn case_only_aliases_skip_longer_names_but_other_aliases_join() {
+        let words = "Leadlord = leadlord\nsub-worktrees = sub-work trees";
+        assert_eq!(
+            normalized("leadlord at leadlord.ai and @leadlord", words),
+            "Leadlord at leadlord.ai and @leadlord"
+        );
+        assert_eq!(normalized("the sub-work trees", words), "the sub-worktrees");
     }
 
     #[test]
@@ -979,6 +1143,10 @@ mod tests {
             ("option two is better", "option 2 is better"),
             ("part one of three", "part 1 of three"),
             ("PR ninety", "PR 90"),
+            ("version two dot five", "version 2.5"),
+            ("step one dot two", "step 1.2"),
+            ("version two point twenty five", "version 2.25"),
+            ("version three point 1", "version 3.1"),
         ] {
             assert_eq!(dictated(heard), expected);
         }
@@ -1012,6 +1180,8 @@ mod tests {
             "every single issue one by one",
             "step 3 and version 3.2",
             "twenty-one two three",
+            "step one point is clear",
+            "two dot five seconds",
         ] {
             let result = normalize_transcript(text, &options(DictationMode::Dictate, ""));
             assert_eq!(result.text, text);

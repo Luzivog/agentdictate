@@ -40,4 +40,7 @@ agentdictate_install_shared_assets() {
     "${destination_root}/usr/share/metainfo/${DESKTOP_ID}.metainfo.xml"
   install -m 0644 "${PROJECT_DIR}/LICENSE" \
     "${destination_root}/usr/share/doc/agentdictate/copyright"
+  # The binaries embed SCOWL's common-word list, whose notice must ship with it.
+  install -m 0644 "${PROJECT_DIR}/crates/agentdictate-core/data/SCOWL-LICENSE.txt" \
+    "${destination_root}/usr/share/doc/agentdictate/SCOWL-LICENSE.txt"
 }

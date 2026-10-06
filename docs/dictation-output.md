@@ -14,8 +14,8 @@ Older jobs without a snapshot use the current settings.
 ## Output modes
 
 - **Dictate**, the default, sends the context and vocabulary hints with the audio,
-  then applies vocabulary corrections to the result and writes some spoken
-  [numbers](#numbers) as digits.
+  then writes [spoken symbols](#spoken-symbols) as symbols, applies vocabulary
+  corrections to the result, and writes some spoken [numbers](#numbers) as digits.
 - **Literal** sends only the language hint and applies no corrections.
   Use it for exact strings whose spelling you cannot predict. Speech recognition
   still cannot guarantee exact characters.
@@ -57,21 +57,33 @@ list. Every change is saved at once, and **Saved ✓** confirms it.
   feeds another.
 - A symbol spelling, made only of symbols such as `/` or `-`, joins the words around
   it: with `/ = slash`, "ChatGPT slash Codex" becomes `ChatGPT/Codex` and "and slash
-  or" becomes `and/or`. `/` instead starts a path at the start of a line or after a
-  word such as "the", "in", "do", "seeing" or "delete": "the slash home" becomes
-  `the /home`. The spoken word stays when the symbol cannot join: at the end of a
-  sentence, after punctuation, when another word names the symbol ("slash command",
-  "a trailing slash"), and before a small word such as "how", "are", "since" or
-  "at" ("Slash how do we…", "the slash at the end"), except "and" and "or".
+  or" becomes `and/or`. `/ = slash` is built in: it applies without the entry,
+  unless another entry uses the word "slash". `/` instead starts a path at the
+  start of a line or after a word such as "the", "in", "do", "seeing" or "delete":
+  "the slash home" becomes `the /home`. The spoken word stays when the symbol
+  cannot join: at the end of a sentence, after punctuation, when another word names
+  the symbol ("slash command", "a trailing slash"), after "dot" or a helper word
+  such as "can", "must" or "should" ("we can slash prices"), and before a small
+  word such as "how", "are", "since", "at", "our" or "every" ("Slash how do we…",
+  "the slash at the end", "slash our burn rate"), except "and" and "or".
+- The spoken symbols below are built in. A symbol entry for one of their words,
+  such as `- = dash` or `@ = at`, never overrides them; it only applies to what
+  they leave as words, so `- = dash` still makes "read dash only" `read-only`.
 - In the same pass, a spelling written with the wrong case gets the spelling's
-  case: `agents.md` becomes `AGENTS.md` and `T3 code` becomes `T3 Code`. It stays
-  when it is already right inside a longer spelling (`CLAUDE.md` with `Claude` also
-  listed), when `.` or `-` joins it to another word (`openai.rs`,
-  `agentdictate-core`), when the only change would lowercase capital initials
-  (`Read-only` or `Read-Only` for `read-only`), and for a lowercase or capitalized
-  form of a plain word such as `Rust` or `Codex`, which may be the ordinary word.
-  To fix that last case too, add the lowercase form as a Sounds like entry. History
-  records case fixes with the other corrections.
+  case: `agents.md` becomes `AGENTS.md`, `T3 code` becomes `T3 Code`, and "the
+  codex config" becomes "the Codex config". It stays when it is already right
+  inside a longer spelling (`CLAUDE.md` with `Claude` also listed), when `.` or `-`
+  joins it to another word (`openai.rs`, `agentdictate-core`), when the spelling is
+  one word and a `.` starts it or an `@` touches it (`.codex`, `@codex`,
+  `hello@leadlord.ai`), and when the only change would lowercase capital initials
+  (`Read-only` or `Read-Only` for `read-only`).
+- A one-word spelling that is also a common English word, such as `Rust`, `Go`,
+  `Effect`, `Swift`, `Convex` or `IT`, keeps the lowercase or capitalized form, which
+  may be the ordinary word ("rust", "a side effect"). The list of common words is
+  [SCOWL](http://wordlist.aspell.net/) at size 35, bundled with the app. To fix
+  such a word everywhere, add its lowercase form as a Sounds like entry, such as
+  `rust` for `Rust`; that entry also leaves `.` and `@` names alone. History records
+  case fixes with the other corrections.
 - Corrections never change protected spans: text in backticks or code fences, text
   in double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
   starting with `--`, and words that contain a slash.
@@ -93,6 +105,35 @@ upgrade, each enabled whole-word rule became a Sounds like entry of its replacem
 spelling, and the daemon log lists every rule it moved or could not express as a
 word.
 
+## Spoken symbols
+
+Dictate mode writes these spoken forms as symbols, before vocabulary corrections, so
+the result still gets its casing from Words ("agents dot md" becomes `agents.md`,
+then `AGENTS.md`). Words are separated by spaces on one line.
+
+| Say | Get | When |
+| --- | --- | --- |
+| dot slash install dot sh, dot dot slash dot dot slash src | `./install.sh`, `../../src` | Always. Further "slash" parts and a file extension join the path. |
+| dash dash parallel, dash dash force dash with dash lease | `--parallel`, `--force-with-lease` | Always after "dash dash", for a name of two or more letters. A capitalized name is lowercased, and a small word never ends it: "dash dash watch dash and then" is `--watch dash and then`. |
+| ls dash l | `ls -l` | One letter other than "a" or "i", after a lowercase word that is a command such as ls, rm, git, cargo or docker, or is not a common English word. "em dash a model" stays. |
+| package dot json, Next dot JS, leadlord dot ai, name dot sites dot leadlord.ai | `package.json`, `Next.js`, `leadlord.ai`, `name.sites.leadlord.ai` | The last part ends in a web domain (ai, ca, co, com, dev, fr, gg, io, org, uk, xyz), which is lowercased whole, or a file extension (md, json, ts, rs, py, toml, yaml, html, css, png, pdf and other common ones), which is lowercased. No part is a small word, and the first is not a word such as "the", "a" or "use". A domain named only by common English words stays words unless Words spells one ("the early dot com days"; add `Stripe` for "stripe dot com"), as does any domain before bubble, boom, crash, era, days, company or startup. A common word capitalized by a sentence start is lowercased ("Package dot json" is `package.json`), except before `.js` (`Node.js`). |
+| the dot env file, the dot env dot local file | the `.env` file, the `.env.local` file | At a line start or after a word such as "the", "to", "a" or "and", before env, git, gitignore, github, gitattributes, vscode, codex, claude, ssh, npmrc, nvmrc, editorconfig, prettierrc, eslintrc or dockerignore. Further "dot" parts join it. |
+| hello at leadlord dot ai, send it to team at leadlord.ai | `hello@leadlord.ai`, `team@leadlord.ai` | The domain is a web domain as above, and either the name is hello, hi, info, contact, admin, noreply, postmaster or webmaster, or "email", "send", "write", "mail", "address", "account" or a similar word comes up to five words earlier in the sentence, or "email", "address", "account" or "inbox" follows. After "the", "our", "my", a pronoun or a similar word, only a name from that list followed by such a word counts ("the hello at leadlord.ai account"). Never for a contraction ("we're at") or after "plus". Lowercased. |
+| snake underscore case | `snake_case` | Between two words that are not small words, contractions, or helper words such as "must", and not before a word that names the symbol ("the underscore key"). "we must underscore safety" stays. |
+| T O K S, use the C L I. | `TOKS`, use the `CLI.` | Three or more capital letters separated by single spaces. A run starts with "A" or "I" only after "the", "this", "our" or a similar word ("so I A B tested" stays). A final "I" before a lowercase word stays a word ("B C D I think" is "BCD I think"), and a run before "or"/"and" and another letter is a list of options ("A B C or D"). |
+
+Everything else stays words. That includes "dot dot dot", "the yellow dot", "make
+the dot go away" (go, log, lock, net, app and other ordinary words are not
+endings), "a dash review", "OCX dash star", "the at sign", "look at leadlord.ai",
+"I work at leadlord.ai", "the team at leadlord.ai", "I'm at the office", "hello plus
+one at leadlord.ai", "Plan B I think", and spelled letters joined by hyphens, such as
+"Z-E-R-N-I-O". Spoken symbols never change
+protected spans, the words of a spelling with several words, or those of a Sounds
+like entry that does more than fix case, so a Words entry such as
+`Plan-B = plan dash b` still decides its own text.
+History records each rewrite with its other corrections, and Literal mode leaves
+every spoken symbol as heard.
+
 ## Numbers
 
 The transcription model already writes measurements as digits ("300 milliseconds",
@@ -104,7 +145,9 @@ count. After vocabulary corrections, Dictate mode writes these two cases as digi
   chapter, page, slide, lecture, module, week, stage, milestone, sprint, plan, case,
   test or PR, optionally followed by "number", then a number from zero to
   ninety-nine: "Wave one" becomes `Wave 1`, "question twenty-one" becomes
-  `question 21`, and "issue number four" becomes `issue number 4`.
+  `question 21`, and "issue number four" becomes `issue number 4`. "dot" or "point"
+  and another number make a decimal: "version two dot five" becomes `version 2.5`.
+  Before any other word, such as "step one point is", the label stays in words.
 - **A run of three or more numbers** from zero to twenty, separated by spaces or
   commas: "One two three" becomes `1 2 3` and "two, three, four" becomes `2, 3, 4`.
 
@@ -175,7 +218,8 @@ Each line of the case file is a JSON object:
 | `reference_verified` | Set to `true` only after a person has checked `expected` against the audio |
 
 `fixtures/dictation/cases.jsonl` holds the synthetic offline cases. They cover
-negations, numbers, operators, paths, quotes, retractions, and lookalike words. The
+negations, numbers, spoken symbols, operators, paths, quotes, retractions, and
+lookalike words. The
 `alias` case expects the aliases `AgentDictate = agent dictate` and
 `worktrees = work trees`, so give the tool a configuration that defines them.
 `--config` defaults to your real `config.json`, which it only reads. A candidate file

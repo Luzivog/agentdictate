@@ -198,11 +198,12 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    paste not confirmed, or unexpected). The window words the reason; the raw error
    only goes to the log.
 5. **Normalize.** The raw text is saved first, so a later failure never needs a second
-   paid transcription. In Dictate mode, vocabulary aliases then replace spoken forms
-   with their spellings and known spellings get their case fixed; a second pass on
-   that output writes a labeled number ("wave one") or a run of three or more
-   numbers as digits. Literal mode keeps the text as heard. The job is now
-   `ready_to_deliver`.
+   paid transcription. In Dictate mode, three passes each run on the previous
+   one's output: spoken symbols become symbols ("agents dot md" is `agents.md`),
+   then vocabulary aliases replace spoken forms with their spellings and known
+   spellings get their case fixed (`AGENTS.md`), then a labeled number ("wave
+   one") or a run of three or more numbers is written as digits. Literal mode
+   keeps the text as heard. The job is now `ready_to_deliver`.
 6. **Gate.** A result is copied to the clipboard instead of pasted when it arrives
    more than 8 s after the stop (plus 30 ms per second of audio), or when the focused
    window observably changed since the stop: another X11 window, or a switch between
