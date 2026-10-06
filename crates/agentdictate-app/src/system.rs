@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::thread::JoinHandle;
@@ -21,11 +22,18 @@ use agentdictate_runtime::{
     RecordingJob,
 };
 
+use crate::captured_audio::AudioLevels;
 use crate::opus_encoder::OpusEncoder;
-use crate::{CapturedRecording, DaemonDeliverer, RecorderEvent, RecordingController};
+use crate::{CaptureEnd, CapturedRecording, DaemonDeliverer, RecorderEvent, RecordingController};
 
 const RECORDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 const RECORDER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a recording stopped for transcription keeps capturing. People
+/// often press stop while their last word still sounds, and capture
+/// otherwise ends at the press, clipping it. The overlay leaves its
+/// recording look at the press; only the capture runs on. Esc and Quit do
+/// not wait.
+const STOP_TAIL: Duration = Duration::from_millis(300);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long reading the focused window may take outside a paste.
 const FOCUS_OBSERVATION_TIMEOUT: Duration = Duration::from_millis(250);
@@ -55,6 +63,8 @@ struct RecorderLimits {
 /// reported for it; the daemon answers by stopping or preserving it.
 struct ActiveRecording {
     job_id: JobId,
+    /// For the maximum length only; the recording's own length comes from
+    /// its WAV.
     started_at: Instant,
     recording: Recording,
     limits: RecorderLimits,
@@ -112,6 +122,8 @@ pub struct SystemRecordingController {
     settings: Settings,
     stall_after: Duration,
     tick: Duration,
+    /// `STOP_TAIL`, except in tests.
+    stop_tail: Duration,
 }
 
 enum RecorderOwnerCommand {
@@ -124,6 +136,8 @@ enum RecorderOwnerCommand {
     },
     Finish {
         job_id: JobId,
+        /// How long capture continues before the recorder is interrupted.
+        tail: Duration,
         deadline: Instant,
         reply: SyncSender<Result<CapturedRecording, String>>,
     },
@@ -138,7 +152,7 @@ enum RecorderOwnerCommand {
 /// The thread also starts each recording's `OpusEncoder`, supervises the
 /// active recording, and reports its exit, stall, or maximum length as a
 /// `RecorderEvent`. It never waits for the daemon: the daemon holds its lock
-/// while it waits for this thread.
+/// while it waits for this thread, including through a stop's tail.
 struct RecorderOwner {
     commands: SyncSender<RecorderOwnerCommand>,
     worker: Option<JoinHandle<()>>,
@@ -148,12 +162,13 @@ impl RecorderOwner {
     fn start(
         recorder: PwRecordRecorder,
         ffmpeg: PlatformExecutable,
+        pactl: SystemPactl,
         events: Sender<RecorderEvent>,
     ) -> Self {
         let (commands, receiver) = sync_channel(0);
         let worker = std::thread::Builder::new()
             .name("agentdictate-recorder-owner".into())
-            .spawn(move || recorder_owner_loop(&recorder, &ffmpeg, &receiver, &events))
+            .spawn(move || recorder_owner_loop(&recorder, &ffmpeg, &pactl, &receiver, &events))
             .expect("recorder owner thread should start");
         Self {
             commands,
@@ -184,11 +199,17 @@ impl RecorderOwner {
             .map_err(ExternalError::new)
     }
 
-    fn finish(&self, job_id: JobId, deadline: Instant) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &self,
+        job_id: JobId,
+        tail: Duration,
+        deadline: Instant,
+    ) -> Result<CapturedRecording, ExternalError> {
         let (reply, response) = sync_channel(0);
         self.commands
             .send(RecorderOwnerCommand::Finish {
                 job_id,
+                tail,
                 deadline,
                 reply,
             })
@@ -212,6 +233,7 @@ impl Drop for RecorderOwner {
 fn recorder_owner_loop(
     recorder: &PwRecordRecorder,
     ffmpeg: &PlatformExecutable,
+    pactl: &SystemPactl,
     commands: &Receiver<RecorderOwnerCommand>,
     events: &Sender<RecorderEvent>,
 ) {
@@ -261,20 +283,23 @@ fn recorder_owner_loop(
                 };
                 let started = result.is_ok();
                 let _ = reply.send(result);
-                // Started after the reply, so it never delays the recording.
+                // Started after the reply, so they never delay the recording.
                 if started && let Some(recording) = &mut active {
                     recording.encoder = OpusEncoder::start(ffmpeg, &audio_path)
                         .inspect_err(|error| {
                             tracing::warn!(%job_id, %error, "could not encode during the recording; the saved audio will be encoded");
                         })
                         .ok();
+                    log_source(job_id, pactl.clone());
                 }
             }
             Some(RecorderOwnerCommand::Finish {
                 job_id,
+                tail,
                 deadline,
                 reply,
             }) => {
+                let mut finalized = None;
                 let result = match active.take() {
                     None => Err("the recorder process is not active".to_owned()),
                     Some(recording) if recording.job_id != job_id => {
@@ -285,24 +310,29 @@ fn recorder_owner_loop(
                         ))
                     }
                     Some(ActiveRecording {
-                        started_at,
-                        recording,
-                        encoder,
-                        ..
+                        recording, encoder, ..
                     }) => {
-                        let duration_seconds = started_at.elapsed().as_secs_f64();
                         // The encoder finishes only once pw-record finalized
-                        // the WAV; a failed stop drops, and so kills, it.
+                        // the WAV, tail included; a failed stop drops, and so
+                        // kills, it.
                         recording
-                            .stop(deadline)
-                            .map(|_| CapturedRecording {
-                                duration_seconds,
-                                encoding: encoder.map(OpusEncoder::finish),
+                            .stop(tail, deadline)
+                            .map(|artifact| {
+                                // Opened before the reply: a discard may
+                                // delete the file once it has the reply.
+                                finalized = File::open(&artifact.path).ok();
+                                CapturedRecording {
+                                    duration_seconds: artifact.audio_seconds(),
+                                    encoding: encoder.map(OpusEncoder::finish),
+                                }
                             })
                             .map_err(|error| error.to_string())
                     }
                 };
                 let _ = reply.send(result);
+                if let Some(mut wav) = finalized {
+                    log_levels(job_id, &mut wav);
+                }
             }
             Some(RecorderOwnerCommand::Shutdown) => return,
             None => {}
@@ -313,6 +343,37 @@ fn recorder_owner_loop(
             recording.supervise(events);
             next_check = Instant::now() + recording.limits.tick;
         }
+    }
+}
+
+/// Logs which microphone `pw-record` follows, from its own thread: pactl
+/// may take up to its 1 s deadline and must never delay a recording.
+fn log_source(job_id: JobId, pactl: SystemPactl) {
+    let spawned = std::thread::Builder::new()
+        .name("agentdictate-recording-source".into())
+        .spawn(move || match pactl.default_source() {
+            Ok(source) => tracing::info!(%job_id, %source, "recording source"),
+            Err(error) => tracing::warn!(%job_id, %error, "could not read the recording source"),
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%job_id, %error, "could not read the recording source");
+    }
+}
+
+/// Logs a finalized recording's length and levels, never its audio, so a
+/// quiet, clipping, or wrong microphone shows in the log.
+fn log_levels(job_id: JobId, wav: &mut File) {
+    match AudioLevels::scan(wav) {
+        Ok(levels) => tracing::info!(
+            %job_id,
+            audio_seconds = levels.seconds(),
+            peak_dbfs = levels.peak_dbfs(),
+            rms_dbfs = levels.rms_dbfs(),
+            clipped_samples = levels.clipped_samples(),
+            clipped_fraction = levels.clipped_fraction(),
+            "recording levels"
+        ),
+        Err(error) => tracing::warn!(%job_id, %error, "could not read the recording's levels"),
     }
 }
 
@@ -329,6 +390,7 @@ impl SystemRecordingController {
             settings,
             "pw-record",
             PlatformExecutable::discover(PlatformTool::Ffmpeg),
+            SystemPactl::discover(),
             PlaybackDucker::open(SystemPactl::discover(), ducking_state_file),
         )
     }
@@ -337,6 +399,7 @@ impl SystemRecordingController {
         settings: &Settings,
         recorder_program: impl Into<PathBuf>,
         ffmpeg: PlatformExecutable,
+        pactl: SystemPactl,
         ducker: PlaybackDucker,
     ) -> (Self, Receiver<RecorderEvent>) {
         let (events, receiver) = channel();
@@ -344,12 +407,14 @@ impl SystemRecordingController {
             recorder: RecorderOwner::start(
                 PwRecordRecorder::new(SystemCommandRunner, recorder_program),
                 ffmpeg,
+                pactl,
                 events,
             ),
             ducker,
             settings: settings.clone(),
             stall_after: STALL_AFTER,
             tick: SUPERVISION_TICK,
+            stop_tail: STOP_TAIL,
         };
         (controller, receiver)
     }
@@ -365,6 +430,11 @@ impl SystemRecordingController {
             settings,
             recorder_program,
             ffmpeg,
+            // No pactl, so tests never query the session's sound server.
+            SystemPactl::at(PlatformExecutable::at(
+                PlatformTool::Pactl,
+                state_directory.join("no-pactl"),
+            )),
             PlaybackDucker::open(
                 SystemPactl::discover(),
                 state_directory.join("ducking.json"),
@@ -402,7 +472,11 @@ impl Recorder for SystemRecordingController {
     fn abort_start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
         let result = self
             .recorder
-            .finish(job.id, Instant::now() + RECORDER_STOP_TIMEOUT)
+            .finish(
+                job.id,
+                Duration::ZERO,
+                Instant::now() + RECORDER_STOP_TIMEOUT,
+            )
             .map(|_| ());
         // Ducking is a best-effort side effect and must never survive a failed
         // durable Recording checkpoint, even when recorder finalization fails.
@@ -412,10 +486,18 @@ impl Recorder for SystemRecordingController {
 }
 
 impl RecordingController for SystemRecordingController {
-    fn finish(&mut self, job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        job: &RecordingJob,
+        end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
+        let tail = match end {
+            CaptureEnd::Transcribe => self.stop_tail,
+            CaptureEnd::Now => Duration::ZERO,
+        };
         let result = self
             .recorder
-            .finish(job.id, Instant::now() + RECORDER_STOP_TIMEOUT);
+            .finish(job.id, tail, Instant::now() + RECORDER_STOP_TIMEOUT);
         self.ducker.restore();
         result
     }
@@ -1073,7 +1155,7 @@ mod tests {
         let event = events.recv_timeout(Duration::from_secs(3)).unwrap();
 
         assert_eq!(event, RecorderEvent::MaxDurationReached { job_id: job.id });
-        controller.finish(&job).unwrap();
+        controller.finish(&job, CaptureEnd::Transcribe).unwrap();
     }
 
     #[test]
@@ -1089,7 +1171,7 @@ mod tests {
 
         assert_eq!(event, RecorderEvent::Stalled { job_id: job.id });
         assert!(events.recv_timeout(Duration::from_millis(300)).is_err());
-        controller.finish(&job).unwrap();
+        controller.finish(&job, CaptureEnd::Now).unwrap();
     }
 
     #[test]
@@ -1101,7 +1183,7 @@ mod tests {
         let event = events.recv_timeout(Duration::from_secs(2)).unwrap();
 
         assert_eq!(event, RecorderEvent::Exited { job_id: job.id });
-        controller.finish(&job).unwrap();
+        controller.finish(&job, CaptureEnd::Now).unwrap();
     }
 
     #[test]
@@ -1114,7 +1196,7 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(200));
 
-        let capture = controller.finish(&job).unwrap();
+        let capture = controller.finish(&job, CaptureEnd::Transcribe).unwrap();
         let (encoded, _) = capture
             .encoding
             .expect("the recording was encoded while it ran")
@@ -1124,6 +1206,32 @@ mod tests {
         let audio = fs::read(&job.audio_path).unwrap();
         assert!(encoded.len() > 16 * 10, "only {} bytes", encoded.len());
         assert_eq!(encoded, audio[44..]);
+    }
+
+    #[test]
+    fn only_a_stop_for_transcription_keeps_capturing_and_the_length_is_the_wav_s() {
+        for (end, keeps_capturing) in [(CaptureEnd::Transcribe, true), (CaptureEnd::Now, false)] {
+            let directory = tempdir().unwrap();
+            let (mut controller, _events, job) = supervised_recording(
+                directory.path(),
+                &quiet_settings(),
+                "while :; do printf '0123456789abcdef' >> \"$output\"; sleep 0.01; done",
+            );
+            controller.stop_tail = Duration::from_millis(1500);
+            let stopped = Instant::now();
+
+            let capture = controller.finish(&job, end).unwrap();
+
+            assert_eq!(
+                stopped.elapsed() >= controller.stop_tail,
+                keeps_capturing,
+                "{end:?}"
+            );
+            // The fake never writes the data chunk's size, so its samples
+            // run from the 44-byte header to the end of the file.
+            let samples = fs::metadata(&job.audio_path).unwrap().len() - 44;
+            assert_eq!(capture.duration_seconds, samples as f64 / 32_000.0);
+        }
     }
 
     fn quiet_settings() -> Settings {

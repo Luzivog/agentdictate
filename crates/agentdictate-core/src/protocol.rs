@@ -9,7 +9,7 @@ use crate::workflow::{JobId, WorkflowSnapshot};
 /// The IPC wire format's version. The settings window reads History, usage
 /// and Recovery from the database itself; IPC carries commands and the
 /// status snapshot.
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommand {

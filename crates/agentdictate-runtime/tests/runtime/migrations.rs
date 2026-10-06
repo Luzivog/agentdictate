@@ -132,10 +132,10 @@ fn startup_cleanup_migrates_finished_jobs_and_sweeps_their_recordings() {
         .execute(
             r#"
             INSERT INTO dictations (
-                job_id, started_at, ended_at, duration_seconds, transcription_provider,
+                job_id, started_at, ended_at, duration_seconds,
                 transcription_model, word_count, character_count, estimated_cost, final_text
             ) VALUES (
-                ?1, '2026-08-18T12:00:00Z', '2026-08-18T12:00:30Z', 30, 'openai_api',
+                ?1, '2026-08-18T12:00:00Z', '2026-08-18T12:00:30Z', 30,
                 'gpt-transcribe', 2, 12, 0.00225, 'Final words.'
             )
             "#,
@@ -482,15 +482,17 @@ fn user_version(path: &Path) -> i64 {
         .unwrap()
 }
 
+/// Every migration in turn: the sessions and History merge into one
+/// `dictations` table, and the ChatGPT imports are then dropped.
 #[test]
-fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_and_usage() {
+fn an_unversioned_database_becomes_one_dictations_table_without_the_chatgpt_imports() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
     let legacy = write_unversioned_database(&database_path);
 
     let mut runtime = Runtime::open(&database_path).unwrap();
 
-    assert_eq!(user_version(&database_path), 2);
+    assert_eq!(user_version(&database_path), 3);
     let connection = Connection::open(&database_path).unwrap();
     let tables = connection
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -515,11 +517,7 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
             .iter()
             .map(|row| (row.id, row.text.as_str()))
             .collect::<Vec<_>>(),
-        [
-            (1, "Imported from ChatGPT."),
-            (3, "Plain words."),
-            (2, "fix the Vercel deploy")
-        ]
+        [(3, "Plain words."), (2, "fix the Vercel deploy")]
     );
     let found = runtime
         .history_page(&agentdictate_core::HistoryPageRequest {
@@ -529,13 +527,13 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
         .unwrap();
     assert_eq!(found.rows.iter().map(|row| row.id).collect::<Vec<_>>(), [2]);
     let usage = runtime.usage().unwrap().all_time;
-    assert_eq!((usage.dictations, usage.words), (4, 10));
-    assert_eq!(usage.audio_seconds, 65.0);
+    assert_eq!((usage.dictations, usage.words), (2, 6));
+    assert_eq!(usage.audio_seconds, 40.0);
     assert!((usage.estimated_cost - 0.003).abs() < 1e-12);
     let stored = connection
         .prepare(
-            "SELECT id, source, source_id, started_at, ended_at, transcription_provider,
-                    final_text IS NULL, raw_text, vocabulary_corrections IS NOT NULL
+            "SELECT id, started_at, ended_at, transcription_model, raw_text,
+                    vocabulary_corrections IS NOT NULL
              FROM dictations ORDER BY id",
         )
         .unwrap()
@@ -543,83 +541,31 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, bool>(6)?,
-                row.get::<_, Option<String>>(7)?,
-                row.get::<_, bool>(8)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
             ))
         })
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    let row = |id: i64,
-               source: &str,
-               receipt: Option<&str>,
-               started: &str,
-               ended: &str,
-               provider: &str,
-               no_text: bool,
-               raw: Option<&str>,
-               corrected: bool| {
-        (
-            id,
-            source.to_owned(),
-            receipt.map(str::to_owned),
-            started.to_owned(),
-            ended.to_owned(),
-            provider.to_owned(),
-            no_text,
-            raw.map(str::to_owned),
-            corrected,
-        )
-    };
     assert_eq!(
         stored,
         [
-            row(
-                1,
-                "chatgpt_desktop",
-                Some("receipt-3"),
-                "2026-08-18T12:10:00Z",
-                "2026-08-18T12:10:20Z",
-                "chatgpt_subscription",
-                false,
-                Some(""),
-                false
-            ),
-            row(
+            (
                 2,
-                "agentdictate",
-                None,
-                "2026-08-18T12:00:00Z",
-                "2026-08-18T12:00:30Z",
-                "openai_api",
-                false,
-                Some("fix the versel deploy"),
+                "2026-08-18T12:00:00Z".to_owned(),
+                "2026-08-18T12:00:30Z".to_owned(),
+                "gpt-transcribe".to_owned(),
+                Some("fix the versel deploy".to_owned()),
                 true
             ),
-            row(
+            (
                 3,
-                "agentdictate",
-                None,
-                "2026-08-18T12:05:00Z",
-                "2026-08-18T12:05:10Z",
-                "chatgpt_subscription",
-                false,
-                None,
-                false
-            ),
-            row(
-                4,
-                "chatgpt_desktop",
-                Some("receipt-4"),
-                "2026-08-18T12:20:00Z",
-                "2026-08-18T12:20:05Z",
-                "chatgpt_subscription",
-                true,
+                "2026-08-18T12:05:00Z".to_owned(),
+                "2026-08-18T12:05:10Z".to_owned(),
+                "gpt-4o-transcribe".to_owned(),
                 None,
                 false
             ),
@@ -649,7 +595,7 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
         crate::support::history_rows(&runtime)[0].text,
         "Pasted before the crash."
     );
-    assert_eq!(runtime.usage().unwrap().all_time.dictations, 5);
+    assert_eq!(runtime.usage().unwrap().all_time.dictations, 3);
 }
 
 /// The copy from before a migration lasts until the migrated database opens
@@ -658,7 +604,7 @@ fn an_unversioned_database_becomes_one_dictations_table_with_the_same_history_an
 fn a_migration_keeps_one_private_backup_until_the_next_start() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
-    let backup = directory.path().join("agentdictate.db.pre-v2");
+    let backup = directory.path().join("agentdictate.db.pre-v3");
     let earlier_backup = directory.path().join("agentdictate.db.pre-v1");
     write_unversioned_database(&database_path);
     fs::write(&backup, b"an older backup").unwrap();
@@ -682,12 +628,12 @@ fn a_migration_keeps_one_private_backup_until_the_next_start() {
 
     drop(Runtime::open(&database_path).unwrap());
     assert!(!backup.exists());
-    assert_eq!(user_version(&database_path), 2);
+    assert_eq!(user_version(&database_path), 3);
 
     let fresh = directory.path().join("fresh.db");
     drop(Runtime::open(&fresh).unwrap());
-    assert!(!directory.path().join("fresh.db.pre-v2").exists());
-    assert_eq!(user_version(&fresh), 2);
+    assert!(!directory.path().join("fresh.db.pre-v3").exists());
+    assert_eq!(user_version(&fresh), 3);
 }
 
 /// The backup holds every transcript from before the migration, so any
@@ -714,7 +660,7 @@ fn deleting_text_deletes_the_migration_backup() {
     for delete in deletions {
         let directory = TempDir::new().unwrap();
         let database_path = directory.path().join("agentdictate.db");
-        let backup = directory.path().join("agentdictate.db.pre-v2");
+        let backup = directory.path().join("agentdictate.db.pre-v3");
         write_unversioned_database(&database_path);
         let mut runtime = Runtime::open(&database_path).unwrap();
         assert!(backup.exists());
@@ -732,14 +678,14 @@ fn a_database_from_a_newer_version_is_refused() {
     drop(Runtime::open(&database_path).unwrap());
     Connection::open(&database_path)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 3")
+        .execute_batch("PRAGMA user_version = 4")
         .unwrap();
 
     assert!(matches!(
         Runtime::open(&database_path),
         Err(agentdictate_runtime::RuntimeError::NewerDatabase {
-            version: 3,
-            latest: 2
+            version: 4,
+            latest: 3
         })
     ));
 }
@@ -768,4 +714,234 @@ fn replacements_rules_outlive_the_migration_until_they_move_into_vocabulary() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// The tables as schema version 2 left them.
+const VERSION_2_SCHEMA: &str = r#"
+CREATE TABLE dictation_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    state TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    audio_path TEXT NOT NULL UNIQUE,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    transcription_model TEXT NOT NULL DEFAULT '',
+    raw_transcript TEXT NOT NULL DEFAULT '',
+    final_text TEXT NOT NULL DEFAULT '',
+    copied_to_clipboard INTEGER NOT NULL DEFAULT 0,
+    paste_triggered INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT
+, runtime_id TEXT, delivery_status TEXT NOT NULL DEFAULT 'not_attempted', cleaned_transcript TEXT, replacements_applied TEXT NOT NULL DEFAULT '[]', cleanup_error TEXT, transcription_provider TEXT NOT NULL DEFAULT 'openai_api', processing_options TEXT, failure_kind TEXT);
+CREATE TABLE dictations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT UNIQUE,
+    source TEXT NOT NULL DEFAULT 'agentdictate'
+        CHECK (source IN ('agentdictate', 'chatgpt_desktop')),
+    source_id TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_seconds REAL NOT NULL,
+    transcription_provider TEXT NOT NULL,
+    transcription_model TEXT NOT NULL,
+    word_count INTEGER NOT NULL,
+    character_count INTEGER NOT NULL,
+    estimated_cost REAL NOT NULL,
+    final_text TEXT,
+    raw_text TEXT,
+    vocabulary_corrections TEXT
+);
+CREATE UNIQUE INDEX idx_dictation_jobs_runtime_id ON dictation_jobs(runtime_id);
+CREATE INDEX dictations_ended_at ON dictations(ended_at);
+CREATE INDEX dictation_jobs_recoverable ON dictation_jobs(updated_at)
+    WHERE stage IN ('captured', 'ready_to_deliver', 'interrupted', 'failed');
+PRAGMA user_version = 2;
+"#;
+
+#[test]
+fn version_3_drops_the_chatgpt_imports_and_the_columns_that_never_varied() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let kept_job = JobId::new();
+    let delivered_job = JobId::new();
+    let corrections = r#"[{"source_phrase":"versel","replacement_phrase":"Vercel","count":1}]"#;
+    {
+        let connection = Connection::open(&database_path).unwrap();
+        connection.execute_batch(VERSION_2_SCHEMA).unwrap();
+        let dictation = |id: i64,
+                         job_id: Option<String>,
+                         source: &str,
+                         provider: &str,
+                         model: &str,
+                         text: Option<&str>| {
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO dictations (
+                        id, job_id, source, source_id, started_at, ended_at,
+                        duration_seconds, transcription_provider, transcription_model,
+                        word_count, character_count, estimated_cost, final_text, raw_text,
+                        vocabulary_corrections
+                    ) VALUES (
+                        ?1, ?2, ?3, CASE ?3 WHEN 'chatgpt_desktop' THEN 'receipt' || ?1 END,
+                        '2026-09-01T10:00:00Z', '2026-09-01T10:00:0' || ?1 || 'Z', 6, ?4, ?5,
+                        3, 15, 0.01, ?6, CASE WHEN ?6 IS NOT NULL THEN 'fix the versel deploy' END,
+                        CASE WHEN ?6 IS NOT NULL THEN ?7 END
+                    )
+                    "#,
+                    params![id, job_id, source, provider, model, text, corrections],
+                )
+                .unwrap();
+        };
+        dictation(
+            5,
+            Some(kept_job.to_string()),
+            "agentdictate",
+            "openai_api",
+            "gpt-transcribe",
+            Some("fix the Vercel deploy"),
+        );
+        dictation(
+            6,
+            None,
+            "chatgpt_desktop",
+            "chatgpt_subscription",
+            "Managed by ChatGPT",
+            Some("Imported."),
+        );
+        dictation(
+            7,
+            None,
+            "agentdictate",
+            "chatgpt_subscription",
+            "gpt-4o-transcribe",
+            None,
+        );
+        dictation(
+            9,
+            None,
+            "chatgpt_desktop",
+            "chatgpt_subscription",
+            "Managed by ChatGPT",
+            None,
+        );
+        // The daemon died after this paste, before recording the dictation.
+        connection
+            .execute(
+                r#"
+                INSERT INTO dictation_jobs (
+                    runtime_id, started_at, updated_at, state, stage, audio_path,
+                    duration_seconds, transcription_model, raw_transcript, final_text,
+                    delivery_status, replacements_applied
+                ) VALUES (
+                    ?1, '2026-09-01T11:00:00Z', '2026-09-01T11:00:08Z', 'delivered',
+                    'delivered', ?2, 8, 'gpt-transcribe', 'ship the versel fix',
+                    'ship the Vercel fix', 'submitted', ?3
+                )
+                "#,
+                params![
+                    delivered_job.to_string(),
+                    directory.path().join("delivered.wav").to_string_lossy(),
+                    corrections
+                ],
+            )
+            .unwrap();
+    }
+
+    let mut runtime = Runtime::open(&database_path).unwrap();
+
+    assert_eq!(user_version(&database_path), 3);
+    assert!(directory.path().join("agentdictate.db.pre-v3").exists());
+    let connection = Connection::open(&database_path).unwrap();
+    let names = |sql: &str| {
+        connection
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(
+        names("SELECT name FROM pragma_table_info('dictations')"),
+        [
+            "id",
+            "job_id",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+            "transcription_model",
+            "word_count",
+            "character_count",
+            "estimated_cost",
+            "final_text",
+            "raw_text",
+            "vocabulary_corrections"
+        ]
+    );
+    assert!(
+        names("SELECT name FROM pragma_table_info('dictation_jobs')")
+            .contains(&"vocabulary_corrections".to_owned())
+    );
+    assert_eq!(
+        names(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name"
+        ),
+        [
+            "dictation_jobs_recoverable",
+            "dictations_ended_at",
+            "idx_dictation_jobs_runtime_id"
+        ]
+    );
+    let stored = crate::support::stored_dictations(&database_path);
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].job_id, None);
+    assert_eq!(stored[0].final_text, None);
+    assert_eq!(stored[1].job_id, Some(kept_job.to_string()));
+    assert_eq!(
+        stored[1].final_text.as_deref(),
+        Some("fix the Vercel deploy")
+    );
+    assert_eq!(stored[1].raw_text.as_deref(), Some("fix the versel deploy"));
+    let migrated = &stored[1].vocabulary_corrections.as_ref().unwrap()[0];
+    assert_eq!(migrated["alias"], "versel");
+    assert_eq!(migrated["spelling"], "Vercel");
+    assert_eq!(migrated["count"], 1);
+
+    // The job's corrections move with it, and ids stay unique: the deleted
+    // import's id 9 is never handed out again.
+    let cleanup = runtime
+        .clean_up_finished_jobs(&Settings::default(), directory.path())
+        .unwrap();
+    assert_eq!(cleanup.recorded_deliveries, 1);
+    let recorded: (i64, String) = connection
+        .query_row(
+            "SELECT id, vocabulary_corrections FROM dictations WHERE job_id = ?1",
+            [delivered_job.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        recorded,
+        (
+            10,
+            r#"[{"alias":"versel","spelling":"Vercel","count":1}]"#.to_owned()
+        )
+    );
+
+    // The settings window's read-only view reads the new shape.
+    let workspace = agentdictate_runtime::DatabaseObserver::open(&database_path)
+        .unwrap()
+        .workspace(&agentdictate_core::HistoryPageRequest::default())
+        .unwrap();
+    assert_eq!(
+        workspace
+            .history
+            .rows
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>(),
+        ["ship the Vercel fix", "fix the Vercel deploy"]
+    );
+    assert_eq!(workspace.usage.all_time.dictations, 3);
 }

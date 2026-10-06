@@ -24,8 +24,8 @@ mod window_instance;
 mod workspace;
 
 pub use daemon::{
-    CapturedRecording, Daemon, DaemonDeliverer, DaemonError, DaemonStatus, RecorderEvent,
-    RecordingController,
+    CaptureEnd, CapturedRecording, Daemon, DaemonDeliverer, DaemonError, DaemonStatus,
+    RecorderEvent, RecordingController,
 };
 pub use diagnostics::init_file_logging;
 pub use handle::{DaemonHandle, LifecycleAction, Trigger, TriggerOutcome, lifecycle_action};
@@ -39,7 +39,7 @@ pub use notifications::{
 };
 pub use openai::{
     OpenAiKeyCheck, ReqwestOpenAiTransport, SpeechTransport, TranscriptionPipeline,
-    TranscriptionRequest,
+    TranscriptionRequest, UploadFormat,
 };
 pub use opus_encoder::FinishingEncode;
 #[cfg(feature = "desktop")]

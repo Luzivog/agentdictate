@@ -1,6 +1,6 @@
 use agentdictate_core::{
     KeepTranscripts, PasteShortcut, RecordingMode, SettingChange, Settings, SettingsError,
-    SettingsSnapshot, TRANSCRIPTION_MODEL, VocabularyEntry,
+    SettingsSnapshot, VocabularyEntry,
 };
 
 #[test]
@@ -32,24 +32,17 @@ fn stored_settings_keep_their_values_and_ignore_retired_or_unknown_fields() {
 }
 
 #[test]
-fn retired_transcription_models_load_as_the_built_in_model() {
-    let model = |stored: &str| {
-        serde_json::from_value::<Settings>(serde_json::json!({ "transcription_model": stored }))
-            .unwrap()
-            .transcription_model
-    };
+fn a_stored_model_override_is_ignored_and_not_saved_again() {
+    let settings: Settings =
+        serde_json::from_value(serde_json::json!({ "transcription_model": "gpt-future" })).unwrap();
 
-    for retired in [
-        "",
-        "whisper-1",
-        "gpt-4o-transcribe",
-        "gpt-4o-mini-transcribe",
-        "gpt-4o-transcribe-diarize",
-        "gpt-4o-mini-transcribe-2025-12-15",
-    ] {
-        assert_eq!(model(retired), TRANSCRIPTION_MODEL, "{retired:?}");
-    }
-    assert_eq!(model(" gpt-future-transcribe "), "gpt-future-transcribe");
+    assert_eq!(settings, Settings::default());
+    assert!(
+        serde_json::to_value(&settings)
+            .unwrap()
+            .get("transcription_model")
+            .is_none()
+    );
 }
 
 #[test]

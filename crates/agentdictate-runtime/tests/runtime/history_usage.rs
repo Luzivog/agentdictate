@@ -55,6 +55,33 @@ fn delivered_job(runtime: &mut Runtime, directory: &TempDir) -> RecordingJob {
 }
 
 #[test]
+fn the_window_view_reads_a_dictation_text_by_its_job() {
+    let directory = TempDir::new().unwrap();
+    let database_path = directory.path().join("agentdictate.db");
+    let mut runtime = Runtime::open(&database_path).unwrap();
+    let delivered = delivered_job(&mut runtime, &directory);
+    runtime
+        .complete_delivered(delivered.id, &Settings::default())
+        .unwrap();
+
+    let observer = DatabaseObserver::open(&database_path).unwrap();
+
+    assert_eq!(
+        observer.dictation_text(delivered.id).unwrap(),
+        Some(agentdictate_runtime::DictationText {
+            final_text: "fix the Vercel deploy".to_owned(),
+            raw_text: "fix the versel deploy".to_owned(),
+        })
+    );
+    assert_eq!(
+        observer
+            .dictation_text(agentdictate_core::JobId::new())
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
 fn a_delivered_dictation_is_recorded_once_and_feeds_usage() {
     let directory = TempDir::new().unwrap();
     let database_path = directory.path().join("agentdictate.db");
@@ -72,7 +99,7 @@ fn a_delivered_dictation_is_recorded_once_and_feeds_usage() {
     assert_eq!(first.raw_text.as_deref(), Some("fix the versel deploy"));
     assert_eq!(first.final_text.as_deref(), Some("fix the Vercel deploy"));
     let corrections = first.vocabulary_corrections.as_ref().unwrap();
-    assert_eq!(corrections[0]["source_phrase"], "versel");
+    assert_eq!(corrections[0]["alias"], "versel");
     assert_eq!(corrections[0]["count"], 1);
     assert_eq!(first.word_count, 4);
     assert_eq!(first.character_count, 21);
@@ -140,10 +167,10 @@ fn insert_aged_dictation(connection: &rusqlite::Connection, days: i64, text: &st
         .execute(
             r#"
             INSERT INTO dictations (
-                started_at, ended_at, duration_seconds, transcription_provider,
+                started_at, ended_at, duration_seconds,
                 transcription_model, word_count, character_count, estimated_cost,
                 final_text, raw_text
-            ) VALUES (?1, ?1, 1, 'openai_api', 'gpt-transcribe', 3, 12, 0, ?2, ?2)
+            ) VALUES (?1, ?1, 1, 'gpt-transcribe', 3, 12, 0, ?2, ?2)
             "#,
             rusqlite::params![days_ago(days), text],
         )
@@ -252,10 +279,10 @@ fn insert_history(connection: &rusqlite::Connection, ended_at: &str, final_text:
         .execute(
             r#"
             INSERT INTO dictations (
-                started_at, ended_at, duration_seconds, transcription_provider,
+                started_at, ended_at, duration_seconds,
                 transcription_model, word_count, character_count, estimated_cost,
                 final_text, raw_text
-            ) VALUES (?1, ?1, 1, 'openai_api', 'test-model', 2, ?2, 0, ?3, 'raw-only words')
+            ) VALUES (?1, ?1, 1, 'test-model', 2, ?2, 0, ?3, 'raw-only words')
             "#,
             rusqlite::params![ended_at, final_text.chars().count(), final_text],
         )

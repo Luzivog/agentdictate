@@ -44,10 +44,44 @@ fn recorder_becomes_ready_only_after_audio_bytes_exist_and_finalizes_on_stop() {
     ));
 
     let artifact = recording
-        .stop(Instant::now() + Duration::from_secs(2))
+        .stop(Duration::ZERO, Instant::now() + Duration::from_secs(2))
         .expect("recording finalizes");
     assert_eq!(artifact.path, output);
     assert!(artifact.bytes > 44);
+}
+
+#[test]
+fn a_stop_with_a_tail_keeps_the_audio_recorded_meanwhile() {
+    let directory = TestDirectory::new();
+    let fake_pw_record = directory.executable(
+        "pw-record",
+        &format!(
+            "#!/bin/sh\nfor output do :; done\ntrap 'exit 0' INT\nprintf '{WAV_HEADER}' > \"$output\"\nwhile :; do printf '0123456789abcdef' >> \"$output\"; sleep 0.01; done\n"
+        ),
+    );
+    let output = directory.path().join("tail.wav");
+    let recorder = PwRecordRecorder::new(SystemCommandRunner, fake_pw_record);
+    let recording = recorder
+        .start(&output, Instant::now() + Duration::from_secs(2))
+        .expect("recorder starts");
+    let tail = Duration::from_millis(200);
+    let at_stop = fs::metadata(&output).unwrap().len();
+    let stopped = Instant::now();
+
+    let artifact = recording
+        .stop(tail, stopped + Duration::from_secs(2))
+        .expect("recording finalizes");
+
+    assert!(stopped.elapsed() >= tail);
+    assert!(
+        artifact.bytes > at_stop + 16 * 5,
+        "{} bytes at the stop, {} once finalized",
+        at_stop,
+        artifact.bytes
+    );
+    // The fake never writes the data chunk's size, so the samples run to
+    // the end of the file.
+    assert_eq!(artifact.audio_bytes, artifact.bytes - 44);
 }
 
 #[test]
@@ -119,7 +153,7 @@ fn an_exited_recorder_is_reported_by_status_and_still_finalizes() {
     }
 
     let artifact = recording
-        .stop(Instant::now() + Duration::from_secs(2))
+        .stop(Duration::ZERO, Instant::now() + Duration::from_secs(2))
         .expect("an exited recorder still finalizes");
 
     assert_eq!(artifact.path, output);

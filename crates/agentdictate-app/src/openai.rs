@@ -1,8 +1,11 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use agentdictate_core::{ApiKeyCheck, DictationOptions, FailureKind, Settings};
-use agentdictate_linux::command::{PlatformExecutable, PlatformTool};
+use agentdictate_linux::command::{
+    PlatformCapability, PlatformCommandError, PlatformExecutable, PlatformTool, SystemCommandRunner,
+};
 use agentdictate_runtime::{ExternalError, RecordingJob, Transcript};
 
 use crate::Transcriber;
@@ -14,11 +17,13 @@ const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
 /// Container of the audio sent to the transcription endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UploadFormat {
+pub enum UploadFormat {
     /// Opus in WebM, a format OpenAI documents for transcription uploads.
     WebmOpus,
     /// The captured recording itself, about 8x larger.
     Wav,
+    /// Lossless FLAC, about half the WAV. Only evaluations upload it.
+    Flac,
 }
 
 impl UploadFormat {
@@ -26,6 +31,7 @@ impl UploadFormat {
         match self {
             Self::WebmOpus => "recording.webm",
             Self::Wav => "recording.wav",
+            Self::Flac => "recording.flac",
         }
     }
 
@@ -33,6 +39,7 @@ impl UploadFormat {
         match self {
             Self::WebmOpus => "audio/webm",
             Self::Wav => "audio/wav",
+            Self::Flac => "audio/flac",
         }
     }
 }
@@ -95,6 +102,49 @@ fn prepare_upload_audio(
     }
 }
 
+/// Uploads exactly `format`, with no fallback, so an evaluation compares
+/// what it asked for. WebM/Opus uses the production encoder's arguments.
+fn forced_upload_audio(
+    ffmpeg: &PlatformExecutable,
+    audio_path: &Path,
+    format: UploadFormat,
+    deadline: Instant,
+) -> Result<UploadAudio, ExternalError> {
+    let encode_started = Instant::now();
+    let encoded = match format {
+        UploadFormat::Wav => return wav_upload(audio_path),
+        UploadFormat::WebmOpus => encode_file(ffmpeg, audio_path, deadline),
+        UploadFormat::Flac => encode_flac(ffmpeg, audio_path, deadline),
+    };
+    let bytes = encoded.map_err(|error| {
+        ExternalError::new(format!("Could not encode the audio as {format:?}: {error}"))
+    })?;
+    Ok(UploadAudio {
+        bytes,
+        format,
+        encode_ms: Some(encode_started.elapsed().as_millis() as u64),
+        encoded_during_recording: false,
+    })
+}
+
+/// Encodes a saved recording as mono FLAC in one ffmpeg run, killed at
+/// `deadline`.
+fn encode_flac(
+    ffmpeg: &PlatformExecutable,
+    audio_path: &Path,
+    deadline: Instant,
+) -> Result<Vec<u8>, PlatformCommandError> {
+    let mut arguments = vec![OsString::from("-loglevel"), "error".into(), "-i".into()];
+    arguments.push(audio_path.into());
+    arguments.extend(["-ac", "1", "-c:a", "flac", "-f", "flac", "pipe:1"].map(OsString::from));
+    SystemCommandRunner.run_output(
+        PlatformCapability::AudioCompression,
+        ffmpeg,
+        &arguments,
+        deadline,
+    )
+}
+
 fn wav_upload(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
     let bytes = std::fs::read(audio_path).map_err(|error| {
         ExternalError::new(format!("Could not read the captured recording: {error}"))
@@ -107,25 +157,45 @@ fn wav_upload(audio_path: &Path) -> Result<UploadAudio, ExternalError> {
     })
 }
 
-/// True when OpenAI answered HTTP 400 with an error about the uploaded file
-/// or its format. The WAV original is then worth one more attempt.
+/// Phrases of OpenAI's answers when it could not decode the uploaded audio,
+/// lowercase: "Invalid file format. Supported formats: …", "The audio file
+/// could not be decoded or its format is not supported.", and "Audio file
+/// might be corrupted or unsupported".
+const UNDECODABLE_AUDIO_PHRASES: &[&str] = &[
+    "invalid file format",
+    "could not be decoded",
+    "format is not supported",
+    "corrupted or unsupported",
+];
+
+/// True when OpenAI answered HTTP 400 because it could not decode the
+/// uploaded audio or does not support its format. The WAV original is then
+/// worth one more attempt; any other 400, such as a prompt too long or an
+/// audio too short, would fail the same way again. An error that names
+/// another parameter never counts, and one that names the file counts for
+/// `invalid_value` or a phrase above.
 fn rejects_upload_format(status: StatusCode, body: &str) -> bool {
     if status != StatusCode::BAD_REQUEST {
         return false;
     }
-    let message = serde_json::from_str::<Value>(body)
+    let error = serde_json::from_str::<Value>(body)
         .ok()
-        .and_then(|payload| {
-            payload
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.to_owned())
-        .to_ascii_lowercase();
-    ["file", "format", "audio"]
+        .and_then(|payload| payload.get("error").cloned());
+    let field = |name: &str| {
+        error
+            .as_ref()
+            .and_then(|error| error.get(name))
+            .and_then(Value::as_str)
+    };
+    match field("param") {
+        Some("file") if field("code") == Some("invalid_value") => return true,
+        Some("file") | None => {}
+        Some(_) => return false,
+    }
+    let message = field("message").unwrap_or(body).to_ascii_lowercase();
+    UNDECODABLE_AUDIO_PHRASES
         .iter()
-        .any(|word| message.contains(word))
+        .any(|phrase| message.contains(phrase))
 }
 
 /// Builds the multipart body for one transcription attempt, in the request
@@ -188,6 +258,10 @@ pub struct TranscriptionRequest<'a> {
     pub language: &'a str,
     pub prompt: &'a str,
     pub duration_seconds: f64,
+    /// Uploads exactly this format, without the WAV fallback or retry.
+    /// `None` is the production choice: WebM/Opus, or the WAV without
+    /// ffmpeg or when OpenAI cannot decode the WebM.
+    pub upload_format: Option<UploadFormat>,
 }
 
 /// The speech-to-text service boundary; tests substitute a fake.
@@ -237,6 +311,7 @@ impl<S: SpeechTransport> Transcriber for TranscriptionPipeline<S> {
             language: &options.language,
             prompt: &options.context,
             duration_seconds: job.duration_seconds,
+            upload_format: None,
         }) {
             Err(ExternalError::NoSpeech)
                 if !crate::captured_audio::is_near_silent(&job.audio_path) =>
@@ -426,16 +501,25 @@ impl SpeechTransport for ReqwestOpenAiTransport {
         &mut self,
         mut request: TranscriptionRequest<'_>,
     ) -> Result<String, ExternalError> {
-        let mut upload = prepare_upload_audio(
-            &self.ffmpeg,
-            request.audio_path,
-            request.encoding.take(),
-            encode_deadline(request.duration_seconds),
-        )?;
+        let deadline = encode_deadline(request.duration_seconds);
+        let mut upload = match request.upload_format {
+            None => prepare_upload_audio(
+                &self.ffmpeg,
+                request.audio_path,
+                request.encoding.take(),
+                deadline,
+            )?,
+            Some(format) => {
+                forced_upload_audio(&self.ffmpeg, request.audio_path, format, deadline)?
+            }
+        };
         let request_started = Instant::now();
         let (mut status, mut body) =
             self.send_transcription(|| transcription_form(&request, &upload))?;
-        if upload.format == UploadFormat::WebmOpus && rejects_upload_format(status, &body) {
+        if request.upload_format.is_none()
+            && upload.format == UploadFormat::WebmOpus
+            && rejects_upload_format(status, &body)
+        {
             tracing::warn!(
                 error = %Self::response_error(status, &body),
                 "OpenAI rejected the compressed audio; retrying with the original WAV"
@@ -622,6 +706,102 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(upload.format, UploadFormat::Wav);
         assert_eq!(upload.bytes, tiny_wav());
+    }
+
+    #[test]
+    fn a_forced_upload_format_is_sent_as_asked() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio_path = directory.path().join("recording.wav");
+        std::fs::write(&audio_path, tiny_wav()).unwrap();
+        let ffmpeg = crate::opus_encoder::fake_ffmpeg(
+            directory.path(),
+            "case \" $* \" in *\" flac \"*) printf FLAC ;; *) printf WEBM ;; esac",
+        );
+        let upload = |format| {
+            super::forced_upload_audio(
+                &ffmpeg,
+                &audio_path,
+                format,
+                Instant::now() + Duration::from_secs(3),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(upload(UploadFormat::Flac).bytes, b"FLAC");
+        assert_eq!(upload(UploadFormat::WebmOpus).bytes, b"WEBM");
+        assert_eq!(upload(UploadFormat::Wav).bytes, tiny_wav());
+    }
+
+    #[test]
+    fn only_undecodable_audio_earns_the_wav_retry() {
+        use reqwest::StatusCode;
+
+        use super::rejects_upload_format;
+
+        let error = |message: &str, param: Option<&str>, code: Option<&str>| {
+            serde_json::json!({"error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "param": param,
+                "code": code,
+            }})
+            .to_string()
+        };
+        let retried = [
+            error(
+                "Audio file might be corrupted or unsupported",
+                Some("file"),
+                Some("invalid_value"),
+            ),
+            error(
+                "Invalid file format. Supported formats: ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', \
+                 'mpga', 'oga', 'ogg', 'wav', 'webm']",
+                None,
+                None,
+            ),
+            error(
+                "The audio file could not be decoded or its format is not supported.",
+                None,
+                None,
+            ),
+            "Invalid file format".to_owned(),
+        ];
+        let not_retried = [
+            error(
+                "Invalid 'prompt': string too long. Expected a string with maximum length \
+                 4096, but got a string with length 5000 instead.",
+                Some("prompt"),
+                Some("string_above_max_length"),
+            ),
+            error(
+                "Invalid 'keywords[3]': the keyword has an invalid format for this audio file.",
+                Some("keywords[3]"),
+                Some("invalid_value"),
+            ),
+            error(
+                "Audio file is too short. Minimum audio length is 0.1 seconds.",
+                Some("file"),
+                Some("audio_too_short"),
+            ),
+            error("Unsupported language: 'xx'.", None, None),
+        ];
+
+        for body in &retried {
+            assert!(
+                rejects_upload_format(StatusCode::BAD_REQUEST, body),
+                "{body}"
+            );
+        }
+        for body in &not_retried {
+            assert!(
+                !rejects_upload_format(StatusCode::BAD_REQUEST, body),
+                "{body}"
+            );
+        }
+        assert!(!rejects_upload_format(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &retried[0]
+        ));
     }
 
     /// 100 ms of 16 kHz mono s16 silence with a canonical 44-byte header.

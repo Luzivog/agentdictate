@@ -131,7 +131,8 @@ app depends on runtime, linux, and ui; each of those depends only on core.
   alias normalization, and the per-minute price.
 - **agentdictate-runtime**: durable state. The SQLite schema and its numbered
   migrations (`PRAGMA user_version`), the job table with its checkpoints, Recovery,
-  the `dictations` table behind History search and usage, the settings window's
+  the `dictations` table behind History search and usage (one row per dictation:
+  times, duration, model, word and character counts, cost, and the kept text), the settings window's
   read-only `DatabaseObserver`, startup cleanup, settings load and save, the IPC
   server and client, and the port traits (`Deliverer`, `DeliveryGate`, `Recorder`)
   that the app implements. It writes checkpoints and never calls the network.
@@ -164,10 +165,13 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    speech mode) while you speak; every 50 ms, a feeder thread hands it what
    `pw-record` appended.
 2. **Stop.** A second press, a hold release, the tray, or `agentdictate stop`
-   finalizes the WAV, hands ffmpeg the rest of its audio, and records the `captured`
-   checkpoint, then `transcribing`. The recorder owner thread ends a recording at
-   **Stop recording after**, whatever started it. Esc discards the recording
-   instead and kills its ffmpeg. A recording longer than 5 s waits in Recovery as
+   ends the overlay's recording look at once, but capture goes on for 300 ms
+   (`STOP_TAIL`), so a word still sounding at the press is not clipped. Then the
+   WAV is finalized, ffmpeg gets the rest of its audio, and the `captured`
+   checkpoint records the length of the WAV's samples, then `transcribing`. The
+   recorder owner thread ends a recording at **Stop recording after**, whatever
+   started it, with the same tail. Esc discards the recording at once instead
+   and kills its ffmpeg. A recording longer than 5 s waits in Recovery as
    `cancelled`, with its audio, for 24 hours; a shorter one is deleted with its audio
    unless **Keep audio recordings** is on. If the recorder exits by itself, or the
    microphone delivers no audio for 3 s, the recording is kept in Recovery and not
@@ -178,12 +182,12 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    `agentdictate cancel` stops waiting: a new dictation can start at once, and the
    late result waits in Recovery as "Cancelled before paste". Esc does not cancel a
    transcription. The upload waits for ffmpeg to finish the WebM, usually tens of
-   milliseconds after the stop. If that encode failed, ffmpeg encodes the saved WAV
+   milliseconds after the WAV is finalized. If that encode failed, ffmpeg encodes the saved WAV
    now, as it does for every Recovery retry; without ffmpeg, the WAV itself is
    uploaded. The app posts the audio to `/v1/audio/transcriptions` with the model,
-   `languages[]`, `keywords[]` (the vocabulary spellings), and `prompt` (the
-   context). A request that fails before it reaches OpenAI is sent once more, and an
-   HTTP 400 about the file resends the WAV once. Nothing else is retried, not even a
+   `languages[]`, `keywords[]` (the vocabulary spellings with a letter or digit),
+   and `prompt` (the context). A request that fails before it reaches OpenAI is sent once more, and an
+   HTTP 400 saying OpenAI cannot decode the WebM resends the WAV once. Nothing else is retried, not even a
    request that got no answer within the 180 s limit.
 4. **Empty results.** An empty result from a near-silent WAV ends with the "Didn't
    hear anything" notice: the job is removed and nothing is pasted or kept in
@@ -195,7 +199,7 @@ checkpoint in the `dictation_jobs` table before the next step starts.
    only goes to the log.
 5. **Normalize.** The raw text is saved first, so a later failure never needs a second
    paid transcription. Vocabulary aliases then replace spoken forms with their
-   spellings. The job is now
+   spellings, and known spellings get their case fixed. The job is now
    `ready_to_deliver`.
 6. **Gate.** A result is copied to the clipboard instead of pasted when it arrives
    more than 8 s after the stop (plus 30 ms per second of audio), or when the focused
@@ -266,7 +270,8 @@ hotkey action worker, the tray worker, the signal handler, and the recorder-even
 thread. Its rules, also in `crates/agentdictate-app/src/handle.rs`:
 
 - Work under the lock is bounded: starting and finalizing the recorder (10 s
-  deadlines), checkpoints, delivery (5 s), and settings changes. Network requests
+  deadlines; a stop for transcription first waits out its 300 ms tail, and
+  actions meanwhile wait for it, then find the dictation transcribing), checkpoints, delivery (5 s), and settings changes. Network requests
   never run under it. A stopped recording hands a processing ticket, with the job
   and a clone of the transcriber, to a thread that transcribes and then takes the
   lock once to store and deliver the result. Settings saved meanwhile never change a
@@ -347,7 +352,10 @@ AgentDictate creates its own directories with mode 0700. `XDG_CONFIG_HOME`,
 | `$XDG_RUNTIME_DIR/agentdictate/` | IPC socket, singleton lock, `overlay-health`, `status`, settings window lock and raise file |
 
 Logs default to `info`, with the overlay's GPU crates at `warn`. A valid `RUST_LOG`
-replaces those defaults. Logs can contain transcript text.
+replaces those defaults. Logs can contain transcript text. Each recording logs the
+default microphone `pactl` names, read beside the start; the time from the
+shortcut press to the start request and to the first audio; and, once finalized,
+its length, peak and RMS level in dBFS, and clipped samples. No audio is logged.
 
 ## Decisions
 
@@ -379,7 +387,7 @@ replaces those defaults. Logs can contain transcript text.
   finishes each committed chunk as a sentence: most chunk boundaries gained a
   spurious sentence break. The whole recording goes up in one request instead, and
   ffmpeg encodes it while you speak, so the upload starts milliseconds after the
-  stop.
+  recording ends.
 - **No cleanup LLM.** `gpt-transcribe` output already needs little cleanup, and the
   cleanup request added about 2 s per dictation. The pipeline was removed, and a
   stored `organize` mode now reads as Dictate.

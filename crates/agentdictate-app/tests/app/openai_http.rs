@@ -43,6 +43,7 @@ fn gpt_transcription_uploads_audio_with_languages_and_context() {
             language: "en,fr",
             prompt: "AgentDictate and GPUI",
             duration_seconds: 300.0,
+            upload_format: None,
         })
         .unwrap();
 
@@ -323,6 +324,7 @@ fn transcription_request(audio_path: &std::path::Path) -> TranscriptionRequest<'
         language: "en",
         prompt: "",
         duration_seconds: 1.0,
+        upload_format: None,
     }
 }
 

@@ -25,7 +25,11 @@ type Migration = fn(&Transaction<'_>) -> rusqlite::Result<()>;
 
 /// Every schema step, oldest first. A database at version N has had the
 /// first N; append new steps and never edit a released one.
-const MIGRATIONS: &[Migration] = &[merge_dictations, add_failure_kinds];
+const MIGRATIONS: &[Migration] = &[
+    merge_dictations,
+    add_failure_kinds,
+    drop_imports_and_constant_columns,
+];
 
 /// The schema version this build migrates databases to.
 pub(crate) const LATEST_VERSION: usize = MIGRATIONS.len();
@@ -337,3 +341,36 @@ CREATE INDEX dictation_jobs_recoverable ON dictation_jobs(updated_at)
 fn add_failure_kinds(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute_batch("ALTER TABLE dictation_jobs ADD COLUMN failure_kind TEXT;")
 }
+
+/// Version 3. The rows imported from the retired ChatGPT desktop app go,
+/// text and usage numbers alike, and with them the `dictations` columns
+/// that only told them apart or never varied: `source`, `source_id` and
+/// `transcription_provider`. Each dictation keeps its model. The job
+/// table's `replacements_applied`, named after the retired Replacements
+/// screen, becomes `vocabulary_corrections` like its `dictations` twin,
+/// and the stored corrections take the field names `alias` and `spelling`.
+fn drop_imports_and_constant_columns(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(VERSION_3)
+}
+
+const VERSION_3: &str = r#"
+DELETE FROM dictations WHERE source = 'chatgpt_desktop';
+ALTER TABLE dictations DROP COLUMN source;
+ALTER TABLE dictations DROP COLUMN source_id;
+ALTER TABLE dictations DROP COLUMN transcription_provider;
+ALTER TABLE dictation_jobs RENAME COLUMN replacements_applied TO vocabulary_corrections;
+UPDATE dictations SET vocabulary_corrections = (
+    SELECT json_group_array(json_object(
+        'alias', json_extract(value, '$.source_phrase'),
+        'spelling', json_extract(value, '$.replacement_phrase'),
+        'count', json_extract(value, '$.count')))
+    FROM json_each(dictations.vocabulary_corrections))
+WHERE json_valid(vocabulary_corrections);
+UPDATE dictation_jobs SET vocabulary_corrections = (
+    SELECT json_group_array(json_object(
+        'alias', json_extract(value, '$.source_phrase'),
+        'spelling', json_extract(value, '$.replacement_phrase'),
+        'count', json_extract(value, '$.count')))
+    FROM json_each(dictation_jobs.vocabulary_corrections))
+WHERE vocabulary_corrections != '[]' AND json_valid(vocabulary_corrections);
+"#;

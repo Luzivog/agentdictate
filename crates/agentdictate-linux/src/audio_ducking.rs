@@ -30,6 +30,7 @@ pub trait Pactl {
 }
 
 /// `pactl` on the user's session, each call bounded by `PACTL_TIMEOUT`.
+#[derive(Clone, Debug)]
 pub struct SystemPactl {
     executable: PlatformExecutable,
 }
@@ -56,6 +57,15 @@ impl SystemPactl {
             )
             .map_err(io::Error::other)?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
+    }
+
+    /// The name of the default microphone, which `pw-record` records from.
+    pub fn default_source(&self) -> io::Result<String> {
+        let name = self.output(&["get-default-source"])?;
+        if name.is_empty() {
+            return Err(io::Error::other("no default audio input"));
+        }
+        Ok(name)
     }
 }
 

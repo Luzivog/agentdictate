@@ -6,7 +6,7 @@ use std::{
 };
 
 use agentdictate_app::{
-    AgentProcess, AppPaths, CapturedRecording, Daemon, DaemonDeliverer, DaemonHandle,
+    AgentProcess, AppPaths, CaptureEnd, CapturedRecording, Daemon, DaemonDeliverer, DaemonHandle,
     FinishingEncode, RecordingController, Transcriber, Trigger, TriggerOutcome,
 };
 use agentdictate_core::{
@@ -90,7 +90,11 @@ impl Transcriber for PanickingTranscriber {
     }
 }
 
-struct FileRecorder;
+/// Records how each recording was asked to end.
+#[derive(Default)]
+struct FileRecorder {
+    ends: Vec<CaptureEnd>,
+}
 
 impl Recorder for FileRecorder {
     fn start(&mut self, job: &RecordingJob) -> Result<(), ExternalError> {
@@ -100,7 +104,12 @@ impl Recorder for FileRecorder {
 }
 
 impl RecordingController for FileRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
+        self.ends.push(end);
         Ok(CapturedRecording {
             duration_seconds: 3.0,
             encoding: None,
@@ -143,7 +152,7 @@ fn handle_with<T: Transcriber>(root: &Path, transcriber: T) -> (TestHandle<T>, A
         Runtime::open(&paths.database_file).unwrap(),
         Settings::default(),
         paths.clone(),
-        FileRecorder,
+        FileRecorder::default(),
         transcriber,
         RecordedDelivery::default(),
     );
@@ -253,6 +262,35 @@ fn presses_during_processing_are_ignored_atomically() {
     gate.open();
     wait_for(&handle, |phase| phase == WorkflowPhase::Ready);
     assert_eq!(deliveries(&handle), [DeliveryMethod::Paste]);
+}
+
+/// Only a stop for transcription captures a tail; Esc and Quit end at once.
+#[test]
+fn only_a_stop_for_transcription_keeps_capturing_after_it() {
+    let directory = tempdir().unwrap();
+    let transcriber = GatedTranscriber::default();
+    transcriber.gate.open();
+    let (handle, _paths) = handle_with(directory.path(), transcriber);
+    let press = Trigger::Hotkey(HotkeySignal::Pressed);
+
+    for second in [press, Trigger::Hotkey(HotkeySignal::Cancelled)] {
+        assert!(matches!(
+            handle.trigger(press),
+            TriggerOutcome::Started { .. }
+        ));
+        handle.trigger(second);
+        wait_for(&handle, |phase| phase == WorkflowPhase::Ready);
+    }
+    assert!(matches!(
+        handle.trigger(press),
+        TriggerOutcome::Started { .. }
+    ));
+    handle.quit().unwrap();
+
+    assert_eq!(
+        handle.with_process(|process| process.daemon().recorder().ends.clone()),
+        [CaptureEnd::Transcribe, CaptureEnd::Now, CaptureEnd::Now]
+    );
 }
 
 #[test]

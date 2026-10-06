@@ -1,5 +1,5 @@
 {
-  "protocol_version": 16,
+  "protocol_version": 17,
   "samples": {
     "commands": [
       {
@@ -176,12 +176,12 @@
     "envelopes": [
       {
         "command": "get_snapshot",
-        "protocol_version": 16
+        "protocol_version": 17
       },
       {
         "error": "microphone unavailable",
         "message": "command_rejected",
-        "protocol_version": 16
+        "protocol_version": 17
       }
     ],
     "readiness": [
@@ -253,7 +253,6 @@
             "recording_mode": "toggle",
             "show_tray_icon": true,
             "start_on_login": true,
-            "transcription_model": "gpt-transcribe",
             "transcription_prompt": "Rust and GPUI",
             "vocabulary": [
               {

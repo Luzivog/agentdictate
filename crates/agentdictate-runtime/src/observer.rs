@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use agentdictate_core::{HistoryPageRequest, HistoryPageSnapshot, WorkspaceSnapshot};
+use agentdictate_core::{HistoryPageRequest, HistoryPageSnapshot, JobId, WorkspaceSnapshot};
+use rusqlite::OptionalExtension;
 
 use crate::migrations::LATEST_VERSION;
 use crate::{Runtime, RuntimeError};
@@ -69,6 +70,28 @@ impl DatabaseObserver {
         self.runtime.history_page(request)
     }
 
+    /// The kept text of the dictation recorded from `job_id`, for building
+    /// evaluation cases from kept recordings. `None` when no dictation came
+    /// from that job or its text was not kept.
+    pub fn dictation_text(&self, job_id: JobId) -> Result<Option<DictationText>, RuntimeError> {
+        self.require_known_schema()?;
+        Ok(self
+            .runtime
+            .connection
+            .query_row(
+                "SELECT final_text, COALESCE(raw_text, final_text) FROM dictations
+                 WHERE job_id = ?1 AND final_text IS NOT NULL",
+                [job_id.to_string()],
+                |row| {
+                    Ok(DictationText {
+                        final_text: row.get(0)?,
+                        raw_text: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// Refuses a database that a newer AgentDictate has migrated: its tables
     /// may no longer read the way this build expects.
     fn require_known_schema(&self) -> Result<(), RuntimeError> {
@@ -85,4 +108,12 @@ impl DatabaseObserver {
             })
         }
     }
+}
+
+/// A recorded dictation's text: what was delivered, and what the model
+/// heard before vocabulary changed it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DictationText {
+    pub final_text: String,
+    pub raw_text: String,
 }

@@ -251,7 +251,7 @@ fn feed(audio_path: &Path, mut input: ChildStdin, finished: &Receiver<()>) -> io
             }
         }
     }
-    let remaining = (data_end(&mut file, data_start)? - data_start)
+    let remaining = (wav::data_end(&mut file, data_start)? - data_start)
         .checked_sub(fed)
         .ok_or_else(|| {
             io::Error::new(
@@ -265,21 +265,6 @@ fn feed(audio_path: &Path, mut input: ChildStdin, finished: &Receiver<()>) -> io
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
     Ok(fed + copied)
-}
-
-/// Where a finalized WAV's samples end: the end of its data chunk, or of the
-/// file when the chunk's size was never written.
-fn data_end(file: &mut File, data_start: u64) -> io::Result<u64> {
-    let length = file.metadata()?.len();
-    file.seek(SeekFrom::Start(data_start - 4))?;
-    let mut size = [0; 4];
-    file.read_exact(&mut size)?;
-    let end = data_start + u64::from(u32::from_le_bytes(size));
-    Ok(if end > data_start && end <= length {
-        end
-    } else {
-        length
-    })
 }
 
 fn read_output(mut stdout: ChildStdout, mut stderr: ChildStderr) -> io::Result<Output> {

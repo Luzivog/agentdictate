@@ -10,8 +10,8 @@ use std::{
 };
 
 use agentdictate_app::{
-    AppPaths, CapturedRecording, Daemon, DaemonError, DaemonStatus, FinishingEncode, OverlayUpdate,
-    RecorderEvent, RecordingController, Transcriber, TranscriptionCompletion,
+    AppPaths, CaptureEnd, CapturedRecording, Daemon, DaemonError, DaemonStatus, FinishingEncode,
+    OverlayUpdate, RecorderEvent, RecordingController, Transcriber, TranscriptionCompletion,
     start_overlay_presenter,
 };
 use agentdictate_core::{
@@ -41,7 +41,11 @@ impl Recorder for PreservingRecorder {
 }
 
 impl RecordingController for PreservingRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         self.finish_attempts += 1;
         Ok(CapturedRecording {
             duration_seconds: 27.5,
@@ -58,7 +62,11 @@ impl Recorder for FailingFinishRecorder {
 }
 
 impl RecordingController for FailingFinishRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         Err(ExternalError::new("recorder disappeared"))
     }
 }
@@ -76,7 +84,11 @@ impl Recorder for TimedRecorder {
 }
 
 impl RecordingController for TimedRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: self.seconds,
             encoding: None,
@@ -196,7 +208,11 @@ impl Recorder for FlagInspectingRecorder {
 }
 
 impl RecordingController for FlagInspectingRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: 2.0,
             encoding: None,

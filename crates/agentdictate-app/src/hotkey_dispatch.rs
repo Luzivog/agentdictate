@@ -13,7 +13,7 @@ use agentdictate_linux::{
     },
 };
 
-use crate::{DaemonHandle, DaemonStatus, HotkeyControl, Trigger, TriggerOutcome};
+use crate::{DaemonHandle, DaemonStatus, HotkeyControl, TriggerOutcome};
 
 /// Starts the global shortcut listener and the loop that turns its signals
 /// into daemon triggers. Readiness goes to the daemon's status mirror.
@@ -628,7 +628,7 @@ fn start_hotkey_action_worker(
             for event in incoming {
                 let completion = ActionCompletion::new(events.clone());
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
-                    handle.trigger(Trigger::Hotkey(event.signal))
+                    handle.trigger_hotkey(event.signal, event.observed_at)
                 }));
                 completion.finish(action_outcome(&event, outcome));
             }

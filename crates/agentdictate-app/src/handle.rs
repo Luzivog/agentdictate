@@ -3,7 +3,9 @@
 //! Lock rules:
 //! 1. Work done while holding the process lock is bounded; network I/O never
 //!    runs under it. Transcription runs from a `ProcessingTicket` after the
-//!    lock is released.
+//!    lock is released. A stop for transcription holds it through the
+//!    recorder's 300 ms capture tail; actions meanwhile wait for it and then
+//!    find the dictation transcribing.
 //! 2. The hotkey dispatch loop and the recorder owner thread never wait for
 //!    the lock: saving settings holds it while it waits for the dispatch loop,
 //!    and stopping a recording holds it while it waits for the recorder
@@ -200,6 +202,16 @@ where
     /// so a press can never act on a phase that changed meanwhile. A stopped
     /// recording is transcribed on its own thread.
     pub fn trigger(&self, trigger: Trigger) -> TriggerOutcome {
+        self.trigger_at(trigger, None)
+    }
+
+    /// `trigger` for a shortcut signal the listener read at `observed_at`,
+    /// which a recording it starts logs its start times against.
+    pub fn trigger_hotkey(&self, signal: HotkeySignal, observed_at: Instant) -> TriggerOutcome {
+        self.trigger_at(Trigger::Hotkey(signal), Some(observed_at))
+    }
+
+    fn trigger_at(&self, trigger: Trigger, key_observed_at: Option<Instant>) -> TriggerOutcome {
         if self.shared.quitting.load(Ordering::Acquire) {
             return TriggerOutcome::Failed(DaemonError::ShuttingDown.to_string());
         }
@@ -212,18 +224,22 @@ where
             };
             let daemon = process.daemon_mut();
             let acted = match action {
-                LifecycleAction::Start(dictation_mode) => {
-                    daemon.start_recording_in_mode(dictation_mode).map(|job| {
-                        let toggle = mode == RecordingMode::Toggle;
-                        (
-                            TriggerOutcome::Started {
-                                job_id: job.id,
-                                toggle,
-                            },
-                            None,
-                        )
-                    })
+                LifecycleAction::Start(dictation_mode) => match key_observed_at {
+                    Some(pressed_at) => {
+                        daemon.start_recording_after_key(dictation_mode, pressed_at)
+                    }
+                    None => daemon.start_recording_in_mode(dictation_mode),
                 }
+                .map(|job| {
+                    let toggle = mode == RecordingMode::Toggle;
+                    (
+                        TriggerOutcome::Started {
+                            job_id: job.id,
+                            toggle,
+                        },
+                        None,
+                    )
+                }),
                 LifecycleAction::Stop => daemon.stop_recording().map(|ticket| {
                     let job_id = ticket.job_id();
                     (TriggerOutcome::Stopped { job_id }, Some(ticket))

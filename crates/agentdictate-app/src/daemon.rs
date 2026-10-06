@@ -30,17 +30,34 @@ const CANCELLED_NOTE: &str = "Cancelled before paste";
 /// A recording whose WAV the recorder finalized.
 #[derive(Debug)]
 pub struct CapturedRecording {
+    /// The length of the WAV's samples.
     pub duration_seconds: f64,
     /// Its upload audio, encoded while it recorded. Dropping it, as a discard
     /// does, kills the encoder; without it, the saved WAV is encoded.
     pub encoding: Option<FinishingEncode>,
 }
 
+/// How a recording ends, which decides whether it keeps capturing briefly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureEnd {
+    /// Stopped to be transcribed: a second press, a hold release, the tray,
+    /// `agentdictate stop`, or the maximum length. Capture continues for a
+    /// short tail, so a word still sounding at the stop is not clipped.
+    Transcribe,
+    /// Discarded, or preserved because the daemon quits or the recorder
+    /// failed: capture ends at once.
+    Now,
+}
+
 /// Recorder lifecycle owned by the daemon. `Recorder::start` is called only
 /// after the durable Starting checkpoint; `finish` must finalize the WAV before
 /// the Captured checkpoint is written.
 pub trait RecordingController: Recorder {
-    fn finish(&mut self, job: &RecordingJob) -> Result<CapturedRecording, ExternalError>;
+    fn finish(
+        &mut self,
+        job: &RecordingJob,
+        end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError>;
 
     /// Follows saved settings, such as audio ducking.
     fn update_settings(&mut self, _settings: &Settings) {}
@@ -490,6 +507,25 @@ where
         &mut self,
         mode: Option<agentdictate_core::DictationMode>,
     ) -> Result<RecordingJob, DaemonError> {
+        self.begin_recording(mode, None)
+    }
+
+    /// Starts a recording for a shortcut press the listener read at
+    /// `pressed_at`. The start's log measures from it, to show how much of
+    /// the first word could have been spoken before audio flowed.
+    pub fn start_recording_after_key(
+        &mut self,
+        mode: Option<agentdictate_core::DictationMode>,
+        pressed_at: Instant,
+    ) -> Result<RecordingJob, DaemonError> {
+        self.begin_recording(mode, Some(pressed_at))
+    }
+
+    fn begin_recording(
+        &mut self,
+        mode: Option<agentdictate_core::DictationMode>,
+        pressed_at: Option<Instant>,
+    ) -> Result<RecordingJob, DaemonError> {
         let requested_at = Instant::now();
         self.require_idle()?;
         fs::create_dir_all(&self.paths.recordings)?;
@@ -515,7 +551,7 @@ where
                 options: Some(options),
                 audio_path: path,
                 started_at: now,
-                transcription_model: self.settings.transcription_model.clone(),
+                transcription_model: agentdictate_core::TRANSCRIPTION_MODEL.to_owned(),
             },
             &mut self.recorder,
         ) {
@@ -525,6 +561,8 @@ where
                 return Err(error.into());
             }
         };
+        // The recorder returns once its first samples are in the file.
+        let audio_at = Instant::now();
         self.activity = Activity::Recording(ActiveRecording {
             job_id: job.id,
             overlay: ActiveRecordingUpdate {
@@ -542,10 +580,14 @@ where
         // error would report a failed start for a recording that continues.
         self.recount_recoveries();
         self.publish_overlay_update();
+        let since_key =
+            |at: Instant| pressed_at.map(|pressed| millis(at.saturating_duration_since(pressed)));
         tracing::info!(
             job_id = %job.id,
             audio_path = %job.audio_path.display(),
             capture_ready_ms = millis(requested_at.elapsed()),
+            key_to_start_ms = since_key(requested_at),
+            key_to_audio_ms = since_key(audio_at),
             "recording ready"
         );
         Ok(job)
@@ -581,8 +623,10 @@ where
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
         self.workflow.apply(WorkflowSignal::StopRequested)?;
         tracing::info!(job_id = %id, "recording stop requested");
+        // The overlay leaves its recording look now, while the recorder
+        // captures the tail.
         self.publish_overlay_update();
-        let capture = match self.recorder.finish(&job) {
+        let capture = match self.recorder.finish(&job, CaptureEnd::Transcribe) {
             Ok(capture) => capture,
             Err(error) => {
                 tracing::error!(job_id = %id, %error, "recording finalization failed");
@@ -865,7 +909,7 @@ where
         let id = self.recording_job()?;
         tracing::info!(job_id = %id, "dictation discard requested");
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        let capture = match self.recorder.finish(&job) {
+        let capture = match self.recorder.finish(&job, CaptureEnd::Now) {
             Ok(capture) => capture,
             Err(error) => {
                 let interrupted = self.runtime.interrupt_job(
@@ -1318,7 +1362,7 @@ where
     ) -> Result<RecordingJob, DaemonError> {
         let id = self.recording_job()?;
         let job = self.runtime.job(id)?.ok_or(RuntimeError::JobNotFound(id))?;
-        let capture = match self.recorder.finish(&job) {
+        let capture = match self.recorder.finish(&job, CaptureEnd::Now) {
             Ok(capture) => capture,
             Err(error) => {
                 let kind = failure.kind;

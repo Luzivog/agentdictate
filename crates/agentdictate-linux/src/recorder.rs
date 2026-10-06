@@ -26,7 +26,18 @@ pub enum RecordingStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordingArtifact {
     pub path: PathBuf,
+    /// The file's size, header included.
     pub bytes: u64,
+    /// The size of its samples alone.
+    pub audio_bytes: u64,
+}
+
+impl RecordingArtifact {
+    /// How long the recording is, from its samples.
+    #[must_use]
+    pub fn audio_seconds(&self) -> f64 {
+        self.audio_bytes as f64 / crate::wav::BYTES_PER_SECOND as f64
+    }
 }
 
 #[derive(Debug)]
@@ -309,7 +320,22 @@ impl Recording {
         })
     }
 
-    pub fn stop(mut self, deadline: Instant) -> Result<RecordingArtifact, RecorderError> {
+    /// Keeps capturing for `tail`, or until the recorder exits by itself,
+    /// then interrupts it and waits until `deadline` for it to finalize the
+    /// WAV. A zero `tail` stops at once.
+    pub fn stop(
+        mut self,
+        tail: Duration,
+        deadline: Instant,
+    ) -> Result<RecordingArtifact, RecorderError> {
+        if !tail.is_zero() {
+            wait_for_pidfd(self.exit.as_fd(), Some(tail)).map_err(|source| {
+                RecorderError::Inspect {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+        }
         if self
             .child
             .try_wait()
@@ -351,9 +377,16 @@ impl Recording {
                 bytes,
             });
         }
+        let audio_end = File::open(&self.path)
+            .and_then(|mut file| crate::wav::data_end(&mut file, self.data_start))
+            .map_err(|source| RecorderError::Inspect {
+                path: self.path.clone(),
+                source,
+            })?;
         Ok(RecordingArtifact {
             path: self.path.clone(),
             bytes,
+            audio_bytes: audio_end.saturating_sub(self.data_start),
         })
     }
 }

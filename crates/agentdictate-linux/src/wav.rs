@@ -1,6 +1,12 @@
 //! The header of the 16 kHz mono PCM16 WAV files that `pw-record` writes.
 
-use std::io::{self, Read, Seek, SeekFrom};
+use std::{
+    fs::File,
+    io::{self, Read, Seek, SeekFrom},
+};
+
+/// 16 kHz of 2-byte mono samples: how many data bytes make one second.
+pub const BYTES_PER_SECOND: u64 = 32_000;
 
 /// Returns the offset of the first PCM sample. `pw-record` can write chunks
 /// besides `fmt ` before `data`, so the offset is found rather than assumed
@@ -36,6 +42,21 @@ pub fn data_start(file: &mut (impl Read + Seek)) -> io::Result<u64> {
         }
         file.seek(SeekFrom::Start(start + size + size % 2))?;
     }
+}
+
+/// Where a finalized WAV's samples end: the end of its data chunk, or of the
+/// file when the chunk's size was never written.
+pub fn data_end(file: &mut File, data_start: u64) -> io::Result<u64> {
+    let length = file.metadata()?.len();
+    file.seek(SeekFrom::Start(data_start - 4))?;
+    let mut size = [0; 4];
+    file.read_exact(&mut size)?;
+    let end = data_start + u64::from(u32::from_le_bytes(size));
+    Ok(if end > data_start && end <= length {
+        end
+    } else {
+        length
+    })
 }
 
 fn read_pcm_format(file: &mut impl Read, size: u64) -> io::Result<()> {

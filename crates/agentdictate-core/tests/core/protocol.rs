@@ -313,7 +313,6 @@ fn sample_job_id() -> JobId {
 fn sample_settings() -> Settings {
     Settings {
         openai_api_key: "sk-never-sent".into(),
-        transcription_model: "gpt-transcribe".into(),
         language: "en".into(),
         transcription_prompt: "Rust and GPUI".into(),
         vocabulary: parse_vocabulary("kubectl = cube control").unwrap(),

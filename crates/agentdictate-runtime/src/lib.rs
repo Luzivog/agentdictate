@@ -15,7 +15,7 @@ mod legacy_replacements;
 pub use legacy_replacements::{RetiredReplacement, RetiredReplacementOutcome};
 mod migrations;
 mod observer;
-pub use observer::DatabaseObserver;
+pub use observer::{DatabaseObserver, DictationText};
 mod ports;
 pub use ports::{
     Deliverer, DeliveryDisposition, DeliveryGate, DeliveryGateError, DeliveryMethod,

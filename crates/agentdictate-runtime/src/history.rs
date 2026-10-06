@@ -207,7 +207,7 @@ fn record_dictation(
     keep_text: bool,
 ) -> Result<(), RuntimeError> {
     let corrections: String = transaction.query_row(
-        "SELECT replacements_applied FROM dictation_jobs WHERE runtime_id = ?1",
+        "SELECT vocabulary_corrections FROM dictation_jobs WHERE runtime_id = ?1",
         [job.id.to_string()],
         |row| row.get(0),
     )?;
@@ -225,11 +225,10 @@ fn record_dictation(
     transaction.execute(
         r#"
         INSERT INTO dictations (
-            job_id, source, started_at, ended_at, duration_seconds,
-            transcription_provider, transcription_model, word_count,
-            character_count, estimated_cost, final_text, raw_text,
+            job_id, started_at, ended_at, duration_seconds, transcription_model,
+            word_count, character_count, estimated_cost, final_text, raw_text,
             vocabulary_corrections
-        ) VALUES (?1, 'agentdictate', ?2, ?3, ?4, 'openai_api', ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
         params![
             job.id.to_string(),
@@ -328,10 +327,10 @@ mod tests {
                 .execute(
                     r#"
                     INSERT INTO dictations (
-                        started_at, ended_at, duration_seconds, transcription_provider,
+                        started_at, ended_at, duration_seconds,
                         transcription_model, word_count, character_count, estimated_cost,
                         final_text
-                    ) VALUES (?1, ?1, 1, 'openai_api', 'test-model', 2, 7, 0, ?2)
+                    ) VALUES (?1, ?1, 1, 'test-model', 2, 7, 0, ?2)
                     "#,
                     params![at, format!("entry {index}")],
                 )

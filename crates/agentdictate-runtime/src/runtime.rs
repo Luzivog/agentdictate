@@ -378,7 +378,7 @@ impl Runtime {
             r#"
             UPDATE dictation_jobs
             SET state = 'captured', stage = 'ready_to_deliver', updated_at = ?1,
-                final_text = ?2, replacements_applied = ?3, error_message = ?4,
+                final_text = ?2, vocabulary_corrections = ?3, error_message = ?4,
                 failure_kind = NULL, delivery_status = 'not_attempted'
             WHERE runtime_id = ?5
             "#,

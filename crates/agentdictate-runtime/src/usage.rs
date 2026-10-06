@@ -193,9 +193,9 @@ mod tests {
                 .execute(
                     r#"
                     INSERT INTO dictations (
-                        started_at, ended_at, duration_seconds, transcription_provider,
+                        started_at, ended_at, duration_seconds,
                         transcription_model, word_count, character_count, estimated_cost
-                    ) VALUES (?1, ?1, 1, 'openai_api', 'gpt-transcribe', 3, 12, 0)
+                    ) VALUES (?1, ?1, 1, 'gpt-transcribe', 3, 12, 0)
                     "#,
                     params![started_at],
                 )

@@ -2,20 +2,19 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// The OpenAI model every dictation uses. `Settings::transcription_model` can
-/// override it from config.json to try a newer model; the app has no picker.
+/// The OpenAI model every dictation uses. Each job records the model it
+/// used; `agentdictate-evaluate --model` tries another one.
 pub const TRANSCRIPTION_MODEL: &str = "gpt-transcribe";
 
 /// The user's configuration, stored in config.json. Missing keys take their
-/// defaults and unknown keys, such as retired settings, are ignored. The
-/// retired `transcription_provider` key is one: every dictation uses the
-/// OpenAI API.
+/// defaults and unknown keys, such as retired settings, are ignored and
+/// dropped at the next save. The retired `transcription_provider` and
+/// `transcription_model` keys are two: every dictation uses the OpenAI API
+/// and `TRANSCRIPTION_MODEL`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub openai_api_key: String,
-    #[serde(deserialize_with = "deserialize_transcription_model")]
-    pub transcription_model: String,
     pub language: String,
     /// "About your work": names, topics and jargon the user often mentions,
     /// sent to the model as context. It absorbed the retired
@@ -263,7 +262,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             openai_api_key: String::new(),
-            transcription_model: TRANSCRIPTION_MODEL.into(),
             language: String::new(),
             transcription_prompt: String::new(),
             vocabulary: Vec::new(),
@@ -282,21 +280,6 @@ impl Default for Settings {
             paste_shortcut: PasteShortcut::Automatic,
         }
     }
-}
-
-/// Reads a stored model override. Models OpenAI shuts down on 2027-02-26
-/// (whisper-1 and the gpt-4o transcribe family), a blank value, and the old
-/// picker's "Custom" sentinel all mean the built-in model.
-fn deserialize_transcription_model<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let model = String::deserialize(deserializer)?;
-    let model = model.trim();
-    let retired = matches!(model, "" | "Custom" | "whisper-1")
-        || model.starts_with("gpt-4o-transcribe")
-        || model.starts_with("gpt-4o-mini-transcribe");
-    Ok(if retired { TRANSCRIPTION_MODEL } else { model }.to_owned())
 }
 
 /// Reads `keep_transcripts`, or the `save_history` switch it replaced: on

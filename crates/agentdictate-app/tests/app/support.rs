@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use agentdictate_app::{
-    CapturedRecording, Daemon, FinishingEncode, RecordingController, Transcriber,
+    CaptureEnd, CapturedRecording, Daemon, FinishingEncode, RecordingController, Transcriber,
 };
 use agentdictate_core::JobStage;
 use agentdictate_runtime::{Deliverer, ExternalError, Recorder, RecordingJob, Runtime, Transcript};
@@ -24,7 +24,11 @@ impl Recorder for InspectingRecorder {
 }
 
 impl RecordingController for InspectingRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         Ok(CapturedRecording {
             duration_seconds: 12.5,
             encoding: None,
@@ -57,7 +61,11 @@ impl Recorder for FailingStartRecorder {
 }
 
 impl RecordingController for FailingStartRecorder {
-    fn finish(&mut self, _job: &RecordingJob) -> Result<CapturedRecording, ExternalError> {
+    fn finish(
+        &mut self,
+        _job: &RecordingJob,
+        _end: CaptureEnd,
+    ) -> Result<CapturedRecording, ExternalError> {
         unreachable!("a recorder that did not start cannot be finalized")
     }
 }

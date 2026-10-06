@@ -14,8 +14,8 @@ Older jobs without a snapshot use the current settings.
 ## Output modes
 
 - **Dictate**, the default, sends the context and vocabulary hints with the audio,
-  then applies vocabulary aliases to the result.
-- **Literal** sends only the language hint and applies no aliases.
+  then applies vocabulary corrections to the result.
+- **Literal** sends only the language hint and applies no corrections.
   Use it for exact strings whose spelling you cannot predict. Speech recognition
   still cannot guarantee exact characters.
 
@@ -47,13 +47,30 @@ its aliases.
 Add a word in the top row, and use **Edit**, **Delete** and the filter box on the
 list. Every change is saved at once, and **Saved ✓** confirms it.
 
-- Every spelling is sent to OpenAI as a recognition keyword (`keywords[]`), which
-  makes the model more likely to write it that way. A word without Sounds like is
-  only a hint.
+- Every spelling with a letter or digit is sent to OpenAI as a recognition keyword
+  (`keywords[]`), which makes the model more likely to write it that way. A symbol
+  spelling such as `/` is not sent, because keywords name words in the audio.
 - Sounds like entries are automatic corrections. After recognition, each one in
   the text becomes its spelling. Matching ignores case and needs whole words. At any
   position the longest match wins, and the pass runs once, so a correction never
   feeds another.
+- A symbol spelling, made only of symbols such as `/` or `-`, joins the words around
+  it: with `/ = slash`, "ChatGPT slash Codex" becomes `ChatGPT/Codex` and "and slash
+  or" becomes `and/or`. `/` instead starts a path at the start of a line or after a
+  word such as "the", "in", "do", "seeing" or "delete": "the slash home" becomes
+  `the /home`. The spoken word stays when the symbol cannot join: at the end of a
+  sentence, after punctuation, when another word names the symbol ("slash command",
+  "a trailing slash"), and before a small word such as "how", "are", "since" or
+  "at" ("Slash how do we…", "the slash at the end"), except "and" and "or".
+- In the same pass, a spelling written with the wrong case gets the spelling's
+  case: `agents.md` becomes `AGENTS.md` and `T3 code` becomes `T3 Code`. It stays
+  when it is already right inside a longer spelling (`CLAUDE.md` with `Claude` also
+  listed), when `.` or `-` joins it to another word (`openai.rs`,
+  `agentdictate-core`), when the only change would lowercase capital initials
+  (`Read-only` or `Read-Only` for `read-only`), and for a lowercase or capitalized
+  form of a plain word such as `Rust` or `Codex`, which may be the ordinary word.
+  To fix that last case too, add the lowercase form as a Sounds like entry. History
+  records case fixes with the other corrections.
 - Corrections never change protected spans: text in backticks or code fences, text
   in double or single quotes, URLs, paths starting with `/`, `./`, or `~/`, flags
   starting with `--`, and words that contain a slash.
@@ -98,7 +115,7 @@ language is sent as a `languages[]` hint.
 - **Empty result from audible audio.** The dictation goes to Recovery with its audio,
   because something was said.
 - **Network or API errors.** A request that fails to reach OpenAI is resent once,
-  and a rejected WebM/Opus upload is resent once as WAV. A request that reached
+  and a WebM/Opus upload OpenAI cannot decode is resent once as WAV. A request that reached
   OpenAI but got no answer within 180 seconds is not resent. Any other error sends
   the dictation to Recovery with its audio.
 - **Paste problems.** If the focused window keeps changing, or the text cannot be
@@ -128,8 +145,8 @@ Each line of the case file is a JSON object:
 | Field | Meaning |
 | --- | --- |
 | `id` | Case name |
-| `text` | The recognized text to process in `offline` mode |
-| `expected` | Optional exact output; `offline` mode fails on a mismatch |
+| `text` | The recognized text, before vocabulary, for `offline` mode |
+| `expected` | Optional exact output after vocabulary; `offline` mode fails on a mismatch |
 | `preserve` | Substrings the output must keep, compared without case |
 | `audio` | Absolute path of an audio file, for `speech` mode |
 | `reference_verified` | Set to `true` only after a person has checked `expected` against the audio |
@@ -155,14 +172,40 @@ target/debug/agentdictate-evaluate \
   --mode offline
 ```
 
-The tool writes one JSON line per case, with the output, the checks, and the options
-used, to a new file with mode 0600. It refuses to overwrite an existing file, so use
-a new path per run. It prints how many cases passed and exits with an error if any
-check or request failed, keeping the results.
+The tool writes one JSON line per run, with the raw and delivered text, the checks,
+and the options used, to a new file with mode 0600. It refuses to overwrite an
+existing file, so use a new path per run. It prints a line per case, pass or fail
+with its word error rate (WER) after vocabulary and, as `raw`, before it. A summary
+follows: runs passed, exact matches, and the total WER, which is the sum of word
+edits over the sum of reference words. The tool exits with an error if any check or
+request failed, keeping the results. An unknown flag or `--mode` is an error.
 
-`--mode speech` uploads each case's `audio` through the production file transport.
-It calls OpenAI and costs money, so it needs a configuration with an OpenAI API key.
-`--model <id>` overrides the transcription model.
+`--mode speech` uploads each case's `audio` through the production transport. It
+calls OpenAI and costs money, so it needs a configuration with an OpenAI API key.
+Only `preserve` and the request decide whether a speech run passes; WER and exact
+matches are reported. These flags change one thing at a time for an A/B comparison:
+
+| Flag | Effect |
+| --- | --- |
+| `--model <id>` | Another transcription model than `gpt-transcribe` |
+| `--upload-format webm\|wav\|flac` | Upload exactly this format, with no WAV fallback or retry. `webm` uses the production encoder settings, and `flac` needs ffmpeg |
+| `--prompt <text>`, `--no-prompt` | Replace or drop the About your work prompt |
+| `--no-keywords` | Send no `keywords[]`; aliases still apply afterwards |
+| `--language <codes>` | Replace the language hint, such as `en` or `en,fr`; `""` detects |
+| `--repeat <n>` | Run each case n times and report the WER spread and distinct transcripts |
+
+To build speech cases from your own dictations, turn on **Keep audio recordings**,
+dictate as usual, then export:
+
+```bash
+target/debug/agentdictate-evaluate export-cases --output /tmp/my-cases.jsonl
+```
+
+It reads the database without changing it and writes one case per kept recording
+whose dictation still has its text in History. A case's `text` is what the model
+heard, and its `expected` is the delivered text, with `reference_verified: false`.
+Correct `expected` against the audio before trusting its WER. The file has mode 0600,
+holds your transcripts, and is never overwritten.
 
 Word error rate and exact-match fields only measure agreement with the reference you
 supplied. To decide whether a change helps your own speech, record 60 to 100

@@ -650,10 +650,10 @@ mod tests {
             .execute(
                 r#"
                 INSERT INTO dictations (
-                    started_at, ended_at, duration_seconds, transcription_provider,
+                    started_at, ended_at, duration_seconds,
                     transcription_model, word_count, character_count, estimated_cost,
                     final_text
-                ) VALUES (?1, ?1, 6, 'openai_api', 'gpt-transcribe', 2, 10, 0.01, ?2)
+                ) VALUES (?1, ?1, 6, 'gpt-transcribe', 2, 10, 0.01, ?2)
                 "#,
                 rusqlite::params![at, text],
             )
