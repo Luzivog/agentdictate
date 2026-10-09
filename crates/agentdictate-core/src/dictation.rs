@@ -337,9 +337,11 @@ fn apply_vocabulary(
                 .filter(|found| !(case_only && in_longer_name(text, found.clone(), spelling)));
             for found in matches {
                 let range = if symbol {
-                    match symbol_rewrite_range(text, found, spelling) {
-                        Some(range) => range,
-                        None => continue,
+                    // A join may take a comma before the word, which a
+                    // protected span such as `apps/landing,` keeps.
+                    match symbol_rewrite_range(text, found.clone(), spelling) {
+                        Some(range) if is_free(&(range.start..found.start)) => range,
+                        _ => continue,
                     }
                 } else {
                     found
@@ -737,9 +739,14 @@ const MODALS: &[&str] = &[
 /// - The symbol never joins or starts a next word from `STOPWORDS` or
 ///   `DETERMINERS`, except that "and" and "or" may be joined ("and slash or"
 ///   is "and/or"), so "to slash our burn rate" stays.
+/// - A comma right after the previous word goes, and the rules below apply
+///   as if it were not there, except that `/` always joins: "code, slash
+///   refactor" is "code/refactor", "delete, slash update" is
+///   "delete/update".
 /// - After a word from `SYMBOL_NAMERS` ("a slash", "forward slash"), `MODALS`
 ///   ("we can slash prices"), after "dot" ("dot slash", see the spoken
-///   symbols pass) or after punctuation ("PRs? slash do we") the word stays.
+///   symbols pass) or after other punctuation ("PRs? slash do we") the word
+///   stays.
 /// - `/` alone starts a path after a word from `PATH_LEADERS` ("seeing slash
 ///   plans" is "seeing /plans") or at the start of a line ("slash home" is
 ///   "/home"); other symbols keep the word there.
@@ -753,7 +760,15 @@ fn symbol_rewrite_range(text: &str, alias: Range<usize>, spelling: &str) -> Opti
         return None;
     }
     let end = alias.end + next_start;
-    let before = text[..alias.start].trim_end_matches(is_inline_space);
+    let mut before = text[..alias.start].trim_end_matches(is_inline_space);
+    // The model often writes a pause before "slash" as a comma: "code, slash
+    // refactor".
+    let after_comma = before
+        .strip_suffix(',')
+        .filter(|rest| !trailing_word(rest).is_empty());
+    if let Some(rest) = after_comma {
+        before = rest;
+    }
     let previous = trailing_word(before).to_lowercase();
     let next_is_stopword =
         STOPWORDS.contains(&next.as_str()) || DETERMINERS.contains(&next.as_str());
@@ -768,7 +783,7 @@ fn symbol_rewrite_range(text: &str, alias: Range<usize>, spelling: &str) -> Opti
     {
         return None;
     }
-    if PATH_LEADERS.contains(&previous.as_str()) {
+    if after_comma.is_none() && PATH_LEADERS.contains(&previous.as_str()) {
         return starts_path.then_some(alias.start..end);
     }
     let joins = !next_is_stopword || matches!(next.as_str(), "and" | "or");
@@ -968,10 +983,41 @@ mod tests {
     }
 
     #[test]
+    fn spoken_slash_after_a_comma_joins_as_without_it() {
+        for (heard, expected) in [
+            (
+                "If by the same time you can clean up code, slash refactor, slash delete some custom machinery, do it.",
+                "If by the same time you can clean up code/refactor/delete some custom machinery, do it.",
+            ),
+            // "delete" would start a path without the comma.
+            (
+                "what should we remove, delete, slash update to fix these issues?",
+                "what should we remove, delete/update to fix these issues?",
+            ),
+            (
+                "Are there Bun caches, Turbo caches, slash other type of caches?",
+                "Are there Bun caches, Turbo caches/other type of caches?",
+            ),
+            (
+                "Are there native ways, slash frameworks, slash ways from existing libraries",
+                "Are there native ways/frameworks/ways from existing libraries",
+            ),
+        ] {
+            // The built-in slash and a Words entry share the rule.
+            for words in ["", "/ = slash"] {
+                assert_eq!(normalized(heard, words), expected, "{words:?}");
+            }
+        }
+    }
+
+    #[test]
     fn spoken_slash_stays_a_word_when_it_names_the_symbol_or_cannot_join() {
         for text in [
             "PRs? slash do we have any rules",
             "posted, slash can you access it?",
+            "We need to cut costs, slash the budget",
+            "what do we need to update slash do to merge it?",
+            "see apps/landing, slash docs",
             "use slash commands",
             "slash command",
             "add a trailing slash",
@@ -983,9 +1029,11 @@ mod tests {
             "And slash are you doing it?",
             "No need to have it in slash since",
         ] {
-            let result = normalize_vocabulary(text, &vocabulary("/ = slash"));
-            assert_eq!(result.text, text);
-            assert!(result.corrections.is_empty(), "{text}");
+            for words in ["", "/ = slash"] {
+                let result = normalize_vocabulary(text, &vocabulary(words));
+                assert_eq!(result.text, text, "{words:?}");
+                assert!(result.corrections.is_empty(), "{text}");
+            }
         }
     }
 

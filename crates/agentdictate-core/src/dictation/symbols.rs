@@ -159,7 +159,9 @@ const EMAIL_CUE_WINDOW: usize = 5;
 /// - **Flags.** "dash dash parallel" is `--parallel`, and "dash dash force
 ///   dash with dash lease" is `--force-with-lease`. The name has two or more
 ///   characters, is lowercased if capitalized, and does not end on a small
-///   word ("dash dash watch dash and then" is `--watch dash and then`).
+///   word ("dash dash watch dash and then" is `--watch dash and then`). A
+///   "dash" hyphenated to a word of the name is the spoken word: "dash dash
+///   no-dash isolate" is `--no-isolate`.
 /// - **Dotfiles.** At a line start or after a word such as "the", "in", "a" or
 ///   "and", "dot" before a name in `DOTFILES` starts it, and further "dot"
 ///   parts join it: "the dot env dot local file" is "the .env.local file".
@@ -439,41 +441,84 @@ fn relative_path(words: &Words, i: usize) -> Option<Conversion> {
 
 /// "dash dash parallel" is `--parallel`; "dash dash no dash verify" is
 /// `--no-verify`. "dash dash" only names a flag, so small words may be part
-/// of the name, but not end it.
+/// of the name, but not end it. A "dash" hyphenated to a word of the name is
+/// the spoken word too: "dash dash no-dash isolate" is `--no-isolate`, and
+/// "dash dash dry dash-run" is `--dry-run`.
 fn flag(words: &Words, i: usize) -> Option<Conversion> {
-    let is_name = |k: usize| {
-        let word = words.word(k);
-        word.starts_with(|c: char| c.is_ascii_alphabetic())
-            && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            && !words.is(k, "dash")
-    };
-    if !(words.is(i, "dash") && words.links(i, "dash") && is_name(i + 2)) {
+    if !(words.is(i, "dash") && words.links(i, "dash")) {
         return None;
     }
-    let mut k = i + 2;
+    let first = FlagWord::new(words.word(i + 2)).filter(|word| !word.dash_before)?;
+    let mut name = lowercase_if_capitalized(&first.name);
+    let (mut k, mut current) = (i + 2, first);
+    // The last word that may end the name, and the name's length there.
     let mut last = None;
     loop {
-        if !words.is_in(k, STOPWORDS) {
-            last = Some(k);
+        if !current.dash_after && !STOPWORDS.contains(&current.name.to_lowercase().as_str()) {
+            last = Some((k, name.len()));
         }
-        let continues =
-            words.links(k, "dash") && is_name(k + 2) && words.word(k + 2) == words.lower(k + 2);
-        if !continues {
+        // Word `n` continues the name if it is lowercase and starts with a
+        // hyphenated "dash" exactly when no other dash came before it.
+        let part = |n: usize, dash_before: bool| {
+            FlagWord::new(words.word(n))
+                .filter(|word| word.dash_before == dash_before && words.word(n) == words.lower(n))
+                .map(|word| (n, word))
+        };
+        let next = if current.dash_after {
+            words.spaced(k).then(|| part(k + 1, false)).flatten()
+        } else if words.links(k, "dash") {
+            part(k + 2, false)
+        } else if words.spaced(k) {
+            part(k + 1, true)
+        } else {
+            None
+        };
+        let Some((n, word)) = next else {
             break;
-        }
-        k += 2;
+        };
+        name.push('-');
+        name.push_str(&word.name);
+        (k, current) = (n, word);
     }
-    let last = last?;
-    let mut replacement = format!("--{}", lowercase_if_capitalized(words.word(i + 2)));
-    for part in (i + 4..=last).step_by(2) {
-        replacement.push('-');
-        replacement.push_str(words.word(part));
-    }
-    (replacement.len() >= 4).then_some(Conversion {
+    let (last, length) = last?;
+    name.truncate(length);
+    (length >= 2).then(|| Conversion {
         first: i,
         last,
-        replacement,
+        replacement: format!("--{name}"),
     })
+}
+
+/// A word of a flag's name without the "dash" parts the model sometimes
+/// hyphenates to it: "no-dash" is `no` with a dash after it.
+struct FlagWord {
+    name: String,
+    dash_before: bool,
+    dash_after: bool,
+}
+
+impl FlagWord {
+    /// `None` unless the word is ASCII letters, digits and `-`, and what is
+    /// left without its "dash" parts starts with a letter.
+    fn new(word: &str) -> Option<Self> {
+        if !word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return None;
+        }
+        let is_dash = |part: &&str| part.eq_ignore_ascii_case("dash");
+        let parts: Vec<&str> = word.split('-').collect();
+        let name = parts
+            .iter()
+            .filter(|part| !is_dash(part))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("-");
+        name.starts_with(|c: char| c.is_ascii_alphabetic())
+            .then(|| Self {
+                dash_before: parts.first().is_some_and(is_dash),
+                dash_after: parts.last().is_some_and(is_dash),
+                name,
+            })
+    }
 }
 
 /// "the dot env file" is "the .env file"; "dot env dot local" is
@@ -834,6 +879,13 @@ mod tests {
                 "run dash dash watch dash and then stop",
                 "run --watch dash and then stop",
             ),
+            (
+                "But I thought that using dash dash parallel with dash dash no-dash isolate still increased CPU cost by 1.6x.",
+                "But I thought that using --parallel with --no-isolate still increased CPU cost by 1.6x.",
+            ),
+            ("try dash dash dry-dash run", "try --dry-run"),
+            ("try dash dash dry dash-run", "try --dry-run"),
+            ("try dash dash dry-run mode", "try --dry-run mode"),
             ("the dot env dot local file", "the .env.local file"),
             ("add it to dot gitignore", "add it to .gitignore"),
             (
@@ -907,6 +959,7 @@ mod tests {
             "a quick dash a few blocks away",
             "I made a mad dash to the store, go dash board",
             "a dash dash b",
+            "run dash dash no-dash and then stop",
             "I'd underscore security here",
             "we must underscore safety first",
             "so I A B tested the landing page",

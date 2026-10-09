@@ -60,10 +60,14 @@ list. Every change is saved at once, and **Saved ✓** confirms it.
   or" becomes `and/or`. `/ = slash` is built in: it applies without the entry,
   unless another entry uses the word "slash". `/` instead starts a path at the
   start of a line or after a word such as "the", "in", "do", "seeing" or "delete":
-  "the slash home" becomes `the /home`. The spoken word stays when the symbol
-  cannot join: at the end of a sentence, after punctuation, when another word names
-  the symbol ("slash command", "a trailing slash"), after "dot" or a helper word
-  such as "can", "must" or "should" ("we can slash prices"), and before a small
+  "the slash home" becomes `the /home`. A comma right after the previous word is
+  dropped and the same rules apply, except that `/` always joins: "clean up code,
+  slash refactor" becomes `clean up code/refactor`, and "remove, delete, slash
+  update" becomes `remove, delete/update`. The spoken word stays when the symbol
+  cannot join: at the end of a sentence, after other punctuation ("PRs? slash do
+  we"), when another word names the symbol ("slash command", "a trailing slash"),
+  after "dot" or a helper word such as "can", "must" or "should" ("we can slash
+  prices"), and before a small
   word such as "how", "are", "since", "at", "our" or "every" ("Slash how do we…",
   "the slash at the end", "slash our burn rate"), except "and" and "or".
 - The spoken symbols below are built in. A symbol entry for one of their words,
@@ -114,7 +118,7 @@ then `AGENTS.md`). Words are separated by spaces on one line.
 | Say | Get | When |
 | --- | --- | --- |
 | dot slash install dot sh, dot dot slash dot dot slash src | `./install.sh`, `../../src` | Always. Further "slash" parts and a file extension join the path. |
-| dash dash parallel, dash dash force dash with dash lease | `--parallel`, `--force-with-lease` | Always after "dash dash", for a name of two or more letters. A capitalized name is lowercased, and a small word never ends it: "dash dash watch dash and then" is `--watch dash and then`. |
+| dash dash parallel, dash dash force dash with dash lease | `--parallel`, `--force-with-lease` | Always after "dash dash", for a name of two or more letters. A capitalized name is lowercased, and a small word never ends it: "dash dash watch dash and then" is `--watch dash and then`. A "dash" hyphenated to a word of the name counts as the spoken word: "dash dash no-dash isolate" is `--no-isolate`. |
 | ls dash l | `ls -l` | One letter other than "a" or "i", after a lowercase word that is a command such as ls, rm, git, cargo or docker, or is not a common English word. "em dash a model" stays. |
 | package dot json, Next dot JS, leadlord dot ai, name dot sites dot leadlord.ai | `package.json`, `Next.js`, `leadlord.ai`, `name.sites.leadlord.ai` | The last part ends in a web domain (ai, ca, co, com, dev, fr, gg, io, org, uk, xyz), which is lowercased whole, or a file extension (md, json, ts, rs, py, toml, yaml, html, css, png, pdf and other common ones), which is lowercased. No part is a small word, and the first is not a word such as "the", "a" or "use". A domain named only by common English words stays words unless Words spells one ("the early dot com days"; add `Stripe` for "stripe dot com"), as does any domain before bubble, boom, crash, era, days, company or startup. A common word capitalized by a sentence start is lowercased ("Package dot json" is `package.json`), except before `.js` (`Node.js`). |
 | the dot env file, the dot env dot local file | the `.env` file, the `.env.local` file | At a line start or after a word such as "the", "to", "a" or "and", before env, git, gitignore, github, gitattributes, vscode, codex, claude, ssh, npmrc, nvmrc, editorconfig, prettierrc, eslintrc or dockerignore. Further "dot" parts join it. |
