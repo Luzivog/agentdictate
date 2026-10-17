@@ -65,23 +65,25 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     })?;
     // The GPUI overlay runs in the sibling desktop binary, so the daemon never
     // links GPUI. Never use `$APPIMAGE` here: it would remount per dictation.
-    let overlay_presenter = match std::env::current_exe()
+    // The presenter thread is not joined at exit: it ends only once every
+    // overlay controller is dropped, and the daemon's stays in the handle its
+    // threads share. Exiting ends a helper on screen through its parent-death
+    // signal.
+    match std::env::current_exe()
         .map_err(anyhow::Error::from)
         .and_then(|executable| {
             start_overlay_presenter(executable.with_file_name("agentdictate"))
                 .map_err(anyhow::Error::from)
         }) {
-        Ok((controller, thread)) => {
+        Ok((controller, _presenter)) => {
             controller
                 .notify_health_changes_at(runtime.join(agentdictate_app::OVERLAY_HEALTH_FILE));
             process.set_overlay_controller(controller);
-            Some(thread)
         }
         Err(error) => {
             tracing::warn!(%error, "recording overlay is unavailable; dictation will continue");
-            None
         }
-    };
+    }
     let (notification_actions, clicked_notifications) = std::sync::mpsc::channel();
     if let Some(notifier) = start_session_notifier(notification_actions) {
         process.set_notifier(notifier);
@@ -150,13 +152,7 @@ fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     };
     ipc_thread
         .join()
-        .map_err(|_| anyhow::anyhow!("daemon IPC thread panicked"))??;
-    if let Some(thread) = overlay_presenter {
-        thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("overlay presenter thread panicked"))?;
-    }
-    Ok(())
+        .map_err(|_| anyhow::anyhow!("daemon IPC thread panicked"))?
 }
 
 /// Turns the first SIGINT or SIGTERM into a graceful Quit. If Quit fails, it
